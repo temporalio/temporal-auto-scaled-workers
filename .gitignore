@@ -16,6 +16,7 @@
 coverage.*
 *.coverprofile
 profile.cov
+/test.log
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
@@ -30,3 +31,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Executables produced by temporal repo
+/temporal-managed-workers
