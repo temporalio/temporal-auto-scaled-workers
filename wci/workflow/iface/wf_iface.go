@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/server/common/sdk"
 	"go.temporal.io/server/common/searchattribute/sadefs"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -30,6 +31,9 @@ const (
 	UpdateWorkerControllerInstance = "update-worker-controller-instance"
 	DeleteWorkerControllerInstance = "delete-worker-controller-instance"
 
+	// Signals
+	SignalTaskAdd = "task-add-signal"
+
 	// Errors
 	ErrInstanceDeleted    = "worker deployment deleted" // returned in the race condition that the deployment is deleted but the workflow is not yet closed.
 	ErrLongHistory        = "errLongHistory"            // update is not accepted until CaN happens. client should retry
@@ -47,59 +51,109 @@ var WorkerControllerInstanceVisibilityBaseListQuery = fmt.Sprintf(
 )
 
 type (
+	ComputeProviderType  string
+	ScalingAlgorithmType string
+
 	ComputeProviderDetails struct {
-		ProviderType     string
-		ProviderSettings map[string]string
+		ProviderType     ComputeProviderType `json:"provider_type,omitempty"`
+		ProviderSettings map[string]string   `json:"provider_settings,omitempty"`
+	}
+
+	ScalingConfiguration struct {
+		ScalingAlgorithm ScalingAlgorithmType `json:"scaling_algorithm,omitempty"`
+	}
+
+	QueueTypeScalingMetrics struct {
+		LastWorkerStart int64 `json:"last_worker_start,omitempty"`
+
+		LastQueueDepth     int64   `json:"last_queue_depth"`
+		LastArrivalRate    float32 `json:"last_arrival_rate"`
+		LastProcessingRate float32 `json:"last_processing_rate"`
 	}
 
 	WorkerControllerInstanceWorkflowArgs struct {
-		NamespaceName  string `protobuf:"bytes,1,opt,name=namespace_name,json=namespaceName,proto3" json:"namespace_name,omitempty"`
-		NamespaceId    string `protobuf:"bytes,2,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
-		DeploymentName string `protobuf:"bytes,3,opt,name=deployment_name,json=deploymentName,proto3" json:"deployment_name,omitempty"`
-		BuildID        string
-
-		State *WorkerControllerInstanceLocalState
+		NamespaceName  string                              `json:"namespace_name,omitempty"`
+		NamespaceId    string                              `json:"namespace_id,omitempty"`
+		DeploymentName string                              `json:"deployment_name,omitempty"`
+		BuildId        string                              `json:"build_id,omitempty"`
+		State          *WorkerControllerInstanceLocalState `json:"state"`
 	}
 
 	WorkerControllerInstanceLocalState struct {
-		ComputeProviderDetails *ComputeProviderDetails
+		ComputeProviderDetails *ComputeProviderDetails `json:"compute_provider,omitempty"`
+		ScalingConfiguration   *ScalingConfiguration   `json:"scaling_configuration,omitempty"`
 
-		ConflictToken        []byte
-		CreateTime           *timestamppb.Timestamp
-		LastModifierIdentity string
+		ScalingState map[string]any `json:"scaling_state"`
+
+		ConflictToken        []byte                 `json:"conflict_token,omitempty"`
+		CreateTime           *timestamppb.Timestamp `json:"create_time,omitempty"`
+		LastModifierIdentity string                 `json:"last_modifier_identity,omitempty"`
 	}
 
-	QueryDescribeWorkerControllInstanceResponse struct {
-		DeploymentName string
-		BuildId        string
-		CreateTime     *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	QueryDescribeWorkerControllerInstanceResponse struct {
+		DeploymentName string                 `json:"deployment_name,omitempty"`
+		BuildId        string                 `json:"build_id,omitempty"`
+		CreateTime     *timestamppb.Timestamp `json:"create_time,omitempty"`
 
-		ComputeProviderDetails *ComputeProviderDetails
+		ComputeProviderDetails *ComputeProviderDetails `json:"compute_provider,omitempty"`
+		ScalingConfiguration   *ScalingConfiguration   `json:"scaling_configuration,omitempty"`
 
-		ConflictToken        []byte `protobuf:"bytes,4,opt,name=conflict_token,json=conflictToken,proto3" json:"conflict_token,omitempty"`
-		LastModifierIdentity string `protobuf:"bytes,5,opt,name=last_modifier_identity,json=lastModifierIdentity,proto3" json:"last_modifier_identity,omitempty"`
+		ConflictToken        []byte `json:"conflict_token,omitempty"`
+		LastModifierIdentity string `json:"last_modifier_identity,omitempty"`
 	}
 
 	UpdateWorkerControllerInstanceRequest struct {
-		Identity      string
-		ConflictToken []byte
+		Identity      string `json:"identity,omitempty"`
+		ConflictToken []byte `json:"conflict_token,omitempty"`
 
-		ComputeProviderDetails *ComputeProviderDetails
+		ComputeProviderDetails *ComputeProviderDetails `json:"compute_provider,omitempty"`
+		ScalingConfiguration   *ScalingConfiguration   `json:"scaling_configuration,omitempty"`
 	}
 
 	UpdateWorkerControllerInstanceResponse struct{}
 
 	DeleteWorkerControllerInstanceRequest struct {
-		Identity string
+		Identity string `json:"identity,omitempty"`
 	}
 	DeleteWorkerControllerInstanceResponse struct{}
 
+	SignalTaskAddRequest struct {
+		TaskQueueName string                `json:"task_queue_name"`
+		TaskQueueType enumspb.TaskQueueType `json:"task_queue_type"`
+
+		IsSyncMatch                 bool `json:"is_sync_match"`
+		SyncMatchSignalsSinceLast   int  `json:"sync_match_signals_batched,omitempty"`
+		NoSyncMatchSignalsSinceLast int  `json:"no_sync_match_signals_batched,omitempty"`
+	}
+
 	WorkerControllerInstanceMemo struct {
-		DeploymentName string
-		BuildId        string
-		CreateTime     *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+		DeploymentName string                 `json:"deployment_name,omitempty"`
+		BuildId        string                 `json:"build_id,omitempty"`
+		CreateTime     *timestamppb.Timestamp `json:"create_time,omitempty"`
 	}
 )
+
+const (
+	ComputeProviderTypeAwsLambda  ComputeProviderType = "aws-lambda"
+	ComputeProviderTypeKnative    ComputeProviderType = "knative"
+	ComputeProviderTypeSubprocess ComputeProviderType = "subprocess"
+
+	ScalingAlgorithmNoSync ScalingAlgorithmType = "no-sync"
+)
+
+var validComputeProviderTypes = map[string]ComputeProviderType{
+	string(ComputeProviderTypeAwsLambda):  ComputeProviderTypeAwsLambda,
+	string(ComputeProviderTypeKnative):    ComputeProviderTypeKnative,
+	string(ComputeProviderTypeSubprocess): ComputeProviderTypeSubprocess,
+}
+
+// ValidComputeProviderType returns the ComputeProviderType for s if s is a valid enum value, and an error otherwise.
+func ValidComputeProviderType(s string) bool {
+	if _, ok := validComputeProviderTypes[s]; ok {
+		return true
+	}
+	return false
+}
 
 func DecodeWorkerControllerInstanceMemo(memo *commonpb.Memo) (*WorkerControllerInstanceMemo, error) {
 	if memo == nil || memo.Fields == nil {
