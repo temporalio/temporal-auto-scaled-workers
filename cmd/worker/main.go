@@ -7,7 +7,6 @@ import (
 
 	"github.com/temporalio/temporal-managed-workers/wci"
 	"github.com/urfave/cli/v2"
-	"go.temporal.io/server/common/authorization"
 	"go.temporal.io/server/common/build"
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/debug"
@@ -15,11 +14,17 @@ import (
 	"go.temporal.io/server/common/headers"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/log/tag"
+	"go.temporal.io/server/common/membership/ringpop"
+	"go.temporal.io/server/common/metrics"
+	persistenceClient "go.temporal.io/server/common/persistence/client"
 	_ "go.temporal.io/server/common/persistence/sql/sqlplugin/mysql"      // needed to load mysql plugin
 	_ "go.temporal.io/server/common/persistence/sql/sqlplugin/postgresql" // needed to load postgresql plugin
 	_ "go.temporal.io/server/common/persistence/sql/sqlplugin/sqlite"     // needed to load sqlite plugin
 	"go.temporal.io/server/common/primitives"
+	"go.temporal.io/server/common/resolver"
+	"go.temporal.io/server/common/rpc/encryption"
 	"go.temporal.io/server/temporal"
+	"go.uber.org/fx"
 )
 
 // main entry point for the temporal server
@@ -41,11 +46,6 @@ func buildCLI() *cli.App {
 			Usage:   "path to config file (absolute or relative to current working directory)",
 			EnvVars: []string{config.EnvKeyConfigFile},
 		},
-		&cli.BoolFlag{
-			Name:    "allow-no-auth",
-			Usage:   "allow no authorizer",
-			EnvVars: []string{config.EnvKeyAllowNoAuth},
-		},
 	}
 
 	app.Commands = []*cli.Command{
@@ -61,8 +61,6 @@ func buildCLI() *cli.App {
 				return nil
 			},
 			Action: func(c *cli.Context) error {
-				allowNoAuth := c.Bool("allow-no-auth")
-
 				var cfg *config.Config
 				var err error
 
@@ -90,6 +88,8 @@ func buildCLI() *cli.App {
 					tag.NewBoolTag("debug-mode", debug.Enabled),
 				)
 
+				ringpop.RegisterServiceNameToServiceTypeEnum(wci.ServiceName, wci.ServiceType)
+
 				var dynamicConfigClient dynamicconfig.Client
 				if cfg.DynamicConfigClient != nil {
 					dynamicConfigClient, err = dynamicconfig.NewFileBasedClient(cfg.DynamicConfigClient, logger, temporal.InterruptCh())
@@ -101,54 +101,68 @@ func buildCLI() *cli.App {
 					logger.Info("Dynamic config client is not configured. Using noop client.")
 				}
 
-				authorizer, err := authorization.GetAuthorizerFromConfig(
-					&cfg.Global.Authorization,
+				metricsHandler, err := metrics.MetricsHandlerFromConfig(logger, cfg.Global.Metrics)
+				if err != nil {
+					return cli.Exit(fmt.Sprintf("unable to create metrics handler: %v.", err), 1)
+				}
+
+				serviceResolver := resolver.NewNoopResolver()
+
+				tlsConfigProvider, err := encryption.NewTLSConfigProviderFromConfig(cfg.Global.TLS, metricsHandler, logger, nil)
+				if err != nil {
+					return cli.Exit(fmt.Sprintf("unable to create TLS config provider: %v.", err), 1)
+				}
+
+				app := fx.New(
+					fx.Supply(logger, cfg, &cfg.Global.PProf, &cfg.Persistence, cfg.ClusterMetadata),
+					config.Module,
+					temporal.FxLogAdapter,
+					ringpop.MembershipModule,
+					fx.Provide(
+						func() primitives.ServiceName {
+							return wci.ServiceName
+						},
+						func() log.Logger {
+							return logger
+						},
+						func() metrics.Handler {
+							return metricsHandler.WithTags(metrics.ServiceNameTag(wci.ServiceName))
+						},
+						func() log.SnTaggedLogger {
+							return log.With(logger, tag.Service(wci.ServiceName))
+						},
+						func() resolver.ServiceResolver {
+							return serviceResolver
+						},
+						func() persistenceClient.AbstractDataStoreFactory {
+							return nil
+						},
+						func() dynamicconfig.Client {
+							return dynamicConfigClient
+						},
+						func() encryption.TLSConfigProvider {
+							return tlsConfigProvider
+						},
+					),
+					wci.Module,
 				)
-				if err != nil {
-					return cli.Exit(fmt.Sprintf("Unable to instantiate authorizer. Error: %v", err), 1)
-				}
-				if authorization.IsNoopAuthorizer(authorizer) && !allowNoAuth {
-					logger.Warn(
-						"Not using any authorizer and flag `--allow-no-auth` not detected. " +
-							"Future versions will require using the flag `--allow-no-auth` " +
-							"if you do not want to set an authorizer.",
-					)
-				}
-
-				// Authorization mappers: claim and audience
-				claimMapper, err := authorization.GetClaimMapperFromConfig(&cfg.Global.Authorization, logger)
-				if err != nil {
-					return cli.Exit(fmt.Sprintf("Unable to instantiate claim mapper: %v.", err), 1)
-				}
-
-				audienceMapper, err := authorization.GetAudienceMapperFromConfig(&cfg.Global.Authorization)
-				if err != nil {
-					return cli.Exit(fmt.Sprintf("Unable to instantiate audience mapper: %v.", err), 1)
-				}
-
-				s, err := temporal.NewServer(
-					temporal.ForServices([]string{}),
-					temporal.WithExternalService(primitives.WorkerControllerService, wci.Module),
-					temporal.WithConfig(cfg),
-					temporal.WithDynamicConfigClient(dynamicConfigClient),
-					temporal.WithLogger(logger),
-					temporal.InterruptOn(temporal.InterruptCh()),
-					temporal.WithAuthorizer(authorizer),
-					temporal.WithClaimMapper(func(cfg *config.Config) authorization.ClaimMapper {
-						return claimMapper
-					}),
-					temporal.WithAudienceGetter(func(cfg *config.Config) authorization.JWTAudienceMapper {
-						return audienceMapper
-					}),
-				)
-				if err != nil {
+				if err := app.Err(); err != nil {
 					return cli.Exit(fmt.Sprintf("Unable to create server. Error: %v.", err), 1)
 				}
 
-				err = s.Start()
-				if err != nil {
+				if err = app.Start(c.Context); err != nil {
 					return cli.Exit(fmt.Sprintf("Unable to start server. Error: %v", err), 1)
 				}
+
+				logger.Info("Running - waiting for interrupt signal")
+				interruptChannel := temporal.InterruptCh()
+				interruptSignal := <-interruptChannel
+				logger.Info("Received interrupt signal, stopping the server.", tag.Value(interruptSignal))
+
+				if err := app.Stop(c.Context); err != nil {
+					return cli.Exit(fmt.Sprintf("Unable to stop server. Error: %v", err), 1)
+				}
+
 				return cli.Exit("All services are stopped.", 0)
 			},
 		},

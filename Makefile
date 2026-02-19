@@ -42,10 +42,10 @@ unit-test: clean-test-output
 test: unit-test
 
 ##### Run server #####
-start: start-sqlite
+start: start-sqlite-file
 
 start-sqlite: temporal-managed-workers
-	./temporal-managed-workers --config-file config/development-sqlite.yaml --allow-no-auth start
+	./temporal-managed-workers --config-file config/development-sqlite.yaml start
 
 start-sqlite-file: temporal-managed-workers
-	./temporal-managed-workers --config-file config/development-sqlite-file.yaml --allow-no-auth start
+	./temporal-managed-workers --config-file config/development-sqlite-file.yaml start

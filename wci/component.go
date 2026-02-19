@@ -9,17 +9,11 @@ import (
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/namespace"
 	workercommon "go.temporal.io/server/service/worker/common"
-	"go.uber.org/fx"
 )
 
 type (
 	workerComponent struct {
 		dynamicConfig *dynamicconfig.Collection
-	}
-
-	fxComponentResult struct {
-		fx.Out
-		Component workercommon.PerNSWorkerComponent `group:"perNamespaceWorkerComponent"`
 	}
 )
 
