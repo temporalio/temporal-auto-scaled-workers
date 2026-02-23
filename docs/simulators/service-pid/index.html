@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Queue consumer scaling simulator</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+  <h1>Queue consumer scaling simulator</h1>
+<div class="layout">
+    <aside class="panel params">
+      <h2>Simulation parameters</h2>
+      <section>
+        <div class="param">
+          <label>Slots per consumer</label>
+          <input type="number" id="slotsPerConsumer" min="1" max="20" value="5" />
+        </div>
+        <div class="param">
+          <label>Work duration min (s)</label>
+          <input type="number" id="workDurationMin" min="1" max="300" value="10" step="0.5" />
+        </div>
+        <div class="param">
+          <label>Work duration max (s)</label>
+          <input type="number" id="workDurationMax" min="1" max="300" value="15" step="0.5" />
+        </div>
+        <div class="param">
+          <label>Arrival rate (/s)</label>
+          <input type="number" id="arrivalRate" min="0" max="100" value="2" step="0.5" />
+        </div>
+      </section>
+      <h2>PID controller</h2>
+      <section>
+        <div class="param">
+          <label>Backlog setpoint</label>
+          <input type="number" id="pidSetpoint" min="0" max="1000" value="2" />
+        </div>
+        <div class="param">
+          <label>Kp (proportional)</label>
+          <input type="number" id="kp" min="0" max="10" value="0" step="0.05" />
+        </div>
+        <div class="param">
+          <label>Ki (integral)</label>
+          <input type="number" id="ki" min="0" max="10" value="0.1" step="0.01" />
+        </div>
+        <div class="param">
+          <label>Kd (derivative)</label>
+          <input type="number" id="kd" min="0" max="10" value="0.05" step="0.05" />
+        </div>
+        <div class="param">
+          <label>PID interval (ms)</label>
+          <input type="number" id="pidIntervalMs" min="100" max="10000" value="1000" step="100" />
+        </div>
+        <div class="param">
+          <label>Max consumers</label>
+          <input type="number" id="maxConsumers" min="1" max="50" value="10" />
+        </div>
+      </section>
+      <button type="button" class="add-task-btn" id="pauseBtn">Start</button>
+      <button type="button" class="add-task-btn" id="addTaskBtn">+ Add task now</button>
+    </aside>
+    <main class="panel">
+      <h2>Metrics</h2>
+      <div class="metrics">
+        <div class="metric">
+          <div class="label">Queue depth</div>
+          <div class="value" id="metricQueueDepth">0</div>
+        </div>
+        <div class="metric">
+          <div class="label">Oldest item age (s)</div>
+          <div class="value" id="metricOldestAge">0</div>
+        </div>
+        <div class="metric">
+          <div class="label">Arrival rate (/s, last 10 s)</div>
+          <div class="value" id="metricArrivalRate">0</div>
+        </div>
+        <div class="metric">
+          <div class="label">Dispatch rate (/s, last 10 s)</div>
+          <div class="value" id="metricDispatchRate">0</div>
+        </div>
+        <div class="metric">
+          <div class="label">Consumers</div>
+          <div class="value" id="metricConsumers">0</div>
+        </div>
+        <div class="metric">
+          <div class="label">Slot utilization</div>
+          <div class="value" id="metricUtilization">0%</div>
+        </div>
+      </div>
+      <div class="charts-section">
+        <div class="chart-wrapper">
+          <h2>Consumers &amp; backlog</h2>
+          <div class="chart-canvas-wrapper">
+            <canvas id="chartConsumersBacklog"></canvas>
+          </div>
+        </div>
+        <div class="chart-wrapper">
+          <h2>Arrival &amp; dispatch rate</h2>
+          <div class="chart-canvas-wrapper">
+            <canvas id="chartRates"></canvas>
+          </div>
+        </div>
+      </div>
+      <div>
+        <h2>Consumers</h2>
+        <div class="consumers-section" id="consumersList"></div>
+      </div>
+      <h2>Scale events</h2>
+      <div class="history" id="scaleLog"></div>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Queue consumer scaling simulator</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+  <h1>Queue consumer scaling simulator</h1>
+  <details class="scaling-rules">
+    <summary>Scaling rules</summary>
+    <div class="scaling-rules-body">
+      <div class="rule-group">
+        <h3>Scale up</h3>
+        <p>A new consumer is created when <strong>all</strong> of the following are true:</p>
+        <ul>
+          <li>There is at least one item in the queue.</li>
+          <li>No existing consumer has a free slot (all slots are busy).</li>
+          <li>The number of consumers is below <em>Max consumers</em>.</li>
+          <li>At least <em>Scale up cooldown</em> ms have elapsed since the last consumer was created.</li>
+        </ul>
+        <p>Each new consumer is created with <em>Slots per consumer</em> slots.</p>
+      </div>
+      <div class="rule-group">
+        <h3>Scale down</h3>
+        <p>The most recently created consumer is removed when <strong>all</strong> of the following are true:</p>
+        <ul>
+          <li>At least <em>Scale down cooldown</em> ms have elapsed since the last consumer was removed.</li>
+          <li>
+            One of the two rate conditions holds:
+            <ul>
+              <li><strong>n = 1:</strong> the dispatch rate over the last 10 s is 0.</li>
+              <li><strong>n &gt; 1:</strong> the current dispatch rate is below <em>Scale-down threshold %</em> of the peak rate ever observed with <em>n − 1</em> consumers, meaning the extra consumer is not needed to keep up.</li>
+            </ul>
+          </li>
+        </ul>
+      </div>
+      <div class="rule-group">
+        <h3>Peak rate tracking</h3>
+        <p>
+          Every tick the simulator records the dispatch rate (tasks started per second, measured over a 10 s rolling window)
+          for each consumer count. The peak of all recorded samples is used by the scale-down rule to decide whether removing a consumer
+          would keep the system able to handle the current load.
+        </p>
+      </div>
+    </div>
+  </details>
+  <div class="layout">
+    <aside class="panel params">
+      <h2>Simulation parameters</h2>
+      <section>
+        <div class="param">
+          <label>Slots per consumer</label>
+          <input type="number" id="slotsPerConsumer" min="1" max="20" value="5" />
+        </div>
+        <div class="param">
+          <label>Work duration min (s)</label>
+          <input type="number" id="workDurationMin" min="1" max="300" value="10" step="0.5" />
+        </div>
+        <div class="param">
+          <label>Work duration max (s)</label>
+          <input type="number" id="workDurationMax" min="1" max="300" value="15" step="0.5" />
+        </div>
+        <div class="param">
+          <label>Arrival rate (/s)</label>
+          <input type="number" id="arrivalRate" min="0" max="100" value="2" step="0.5" />
+        </div>
+      </section>
+      <h2>Scaling parameters</h2>
+      <section>
+        <div class="param">
+          <label>Scale up cooldown (ms)</label>
+          <input type="number" id="scaleUpCooldownMs" min="0" max="10000" value="500" />
+        </div>
+        <div class="param">
+          <label>Scale down cooldown (ms)</label>
+          <input type="number" id="scaleDownCooldownMs" min="0" max="10000" value="500" />
+        </div>
+        <div class="param">
+          <label>Max consumers</label>
+          <input type="number" id="maxConsumers" min="1" max="50" value="10" />
+        </div>
+        <div class="param">
+          <label>Scale-down threshold (%)</label>
+          <input type="number" id="scaleDownThresholdPct" min="1" max="100" value="90" />
+        </div>
+      </section>
+      <button type="button" class="add-task-btn" id="pauseBtn">Start</button>
+      <button type="button" class="add-task-btn" id="addTaskBtn">+ Add task now</button>
+    </aside>
+    <main class="panel">
+      <h2>Metrics</h2>
+      <div class="metrics">
+        <div class="metric">
+          <div class="label">Queue depth</div>
+          <div class="value" id="metricQueueDepth">0</div>
+        </div>
+        <div class="metric">
+          <div class="label">Oldest item age (s)</div>
+          <div class="value" id="metricOldestAge">0</div>
+        </div>
+        <div class="metric">
+          <div class="label">Arrival rate (/s, last 10 s)</div>
+          <div class="value" id="metricArrivalRate">0</div>
+        </div>
+        <div class="metric">
+          <div class="label">Dispatch rate (/s, last 10 s)</div>
+          <div class="value" id="metricDispatchRate">0</div>
+        </div>
+        <div class="metric">
+          <div class="label">Consumers</div>
+          <div class="value" id="metricConsumers">0</div>
+        </div>
+        <div class="metric">
+          <div class="label">Slot utilization</div>
+          <div class="value" id="metricUtilization">0%</div>
+        </div>
+      </div>
+      <div class="charts-section">
+        <div class="chart-wrapper">
+          <h2>Consumers &amp; backlog</h2>
+          <div class="chart-canvas-wrapper">
+            <canvas id="chartConsumersBacklog"></canvas>
+          </div>
+        </div>
+        <div class="chart-wrapper">
+          <h2>Arrival &amp; dispatch rate</h2>
+          <div class="chart-canvas-wrapper">
+            <canvas id="chartRates"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="consumers-peak-layout">
+        <div>
+          <h2>Consumers</h2>
+          <div class="consumers-section" id="consumersList"></div>
+        </div>
+        <div>
+          <h2>Peak dispatch rate by consumer count</h2>
+          <table class="peak-rate-table" id="peakRateTable">
+            <thead>
+              <tr><th>Consumers</th><th>Peak dispatch rate (/s)</th></tr>
+            </thead>
+            <tbody id="peakRateBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <h2>Scale history</h2>
+      <div class="history" id="creationHistory"></div>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
