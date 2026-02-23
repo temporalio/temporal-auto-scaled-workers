@@ -94,15 +94,16 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	}
 	d.metrics.Counter(iface.WorkerControllerInstanceCreated.Name()).Inc(1)
 
-	err := workflow.SetQueryHandler(ctx, iface.QueryDescribeWorkerControllerInstance, func() (*iface.QueryDescribeWorkerControllInstanceResponse, error) {
+	err := workflow.SetQueryHandler(ctx, iface.QueryDescribeWorkerControllerInstance, func() (*iface.QueryDescribeWorkerControllerInstanceResponse, error) {
 		if d.deleteInstance {
 			return nil, errors.New(iface.ErrInstanceDeleted)
 		}
-		return &iface.QueryDescribeWorkerControllInstanceResponse{
+		return &iface.QueryDescribeWorkerControllerInstanceResponse{
 			DeploymentName: d.DeploymentName,
-			BuildId:        d.BuildID,
+			BuildId:        d.BuildId,
 
 			ComputeProviderDetails: d.State.ComputeProviderDetails,
+			ScalingConfiguration:   d.State.ScalingConfiguration,
 
 			ConflictToken:        d.State.ConflictToken,
 			CreateTime:           d.State.CreateTime,
@@ -152,8 +153,8 @@ func (d *WorkflowRunner) validateUpdateInstance(args *iface.UpdateWorkerControll
 	if err := d.ensureNotDeleted(); err != nil {
 		return err
 	}
-	if args.ComputeProviderDetails == nil {
-		return temporal.NewApplicationError("missing compute provider details", iface.ErrFailedPrecondition)
+	if args.ComputeProviderDetails == nil && args.ScalingConfiguration == nil {
+		return temporal.NewApplicationError("either compute provider details or scaling configuration need to be set", iface.ErrFailedPrecondition)
 	}
 	if args.ConflictToken != nil && !bytes.Equal(args.ConflictToken, d.State.ConflictToken) {
 		return temporal.NewApplicationError("conflict token mismatch", iface.ErrFailedPrecondition)
@@ -239,7 +240,7 @@ func (d *WorkflowRunner) updateMemo(ctx workflow.Context) error {
 	return workflow.UpsertMemo(ctx, map[string]any{
 		iface.WorkerControllerInstanceMemoField: &iface.WorkerControllerInstanceMemo{
 			DeploymentName: d.DeploymentName,
-			BuildId:        d.BuildID,
+			BuildId:        d.BuildId,
 			CreateTime:     d.State.CreateTime,
 		},
 	})
