@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Queue Consumer Scaling Simulator</title>
+  <link rel="stylesheet" href="simulator.css">
+</head>
+<body>
+  <header>
+    <h1>Queue Consumer Scaling Simulator</h1>
+  </header>
+
+  <section class="docs panel">
+    <h2>Scaling rules</h2>
+    <div class="docs-grid">
+      <div>
+        <h3>Scale-up</h3>
+        <ol>
+          <li><strong>On item arrival</strong> — if the queue is non-empty after dispatch, a consumer creation is attempted immediately.</li>
+          <li><strong>Scale check</strong> (every <em>scale check interval</em>):
+            <ol type="a">
+              <li>Dispatch rate non-zero and unchanged since the last check (within <em>precision</em>) → no action</li>
+              <li>Queue depth &gt; <em>threshold</em> → create consumer</li>
+              <li>Queue non-empty and no consumer created within the last <em>lifespan</em> → create consumer</li>
+              <li>Otherwise → no action</li>
+            </ol>
+          </li>
+        </ol>
+      </div>
+      <div>
+        <h3>Scale-down</h3>
+        <p>Each consumer stops after its lifespan expires.</p>
+        <h3>Creation guards</h3>
+        <p>Applied to every creation attempt before a consumer is launched:</p>
+        <ul>
+          <li>Consumer count ≥ <em>max consumers</em> → blocked</li>
+          <li>Last creation within <em>throttle</em> window → blocked</li>
+          <li>Random roll &lt; <em>failure %</em> → blocked</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <main class="two-column">
+    <div class="column-left">
+    <section class="controls panel">
+      <h2>Parameters</h2>
+      <div class="control-group">
+        <h3>Simulation Parameters</h3>
+        <div class="control-grid">
+          <label>
+            <span>Slots per consumer</span>
+            <input type="number" id="slotsPerConsumer" min="1" max="20" value="5">
+          </label>
+          <label>
+            <span>Work duration min (s)</span>
+            <input type="number" id="workDurationMin" min="1" value="10">
+          </label>
+          <label>
+            <span>Work duration max (s)</span>
+            <input type="number" id="workDurationMax" min="1" value="15">
+          </label>
+          <label>
+            <span>Arrival rate (items/s)</span>
+            <input type="number" id="arrivalRate" min="0" step="0.5" value="5">
+          </label>
+          <label>
+            <span>Items per button click</span>
+            <input type="number" id="itemsPerClick" min="1" value="1">
+          </label>
+          <label>
+            <span>Consumer failure (%)</span>
+            <input type="number" id="consumerCreationFailurePct" min="0" max="100" value="10">
+          </label>
+          <label>
+            <span>Max dispatch rate (items/s, 0=disabled)</span>
+            <input type="number" id="maxDispatchRate" min="0" step="1" value="0">
+          </label>
+        </div>
+      </div>
+      <div class="control-group">
+        <h3>Scaling Parameters</h3>
+        <div class="control-grid">
+          <label>
+            <span>Consumer lifespan (s)</span>
+            <input type="number" id="consumerLifespan" min="1" value="120">
+          </label>
+          <label>
+            <span>Creation throttle (ms)</span>
+            <input type="number" id="creationThrottle" min="0" value="500">
+          </label>
+          <label>
+            <span>Max consumers</span>
+            <input type="number" id="maxConsumers" min="1" max="50" value="10">
+          </label>
+          <label>
+            <span>Scale check interval (s)</span>
+            <input type="number" id="scaleCheckInterval" min="1" value="20">
+          </label>
+          <label>
+            <span>Queue depth threshold for scale-up</span>
+            <input type="number" id="queueDepthThreshold" min="0" value="10">
+          </label>
+          <label>
+            <span>Dispatch rate precision (items/s)</span>
+            <input type="number" id="dispatchRatePrecision" min="0" step="0.1" value="0">
+          </label>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" id="btnStart">Start</button>
+        <button type="button" id="btnPause" disabled>Pause</button>
+        <button type="button" id="btnReset">Reset</button>
+        <button type="button" id="btnAddTasks">Add task(s)</button>
+      </div>
+    </section>
+    </div>
+
+    <div class="column-right">
+    <section class="metrics panel">
+      <h2>Live metrics</h2>
+      <div class="metrics-grid">
+        <div class="metric-col">
+          <span class="metric-label">Queue depth</span>
+          <span id="queueDepth" class="metric-value">0</span>
+        </div>
+        <div class="metric-col">
+          <span class="metric-label">Consumers</span>
+          <span id="consumerCount" class="metric-value">0</span>
+        </div>
+        <div class="metric-col">
+          <span class="metric-label">Slot utilization</span>
+          <span id="slotUtilization" class="metric-value">0 / 0 slots in use</span>
+        </div>
+        <div class="metric-col">
+          <span class="metric-label">Arrival rate <span class="metric-note">(last 10s)</span></span>
+          <span id="actualArrivalRate" class="metric-value">—</span>
+          <span class="metric-unit">items/s</span>
+        </div>
+        <div class="metric-col">
+          <span class="metric-label">Dispatch rate <span class="metric-note">(last 10s)</span></span>
+          <span id="dispatchRate" class="metric-value">—</span>
+          <span class="metric-unit">items/s</span>
+        </div>
+        <div class="metric-col">
+          <span class="metric-label">Age of oldest Task</span>
+          <span id="oldestQueueAge" class="metric-value">—</span>
+          <span class="metric-unit">s</span>
+        </div>
+      </div>
+      <div class="consumers-slots" id="consumersSlots">
+        <p class="muted">No consumers. Start the simulation or add tasks.</p>
+      </div>
+    </section>
+
+    <section class="chart-panel panel">
+      <h2>Workers &amp; backlog</h2>
+      <div class="chart-wrap">
+        <canvas id="chart"></canvas>
+      </div>
+    </section>
+
+    <section class="chart-panel panel">
+      <h2>Arrival &amp; dispatch rates</h2>
+      <div class="chart-wrap">
+        <canvas id="rateChart"></canvas>
+      </div>
+    </section>
+
+    <section class="history panel">
+      <h2>Consumer creation events</h2>
+      <div class="history-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Outcome</th>
+              <th>Rule</th>
+              <th>Consumers after</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody">
+            <tr><td colspan="4" class="muted">No events yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    </div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="simulator.js"></script>
+</body>
+</html>
