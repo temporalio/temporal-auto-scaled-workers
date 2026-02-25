@@ -3,8 +3,8 @@ package wci
 import (
 	"context"
 
+	wciLog "github.com/temporalio/temporal-managed-workers/wci/log"
 	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/server/api/matchingservice/v1"
 	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/log/tag"
@@ -12,11 +12,18 @@ import (
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/persistence"
-	"go.temporal.io/server/common/persistence/visibility/manager"
 	"go.temporal.io/server/common/primitives"
-	"go.temporal.io/server/common/resource"
 	"go.temporal.io/server/common/sdk"
 	"go.temporal.io/server/service/worker"
+)
+
+const (
+	ServiceName primitives.ServiceName = "worker-controller"
+
+	// ServiceType is the number identification for the service in the DB
+	// this needs to be distinct from the values already defined in the
+	// persisttence package, so jumping a bit up to 10.
+	ServiceType persistence.ServiceType = 10
 )
 
 type (
@@ -26,17 +33,13 @@ type (
 		metadataManager                 persistence.MetadataManager
 		membershipMonitor               membership.Monitor
 		hostInfo                        membership.HostInfo
-		historyClient                   resource.HistoryClient
 		namespaceRegistry               namespace.Registry
 		workerControllerServiceResolver membership.ServiceResolver
-		visibilityManager               manager.VisibilityManager
 
 		metricsHandler metrics.Handler
 
 		sdkClientFactory sdk.ClientFactory
 		config           *Config
-
-		matchingClient matchingservice.MatchingServiceClient
 
 		perNamespaceWorkerManager *worker.PerNamespaceWorkerManager
 	}
@@ -51,13 +54,10 @@ func NewService(
 	membershipMonitor membership.Monitor,
 	hostInfoProvider membership.HostInfoProvider,
 	metricsHandler metrics.Handler,
-	historyClient resource.HistoryClient,
-	visibilityManager manager.VisibilityManager,
-	matchingClient resource.MatchingClient,
 	metadataManager persistence.MetadataManager,
 	perNamespaceWorkerManager *worker.PerNamespaceWorkerManager,
 ) (*Service, error) {
-	workerControllerServiceResolver, err := membershipMonitor.GetResolver(primitives.WorkerControllerService)
+	workerControllerServiceResolver, err := membershipMonitor.GetResolver(ServiceName)
 	if err != nil {
 		return nil, err
 	}
@@ -72,11 +72,7 @@ func NewService(
 		membershipMonitor:               membershipMonitor,
 		hostInfo:                        hostInfoProvider.HostInfo(),
 		metricsHandler:                  metricsHandler,
-		historyClient:                   historyClient,
 		workerControllerServiceResolver: workerControllerServiceResolver,
-		visibilityManager:               visibilityManager,
-
-		matchingClient: matchingClient,
 
 		perNamespaceWorkerManager: perNamespaceWorkerManager,
 	}
@@ -86,7 +82,7 @@ func NewService(
 func (s *Service) Start() {
 	s.logger.Info(
 		"worker-controller starting",
-		tag.ComponentWorkerController,
+		wciLog.ComponentWorkerController,
 	)
 
 	metrics.RestartCount.With(s.metricsHandler).Record(1)
@@ -105,7 +101,7 @@ func (s *Service) Start() {
 
 	s.logger.Info(
 		"worker-controller service started",
-		tag.ComponentWorkerController,
+		wciLog.ComponentWorkerController,
 		tag.Address(s.hostInfo.GetAddress()),
 	)
 }
@@ -115,11 +111,10 @@ func (s *Service) Stop() {
 	s.perNamespaceWorkerManager.Stop()
 	s.namespaceRegistry.Stop()
 	s.clusterMetadata.Stop()
-	s.visibilityManager.Close()
 
 	s.logger.Info(
 		"worker-controller service stopped",
-		tag.ComponentWorkerController,
+		wciLog.ComponentWorkerController,
 		tag.Address(s.hostInfo.GetAddress()),
 	)
 }

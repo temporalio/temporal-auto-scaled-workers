@@ -3,10 +3,10 @@ package client
 import (
 	"errors"
 
+	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
-	"go.temporal.io/managed-workers/wci/workflow/iface"
 	"go.temporal.io/server/service/history/api"
 	"go.temporal.io/server/service/history/consts"
 	update2 "go.temporal.io/server/service/history/workflow/update"

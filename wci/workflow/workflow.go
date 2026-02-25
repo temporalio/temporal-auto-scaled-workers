@@ -5,8 +5,8 @@ import (
 	"bytes"
 	"errors"
 
+	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
 	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/managed-workers/wci/workflow/iface"
 	sdkclient "go.temporal.io/sdk/client"
 	sdklog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"

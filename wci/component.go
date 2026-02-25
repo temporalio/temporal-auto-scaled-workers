@@ -1,25 +1,19 @@
 package wci
 
 import (
-	"go.temporal.io/managed-workers/wci/client"
-	instancewf "go.temporal.io/managed-workers/wci/workflow"
-	"go.temporal.io/managed-workers/wci/workflow/iface"
+	"github.com/temporalio/temporal-managed-workers/wci/client"
+	instancewf "github.com/temporalio/temporal-managed-workers/wci/workflow"
+	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
 	sdkworker "go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/namespace"
 	workercommon "go.temporal.io/server/service/worker/common"
-	"go.uber.org/fx"
 )
 
 type (
 	workerComponent struct {
 		dynamicConfig *dynamicconfig.Collection
-	}
-
-	fxComponentResult struct {
-		fx.Out
-		Component workercommon.PerNSWorkerComponent `group:"perNamespaceWorkerComponent"`
 	}
 )
 

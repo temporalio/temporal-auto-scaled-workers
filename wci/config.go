@@ -1,7 +1,7 @@
 package wci
 
 import (
-	"go.temporal.io/managed-workers/wci/client"
+	"github.com/temporalio/temporal-managed-workers/wci/client"
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/service/worker"

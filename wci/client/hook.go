@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
 	"go.temporal.io/api/enums/v1"
 	enumspb "go.temporal.io/api/enums/v1"
-	"go.temporal.io/managed-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/metrics"
