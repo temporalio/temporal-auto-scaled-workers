@@ -67,8 +67,7 @@ type (
 			version *deploymentpb.WorkerDeploymentVersion,
 			conflictToken []byte,
 			identity string,
-			computeProviderDetails *iface.ComputeProviderDetails,
-			scalingConfiguration *iface.ScalingConfiguration,
+			spec *iface.WorkerControllerInstanceSpec,
 		) error
 
 		DeleteWorkerControllerInstance(
@@ -92,8 +91,12 @@ type (
 		CreateTime     *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
 	}
 
-	ComputeProviderDetails = iface.ComputeProviderDetails
-	ComputeProviderType    = iface.ComputeProviderType
+	ComputeProviderSpec  = iface.ComputeProviderSpec
+	ComputeProviderType  = iface.ComputeProviderType
+	ScalingAlgorithmSpec = iface.ScalingAlgorithmSpec
+	ScalingAlgorithmType = iface.ScalingAlgorithmType
+	Spec                 = iface.WorkerControllerInstanceSpec
+	TaskTypeSpec         = iface.TaskTypeSpec
 
 	clientImpl struct {
 		logger                       log.Logger
@@ -221,8 +224,7 @@ func (d *clientImpl) UpdateWorkerControllerInstance(
 	version *deploymentpb.WorkerDeploymentVersion,
 	conflictToken []byte,
 	identity string,
-	computeProviderDetails *iface.ComputeProviderDetails,
-	scalingConfiguration *iface.ScalingConfiguration,
+	spec *iface.WorkerControllerInstanceSpec,
 ) (retErr error) {
 	//revive:disable-next-line:defer
 	defer d.convertAndRecordError("UpdateWorkerControllerInstance", version, &retErr, namespaceEntry.Name(), identity)()
@@ -234,13 +236,8 @@ func (d *clientImpl) UpdateWorkerControllerInstance(
 	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, version.BuildId, d.maxIDLengthLimit()); err != nil {
 		return err
 	}
-	if computeProviderDetails == nil && scalingConfiguration == nil {
-		return serviceerror.NewInvalidArgumentf("Either ComputeProvider or ScalingConfiguration need to be provided")
-	}
-	if computeProviderDetails != nil {
-		if !iface.ValidComputeProviderType(string(computeProviderDetails.ProviderType)) {
-			return serviceerror.NewInvalidArgumentf("invalid compute provider type '%s'", computeProviderDetails.ProviderType)
-		}
+	if err := spec.Validate(); err != nil {
+		return err
 	}
 	if err := d.checkInstanceCount(ctx, namespaceEntry, version); err != nil {
 		return err
@@ -248,10 +245,9 @@ func (d *clientImpl) UpdateWorkerControllerInstance(
 
 	requestID := uuid.NewString()
 	updateReq := &iface.UpdateWorkerControllerInstanceRequest{
-		Identity:               identity,
-		ConflictToken:          conflictToken,
-		ComputeProviderDetails: computeProviderDetails,
-		ScalingConfiguration:   scalingConfiguration,
+		Identity:      identity,
+		ConflictToken: conflictToken,
+		Spec:          spec,
 	}
 
 	workflowID := GenerateWorkerControllerInstanceWorkflowID(version)
@@ -330,6 +326,7 @@ func (d *clientImpl) DeleteWorkerControllerInstance(
 	if err != nil {
 		var notFound *serviceerror.NotFound
 		if errors.As(err, &notFound) {
+			// if the instance doesn't exist, nothing to do
 			return nil
 		}
 		return err

@@ -27,7 +27,7 @@ func (s *workerComponent) DedicatedWorkerOptions(ns *namespace.Namespace) *worke
 }
 
 func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Namespace, details workercommon.RegistrationDetails) func() {
-	// this should not block because it uses an existing grpc connection
+	// there is no need to close the sdkClient as it uses an existing grpc connection
 	sdkClient := s.sdkClientFactory.NewClient(sdkclient.Options{
 		Namespace:     ns.Name().String(),
 		DataConverter: sdk.PreferProtoDataConverter,

@@ -22,7 +22,8 @@ const (
 	WorkerControllerInstanceNamespaceDivision = "TemporalWorkerControllerInstance"
 
 	// Queries
-	QueryDescribeWorkerControllerInstance = "describe-wci"
+	QueryDescribeWorkerControllerInstance       = "describe-wci"
+	QueryDumpWorkerControllerInstanceLocalState = "dump-local-state"
 
 	// Memos
 	WorkerControllerInstanceMemoField = "WorkerControllerInstanceMemo"
@@ -51,22 +52,8 @@ var WorkerControllerInstanceVisibilityBaseListQuery = fmt.Sprintf(
 )
 
 type (
-	ComputeProviderType  string
-	ScalingAlgorithmType string
-
-	ComputeProviderDetails struct {
-		ProviderType     ComputeProviderType `json:"provider_type,omitempty"`
-		ProviderSettings map[string]string   `json:"provider_settings,omitempty"`
-	}
-
-	ScalingConfiguration struct {
-		ScalingAlgorithm ScalingAlgorithmType `json:"scaling_algorithm,omitempty"`
-	}
-
 	QueueTypeScalingMetrics struct {
-		LastWorkerStart int64 `json:"last_worker_start,omitempty"`
-
-		LastQueueDepth     int64   `json:"last_queue_depth"`
+		LastBacklogCount   int64   `json:"last_backlog_count"`
 		LastArrivalRate    float32 `json:"last_arrival_rate"`
 		LastProcessingRate float32 `json:"last_processing_rate"`
 	}
@@ -80,10 +67,10 @@ type (
 	}
 
 	WorkerControllerInstanceLocalState struct {
-		ComputeProviderDetails *ComputeProviderDetails `json:"compute_provider,omitempty"`
-		ScalingConfiguration   *ScalingConfiguration   `json:"scaling_configuration,omitempty"`
+		Spec *WorkerControllerInstanceSpec `json:"spec,omitempty"`
 
-		ScalingState map[string]any `json:"scaling_state"`
+		// ScalingStatus contains the state information keyd by TaskTypeSpec.GetSpecKey()
+		ScalingStatus map[string]ScalingAlgorithmStatus `json:"scaling_state"`
 
 		ConflictToken        []byte                 `json:"conflict_token,omitempty"`
 		CreateTime           *timestamppb.Timestamp `json:"create_time,omitempty"`
@@ -91,12 +78,11 @@ type (
 	}
 
 	QueryDescribeWorkerControllerInstanceResponse struct {
-		DeploymentName string                 `json:"deployment_name,omitempty"`
-		BuildId        string                 `json:"build_id,omitempty"`
-		CreateTime     *timestamppb.Timestamp `json:"create_time,omitempty"`
+		DeploymentName    string                 `json:"deployment_name,omitempty"`
+		DeploymentBuildID string                 `json:"deployment_build_id,omitempty"`
+		CreateTime        *timestamppb.Timestamp `json:"create_time,omitempty"`
 
-		ComputeProviderDetails *ComputeProviderDetails `json:"compute_provider,omitempty"`
-		ScalingConfiguration   *ScalingConfiguration   `json:"scaling_configuration,omitempty"`
+		Spec *WorkerControllerInstanceSpec `json:"spec,omitempty"`
 
 		ConflictToken        []byte `json:"conflict_token,omitempty"`
 		LastModifierIdentity string `json:"last_modifier_identity,omitempty"`
@@ -106,8 +92,7 @@ type (
 		Identity      string `json:"identity,omitempty"`
 		ConflictToken []byte `json:"conflict_token,omitempty"`
 
-		ComputeProviderDetails *ComputeProviderDetails `json:"compute_provider,omitempty"`
-		ScalingConfiguration   *ScalingConfiguration   `json:"scaling_configuration,omitempty"`
+		Spec *WorkerControllerInstanceSpec `json:"spec,omitempty"`
 	}
 
 	UpdateWorkerControllerInstanceResponse struct{}
@@ -132,28 +117,6 @@ type (
 		CreateTime     *timestamppb.Timestamp `json:"create_time,omitempty"`
 	}
 )
-
-const (
-	ComputeProviderTypeAwsLambda  ComputeProviderType = "aws-lambda"
-	ComputeProviderTypeKnative    ComputeProviderType = "knative"
-	ComputeProviderTypeSubprocess ComputeProviderType = "subprocess"
-
-	ScalingAlgorithmNoSync ScalingAlgorithmType = "no-sync"
-)
-
-var validComputeProviderTypes = map[string]ComputeProviderType{
-	string(ComputeProviderTypeAwsLambda):  ComputeProviderTypeAwsLambda,
-	string(ComputeProviderTypeKnative):    ComputeProviderTypeKnative,
-	string(ComputeProviderTypeSubprocess): ComputeProviderTypeSubprocess,
-}
-
-// ValidComputeProviderType returns the ComputeProviderType for s if s is a valid enum value, and an error otherwise.
-func ValidComputeProviderType(s string) bool {
-	if _, ok := validComputeProviderTypes[s]; ok {
-		return true
-	}
-	return false
-}
 
 func DecodeWorkerControllerInstanceMemo(memo *commonpb.Memo) (*WorkerControllerInstanceMemo, error) {
 	if memo == nil || memo.Fields == nil {
