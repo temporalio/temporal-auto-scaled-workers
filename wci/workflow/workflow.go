@@ -61,11 +61,11 @@ type (
 // history clean so that we have less concern about backwards and forwards compatibility.
 // In steady state (i.e. absence of ongoing updates or signals) the wf should only have
 // a single wft in the history.
-func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion, unsafeMaxVersion func() int, args *iface.WorkerControllerInstanceWorkflowArgs) error {
+func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion, unsafeMaxVersion func() int, args *iface.WorkerControllerInstanceWorkflowArgs, activities *Activities) error {
 	workflowRunner := &WorkflowRunner{
 		WorkerControllerInstanceWorkflowArgs: args,
 		workflowVersion:                      getWorkflowVersion(ctx, unsafeWorkflowVersionGetter),
-		a:                                    nil,
+		a:                                    activities,
 		logger:                               sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName),
 		metrics:                              workflow.GetMetricsHandler(ctx).WithTags(map[string]string{"namespace": args.NamespaceName}),
 		lock:                                 workflow.NewMutex(ctx),
@@ -79,6 +79,8 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 }
 
 func (d *WorkflowRunner) run(ctx workflow.Context) error {
+	var err error
+
 	// make sure we got all fields we want
 	if d.State == nil {
 		d.State = &iface.WorkerControllerInstanceLocalState{}
@@ -87,31 +89,36 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		d.State.CreateTime = timestamppb.New(workflow.Now(ctx))
 	}
 	if d.State.ConflictToken == nil {
-		d.State.ConflictToken, _ = workflow.Now(ctx).MarshalBinary()
+		d.State.ConflictToken, err = workflow.Now(ctx).MarshalBinary()
+		if err != nil {
+			return err
+		}
 	}
-	if err := d.updateMemo(ctx); err != nil {
+	if err = d.updateMemo(ctx); err != nil {
 		return err
 	}
 	d.metrics.Counter(iface.WorkerControllerInstanceCreated.Name()).Inc(1)
 
-	err := workflow.SetQueryHandler(ctx, iface.QueryDescribeWorkerControllerInstance, func() (*iface.QueryDescribeWorkerControllerInstanceResponse, error) {
+	if err = workflow.SetQueryHandler(ctx, iface.QueryDescribeWorkerControllerInstance, func() (*iface.QueryDescribeWorkerControllerInstanceResponse, error) {
 		if d.deleteInstance {
 			return nil, errors.New(iface.ErrInstanceDeleted)
 		}
 		return &iface.QueryDescribeWorkerControllerInstanceResponse{
-			DeploymentName: d.DeploymentName,
-			BuildId:        d.BuildId,
+			DeploymentName:    d.DeploymentName,
+			DeploymentBuildID: d.BuildId,
 
-			ComputeProviderDetails: d.State.ComputeProviderDetails,
-			ScalingConfiguration:   d.State.ScalingConfiguration,
+			Spec: d.State.Spec,
 
 			ConflictToken:        d.State.ConflictToken,
 			CreateTime:           d.State.CreateTime,
 			LastModifierIdentity: d.State.LastModifierIdentity,
 		}, nil
-	})
-	if err != nil {
-		d.logger.Info("SetQueryHandler failed for WorkerControllerInstance workflow with error: " + err.Error())
+	}); err != nil {
+		return err
+	}
+	if err = workflow.SetQueryHandler(ctx, iface.QueryDumpWorkerControllerInstanceLocalState, func() (*iface.WorkerControllerInstanceLocalState, error) {
+		return d.State, nil
+	}); err != nil {
 		return err
 	}
 
@@ -127,13 +134,12 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 
 	// Wait until we can continue as new or are cancelled. The workflow will continue-as-new iff
 	// there are no pending updates/signals and the state has changed.
-	err = workflow.Await(ctx, func() bool {
+	if err = workflow.Await(ctx, func() bool {
 		return d.deleteInstance || // instance is deleted -> it's ok to drop all signals and updates.
 			// There is no pending signal or update, but the state is dirty or forceCaN is requested:
 			(!d.signalHandler.signalSelector.HasPending() && d.signalHandler.processingSignals == 0 && workflow.AllHandlersFinished(ctx) &&
 				(d.forceCAN || d.stateChanged))
-	})
-	if err != nil {
+	}); err != nil {
 		return err
 	}
 
@@ -153,8 +159,11 @@ func (d *WorkflowRunner) validateUpdateInstance(args *iface.UpdateWorkerControll
 	if err := d.ensureNotDeleted(); err != nil {
 		return err
 	}
-	if args.ComputeProviderDetails == nil && args.ScalingConfiguration == nil {
-		return temporal.NewApplicationError("either compute provider details or scaling configuration need to be set", iface.ErrFailedPrecondition)
+	if args.Spec == nil {
+		return temporal.NewApplicationError("worker controller instance spec must be set", iface.ErrFailedPrecondition)
+	}
+	if err := args.Spec.Validate(); err != nil {
+		return err
 	}
 	if args.ConflictToken != nil && !bytes.Equal(args.ConflictToken, d.State.ConflictToken) {
 		return temporal.NewApplicationError("conflict token mismatch", iface.ErrFailedPrecondition)
@@ -168,9 +177,8 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 	}
 
 	// use lock to enforce only one update at a time
-	err := d.lock.Lock(ctx)
-	if err != nil {
-		d.logger.Error("Could not acquire workflow lock")
+	if err := d.lock.Lock(ctx); err != nil {
+		d.logger.Error("Could not acquire workflow lock", "error", err)
 		return nil, serviceerror.NewDeadlineExceeded("Could not acquire workflow lock")
 	}
 	defer func() {
@@ -178,6 +186,8 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		d.stateChanged = true
 		d.lock.Unlock()
 	}()
+
+	// TODO: implement validation and actual update
 
 	return &iface.UpdateWorkerControllerInstanceResponse{}, nil
 }
@@ -195,9 +205,8 @@ func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.
 	}
 
 	// use lock to enforce only one update at a time
-	err := d.lock.Lock(ctx)
-	if err != nil {
-		d.logger.Error("Could not acquire workflow lock")
+	if err := d.lock.Lock(ctx); err != nil {
+		d.logger.Error("Could not acquire workflow lock", "error", err)
 		return &iface.DeleteWorkerControllerInstanceResponse{}, serviceerror.NewDeadlineExceeded("Could not acquire workflow lock")
 	}
 	defer func() {
@@ -256,6 +265,9 @@ func getWorkflowVersion(ctx workflow.Context, unsafeWorkflowVersionGetter func()
 		if err == nil {
 			return ver
 		}
+
+		logger := workflow.GetLogger(ctx)
+		logger.Warn("failed to retrieve intended workflow version", "error", err)
 	}
 	return 0
 }
