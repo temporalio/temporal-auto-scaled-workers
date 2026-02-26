@@ -18,4 +18,14 @@ var (
 		0,
 		`WorkerControllerInstanceWorkflowVersion controls what version of the logic should the manager workflows use.`,
 	)
+	WorkerControllerEnabledComputeProviders = dynamicconfig.NewGlobalTypedSetting(
+		"workercontroller.compute_providers.enabled",
+		[]string(nil),
+		`WorkerControllerEnabledComputeProviders defines the list of compute providers enabled for use.`,
+	)
+	WorkerControllerEnabledScalingAlgorithms = dynamicconfig.NewGlobalTypedSetting(
+		"workercontroller.scaling_algorithms.enabled",
+		[]string(nil),
+		`WorkerControllerEnabledScalingAlgorithm defines the list of scaling algorithms enabled for use.`,
+	)
 )
