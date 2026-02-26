@@ -4,16 +4,19 @@ import (
 	"github.com/temporalio/temporal-managed-workers/wci/client"
 	instancewf "github.com/temporalio/temporal-managed-workers/wci/workflow"
 	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
+	sdkclient "go.temporal.io/sdk/client"
 	sdkworker "go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/namespace"
+	"go.temporal.io/server/common/sdk"
 	workercommon "go.temporal.io/server/service/worker/common"
 )
 
 type (
 	workerComponent struct {
-		dynamicConfig *dynamicconfig.Collection
+		dynamicConfig    *dynamicconfig.Collection
+		sdkClientFactory sdk.ClientFactory
 	}
 )
 
@@ -24,6 +27,13 @@ func (s *workerComponent) DedicatedWorkerOptions(ns *namespace.Namespace) *worke
 }
 
 func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Namespace, details workercommon.RegistrationDetails) func() {
+	// this should not block because it uses an existing grpc connection
+	sdkClient := s.sdkClientFactory.NewClient(sdkclient.Options{
+		Namespace:     ns.Name().String(),
+		DataConverter: sdk.PreferProtoDataConverter,
+	})
+
+	activities := instancewf.NewActivities(ns, s.dynamicConfig, sdkClient.WorkflowService())
 	versionWorkflow := func(ctx workflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
 		workflowVersionGetter := func() instancewf.WorkerControllerInstanceWorkflowVersion {
 			return instancewf.WorkerControllerInstanceWorkflowVersion(client.WorkerControllerInstanceWorkflowVersion.Get(s.dynamicConfig)(ns.Name().String()))
@@ -31,9 +41,10 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 		maxVersionsGetter := func() int {
 			return client.WorkerControllerMaxInstances.Get(s.dynamicConfig)(ns.Name().String())
 		}
-		return instancewf.Workflow(ctx, workflowVersionGetter, maxVersionsGetter, args)
+		return instancewf.Workflow(ctx, workflowVersionGetter, maxVersionsGetter, args, activities)
 	}
 	registry.RegisterWorkflowWithOptions(versionWorkflow, workflow.RegisterOptions{Name: iface.WorkerControllerInstanceWorkflowType})
+	registry.RegisterActivity(activities)
 
 	return nil
 }

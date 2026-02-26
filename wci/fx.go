@@ -139,7 +139,7 @@ func PerNamespaceWorkerManagerProvider(
 	dynamicConfig *dynamicconfig.Collection,
 ) *worker.PerNamespaceWorkerManager {
 	components := []workercommon.PerNSWorkerComponent{
-		&workerComponent{dynamicConfig: dynamicConfig},
+		&workerComponent{dynamicConfig: dynamicConfig, sdkClientFactory: sdkClientFactory},
 	}
 
 	return worker.NewPerNamespaceWorkerManager(

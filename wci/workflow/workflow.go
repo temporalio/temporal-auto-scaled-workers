@@ -61,11 +61,11 @@ type (
 // history clean so that we have less concern about backwards and forwards compatibility.
 // In steady state (i.e. absence of ongoing updates or signals) the wf should only have
 // a single wft in the history.
-func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion, unsafeMaxVersion func() int, args *iface.WorkerControllerInstanceWorkflowArgs) error {
+func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion, unsafeMaxVersion func() int, args *iface.WorkerControllerInstanceWorkflowArgs, activities *Activities) error {
 	workflowRunner := &WorkflowRunner{
 		WorkerControllerInstanceWorkflowArgs: args,
 		workflowVersion:                      getWorkflowVersion(ctx, unsafeWorkflowVersionGetter),
-		a:                                    nil,
+		a:                                    activities,
 		logger:                               sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName),
 		metrics:                              workflow.GetMetricsHandler(ctx).WithTags(map[string]string{"namespace": args.NamespaceName}),
 		lock:                                 workflow.NewMutex(ctx),
