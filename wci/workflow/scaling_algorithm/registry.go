@@ -21,7 +21,7 @@ type (
 	ScalingAction struct {
 		SpecKey string     `json:"spec_key"`
 		Action  ActionType `json:"action"`
-		Count   *int       `json:"count,omitempty"`
+		Count   *int32     `json:"count,omitempty"`
 	}
 
 	ScalingMetricsSnapshot struct {

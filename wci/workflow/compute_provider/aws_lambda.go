@@ -1,0 +1,108 @@
+package computeprovider
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/temporalio/temporal-managed-workers/wci/client"
+	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
+	"go.temporal.io/server/common/dynamicconfig"
+)
+
+const (
+	configAWSLambdaARN  = "arn"
+	configAWSLambdaRole = "role"
+)
+
+type awsLambdaComputeProvider struct {
+	intermediaryRoles [][]client.AWSIAMRoleRequest
+}
+
+func init() {
+	RegisterComputeProvider(iface.ComputeProviderTypeAWSLambda, NewAWSLambdaComputeProvider)
+}
+
+func NewAWSLambdaComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (ComputeProvider, error) {
+	var intermediaryRoles [][]client.AWSIAMRoleRequest
+	if dc != nil {
+		intermediaryRoles = client.WorkerControllerAWSIntermediaryRoles.Get(dc)()
+	}
+
+	return &awsLambdaComputeProvider{
+		intermediaryRoles: intermediaryRoles,
+	}, nil
+}
+
+func (p *awsLambdaComputeProvider) LaunchStrategy() LaunchStrategy {
+	return LaunchStrategyInvoke
+}
+
+func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, cfg iface.ComputeProviderConfig) error {
+	lambdaClient, arn, err := p.getLambdaClientAndARN(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	if _, err = lambdaClient.GetFunction(ctx, &lambda.GetFunctionInput{
+		FunctionName: aws.String(arn),
+	}); err != nil {
+		return fmt.Errorf("lambda GetFunction failed: %w", err)
+	}
+	return nil
+}
+
+func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, cfg iface.ComputeProviderConfig) error {
+	lambdaClient, arn, err := p.getLambdaClientAndARN(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	resp, err := lambdaClient.Invoke(ctx, &lambda.InvokeInput{
+		FunctionName:   aws.String(arn),
+		InvocationType: types.InvocationTypeEvent,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to invoke lambda: %w", err)
+	}
+
+	if resp.FunctionError != nil {
+		return fmt.Errorf("failed to invoke lambda: %s", *resp.FunctionError)
+	}
+
+	return nil
+}
+
+func (p *awsLambdaComputeProvider) UpdateWorkerSetSize(_ context.Context, _ iface.ComputeProviderConfig, _ int32) error {
+	return errors.ErrUnsupported
+}
+
+// getLambdaClientAndARN builds AWS config (including intermediary and config role assumption), returns a Lambda client and the function ARN.
+func (p *awsLambdaComputeProvider) getLambdaClientAndARN(ctx context.Context, cfg iface.ComputeProviderConfig) (*lambda.Client, string, error) {
+	arn, ok := cfg[configAWSLambdaARN].(string)
+	if !ok || arn == "" {
+		return nil, "", fmt.Errorf("AWS Lambda Function ARN not found or invalid")
+	}
+
+	region, err := extractRegionFromARN(arn)
+	if err != nil {
+		return nil, "", err
+	}
+
+	roleARN, _ := cfg[configAWSLambdaRole].(string)
+	if roleARN != "" {
+		if err := validateRoleARN(roleARN); err != nil {
+			return nil, "", err
+		}
+	}
+
+	awsConfig, err := buildAWSConfig(ctx, region, roleARN, p.intermediaryRoles)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return lambda.NewFromConfig(awsConfig), arn, nil
+}

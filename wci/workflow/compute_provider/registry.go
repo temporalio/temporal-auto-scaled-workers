@@ -35,7 +35,7 @@ type (
 		// UpdateWorkerSetSize updates the size of the managed worker set to the provided 'size' when using
 		// the LaunchStrategy 'worker-set'. An error is returned when the size update fails, but might not
 		// if the triggered instance starts/stops fail. Always returns an error for other launch stratgies.
-		UpdateWorkerSetSize(ctx context.Context, config iface.ComputeProviderConfig, size int) error
+		UpdateWorkerSetSize(ctx context.Context, config iface.ComputeProviderConfig, size int32) error
 	}
 )
 
