@@ -2,6 +2,18 @@ package client
 
 import "go.temporal.io/server/common/dynamicconfig"
 
+type (
+	AWSIAMRoleRequest struct {
+		RoleARN         string
+		RoleSessionName string
+		ExternalID      *string
+	}
+
+	GCPIAMServiceAccountRequest struct {
+		ServiceAccountEmail string
+	}
+)
+
 var (
 	WorkerControllerEnabled = dynamicconfig.NewNamespaceBoolSetting(
 		"workercontroller.enabled",
@@ -17,6 +29,16 @@ var (
 		"workercontroller.instanceWorkflowVersion",
 		0,
 		`WorkerControllerInstanceWorkflowVersion controls what version of the logic should the manager workflows use.`,
+	)
+	WorkerControllerAWSIntermediaryRoles = dynamicconfig.NewGlobalTypedSetting(
+		"workercontroller.compute_providers.aws.intermediary_roles",
+		[][]AWSIAMRoleRequest(nil),
+		`WorkerControllerAWSIntermediaryRoles defines the role chain to assume before assuming the per-provider role.`,
+	)
+	WorkerControllerGCPIntermediaryServiceAccounts = dynamicconfig.NewGlobalTypedSetting(
+		"workercontroller.compute_providers.gcp.intermediary_service_accounts",
+		[][]GCPIAMServiceAccountRequest(nil),
+		`WorkerControllerGCPIntermediaryServiceAccounts defines the service account chaining to assume before assuming the per-provider role.`,
 	)
 	WorkerControllerEnabledComputeProviders = dynamicconfig.NewGlobalTypedSetting(
 		"workercontroller.compute_providers.enabled",

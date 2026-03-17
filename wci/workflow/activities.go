@@ -40,12 +40,11 @@ type (
 
 	InvokeWorkerActivityRequest struct {
 		ComputeConfig *iface.ComputeProviderSpec `json:"compute_config"`
-		Count         int                        `json:"count"`
 	}
 
 	UpdateWorkerSetSizeActivityRequest struct {
 		ComputeConfig *iface.ComputeProviderSpec `json:"compute_config"`
-		UpdatedSize   int                        `json:"updated_size"`
+		UpdatedSize   int32                      `json:"updated_size"`
 	}
 
 	HandleTaskAddSignalActivityRequest struct {
@@ -191,7 +190,7 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		scalingAlgo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, entry)
 		if err != nil {
 			logger.Error("failed to get scaling algorithm", "error", err)
-			return &HandleTaskAddSignalActivityResponse{}, nil
+			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 		}
 
 		scalingStatus := req.ScalingStatus[specKey]
@@ -271,15 +270,6 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 
 	for _, entry := range req.Spec.TaskTypeSpecs {
 		specKey := entry.GetSpecKey()
-
-		scalingAlgo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, entry)
-		if err != nil {
-			logger.Error("failed to get scaling algorithm", "error", err)
-			continue
-		}
-
-		logger.Info("Loaded scaling algo", "scaling_algo", scalingAlgo, "config", scalingConfig)
-
 		scalingStatus := req.ScalingStatus[specKey]
 
 		scalingMetricsSnapshot := metricsSnapshot
@@ -293,11 +283,28 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 			scalingMetricsSnapshot.Nexus = nil
 		}
 
+		scalingAlgo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, entry)
+		if err != nil {
+			logger.Error("failed to get scaling algorithm", "error", err)
+
+			// let's keep the last state so we can try again in the next round
+			// instead of from scratch
+			updatedScalingStatus[specKey] = scalingStatus
+			continue
+		}
+
+		logger.Info("Loaded scaling algo", "scaling_algo", scalingAlgo, "config", scalingConfig)
+
 		response, err := scalingAlgo.ProcessMetricsPoll(ctx, scalingConfig, scalingStatus, scalingMetricsSnapshot)
 		if err != nil {
 			logger.Error("failed to process metrics poll", "error", err)
+
+			// let's keep the last state so we can try again in the next round
+			// instead of from scratch
+			updatedScalingStatus[specKey] = scalingStatus
 			continue
 		}
+
 		updatedScalingStatus[specKey] = response.Status
 		for _, act := range response.Actions {
 			act.SpecKey = specKey

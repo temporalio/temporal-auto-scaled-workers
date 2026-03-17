@@ -309,7 +309,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			continue
 		}
 
-		count := 1
+		count := int32(1)
 		if action.Count != nil {
 			if *action.Count < 0 {
 				d.logger.Warn("Scaling action has invalid count value", "count", *action.Count)
@@ -321,12 +321,15 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 
 		switch action.Action {
 		case scalingalgorithm.ActionTypeInvokeWorker:
+			if count != 1 {
+				d.logger.Warn("Invalid count for action type invoke worker received", "count", count)
+			}
+
 			if err := workflow.ExecuteActivity(
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 2 * time.Minute, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.InvokeWorker,
 				InvokeWorkerActivityRequest{
 					ComputeConfig: &spec.Compute,
-					Count:         count,
 				},
 			).Get(ctx, nil); err != nil {
 				d.logger.Warn("Failed to execute new worker instance activity", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "error", err)

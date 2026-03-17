@@ -41,22 +41,22 @@ type (
 )
 
 const (
-	ComputeProviderTypeAwsLambda   ComputeProviderType = "aws-lambda"
-	ComputeProviderTypeAwsEcs      ComputeProviderType = "aws-ecs"
+	ComputeProviderTypeAWSLambda   ComputeProviderType = "aws-lambda"
+	ComputeProviderTypeAWSECS      ComputeProviderType = "aws-ecs"
 	ComputeProviderTypeSubprocess  ComputeProviderType = "subprocess"
 	ComputeProviderTypeK8s         ComputeProviderType = "k8s"
-	ComputeProviderTypeGcpCloudRun ComputeProviderType = "gcp-cloud-run"
+	ComputeProviderTypeGCPCloudRun ComputeProviderType = "gcp-cloud-run"
 
 	ScalingAlgorithmNoSync    ScalingAlgorithmType = "no-sync"
 	ScalingAlgorithmRateBased ScalingAlgorithmType = "rate-based"
 )
 
 var validComputeProviderTypes = map[string]ComputeProviderType{
-	string(ComputeProviderTypeAwsLambda):   ComputeProviderTypeAwsLambda,
-	string(ComputeProviderTypeAwsEcs):      ComputeProviderTypeAwsEcs,
+	string(ComputeProviderTypeAWSLambda):   ComputeProviderTypeAWSLambda,
+	string(ComputeProviderTypeAWSECS):      ComputeProviderTypeAWSECS,
 	string(ComputeProviderTypeSubprocess):  ComputeProviderTypeSubprocess,
 	string(ComputeProviderTypeK8s):         ComputeProviderTypeK8s,
-	string(ComputeProviderTypeGcpCloudRun): ComputeProviderTypeGcpCloudRun,
+	string(ComputeProviderTypeGCPCloudRun): ComputeProviderTypeGCPCloudRun,
 }
 
 var validScalingAlgorithmTypes = map[string]ScalingAlgorithmType{
