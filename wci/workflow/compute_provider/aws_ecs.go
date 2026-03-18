@@ -67,6 +67,11 @@ func (p *awsECSComputeProvider) ValidateConfig(ctx context.Context, cfg iface.Co
 	if svc.Status == nil || *svc.Status != "ACTIVE" {
 		return fmt.Errorf("ECS service %q is not ACTIVE", service)
 	}
+
+	if err := p.checkExternalID(ctx, cfg, cluster); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -89,6 +94,28 @@ func (p *awsECSComputeProvider) UpdateWorkerSetSize(ctx context.Context, cfg ifa
 		return fmt.Errorf("ECS UpdateService failed: %w", err)
 	}
 	return nil
+}
+
+func (p *awsECSComputeProvider) checkExternalID(ctx context.Context, cfg iface.ComputeProviderConfig, cluster string) error {
+	roleARN, _ := cfg[configAWSECSRole].(string)
+	eid, _ := cfg[configAWSECSRoleExternalID].(string)
+	if roleARN == "" || eid == "" {
+		return nil
+	}
+	var region string
+	if strings.HasPrefix(cluster, "arn:") {
+		var err error
+		region, err = extractRegionFromARN(cluster)
+		if err != nil {
+			return fmt.Errorf("cannot verify external ID enforcement: failed to extract region from cluster ARN %q: %w", cluster, err)
+		}
+	} else {
+		region, _ = cfg[configAWSECSRegion].(string)
+	}
+	if region == "" {
+		return fmt.Errorf("cannot verify external ID enforcement for role %q: region is required but could not be determined; provide a region in the config or use a cluster ARN that contains a region", roleARN)
+	}
+	return verifyExternalIDEnforcedFn(ctx, region, roleARN, p.intermediaryRoles)
 }
 
 // getECSClientAndParams builds AWS config (including intermediary and config role assumption),

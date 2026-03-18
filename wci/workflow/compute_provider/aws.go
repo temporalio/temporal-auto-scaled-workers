@@ -2,6 +2,7 @@ package computeprovider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -11,20 +12,31 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	smithy "github.com/aws/smithy-go"
 	"github.com/temporalio/temporal-managed-workers/wci/client"
 )
 
-// buildAWSConfig loads the default AWS config for the given region, applies any
-// intermediary role chain, then optionally assumes a final role.
-func buildAWSConfig(ctx context.Context, region, roleARN string, externalID *string, intermediaryRoles [][]client.AWSIAMRoleRequest) (aws.Config, error) {
+type stsAPI interface {
+	AssumeRole(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error)
+}
+
+// buildBaseAWSConfig loads default AWS config and applies any intermediary roles.
+func buildBaseAWSConfig(ctx context.Context, region string, intermediaryRoles [][]client.AWSIAMRoleRequest) (aws.Config, error) {
 	awsConfig, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		return aws.Config{}, fmt.Errorf("failed to load AWS config: %w", err)
 	}
+
+	// the AWS compute providers support role chaining to enable abstracting the role the temporal server has
+	// from the role that can assume the final execution/invocation role. This might be used in more complex
+	// setups to allow for rotating the AWS accounts used for both ends. Basically emulating service principals.
 	for _, step := range intermediaryRoles {
 		if len(step) == 0 {
 			continue
 		}
+
+		// At each stage of the role chaining, one of multiple roles might be chosen to proceed. This allows for load balancing
+		// requests across roles/accounts and reduces the impact of any of these accounts failing (until it is removed from the config).
 		req := step[rand.Intn(len(step))]
 		if err := validateRoleARN(req.RoleARN); err != nil {
 			return aws.Config{}, err
@@ -38,6 +50,16 @@ func buildAWSConfig(ctx context.Context, region, roleARN string, externalID *str
 			return aws.Config{}, err
 		}
 	}
+	return awsConfig, nil
+}
+
+// buildAWSConfig loads the default AWS config for the given region, applies any
+// intermediary role chain, then optionally assumes a final role.
+func buildAWSConfig(ctx context.Context, region, roleARN string, externalID *string, intermediaryRoles [][]client.AWSIAMRoleRequest) (aws.Config, error) {
+	awsConfig, err := buildBaseAWSConfig(ctx, region, intermediaryRoles)
+	if err != nil {
+		return aws.Config{}, err
+	}
 	if roleARN != "" {
 		awsConfig, err = assumeRoleWithRequest(ctx, awsConfig, &client.AWSIAMRoleRequest{
 			RoleARN:         roleARN,
@@ -49,6 +71,38 @@ func buildAWSConfig(ctx context.Context, region, roleARN string, externalID *str
 		}
 	}
 	return awsConfig, nil
+}
+
+// checkExternalIDEnforced is the testable core: assumes roleARN with no external ID.
+// If the call succeeds the trust policy does not enforce the external ID → error.
+// An AccessDenied response confirms enforcement. Any other error (network, throttle, etc.)
+// is surfaced so the caller knows the check could not be completed.
+func checkExternalIDEnforced(ctx context.Context, stsClient stsAPI, roleARN string) error {
+	_, err := stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{
+		RoleArn:         aws.String(roleARN),
+		RoleSessionName: aws.String("managed-workers-aws"),
+	})
+	if err == nil {
+		return fmt.Errorf("role %s does not require the configured external ID; update the role's trust policy to enforce the aws:ExternalId condition", roleARN)
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "AccessDenied" {
+		return nil
+	}
+	return fmt.Errorf("unable to verify external ID enforcement for role %s: %w", roleARN, err)
+}
+
+// verifyExternalIDEnforcedFn is a package-level variable so tests can swap it out without
+// network calls.
+var verifyExternalIDEnforcedFn = verifyExternalIDEnforced
+
+// verifyExternalIDEnforced builds the base config then delegates to checkExternalIDEnforced.
+func verifyExternalIDEnforced(ctx context.Context, region, roleARN string, intermediaryRoles [][]client.AWSIAMRoleRequest) error {
+	baseConfig, err := buildBaseAWSConfig(ctx, region, intermediaryRoles)
+	if err != nil {
+		return err
+	}
+	return checkExternalIDEnforced(ctx, sts.NewFromConfig(baseConfig), roleARN)
 }
 
 func assumeRoleWithRequest(ctx context.Context, cfg aws.Config, req *client.AWSIAMRoleRequest) (aws.Config, error) {
