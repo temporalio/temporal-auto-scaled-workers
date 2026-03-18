@@ -90,7 +90,7 @@ services:
       membershipPort: 6939
       bindOnLocalHost: true
 
-  worker-controller:
+  worker-controller-workers:
     rpc:
       grpcPort: 7240
       membershipPort: 6940

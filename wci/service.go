@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	ServiceName primitives.ServiceName = "worker-controller"
+	ServiceName primitives.ServiceName = "worker-controller-workers"
 
 	// ServiceType is the number identification for the service in the DB
 	// this needs to be distinct from the values already defined in the
@@ -81,8 +81,8 @@ func NewService(
 
 func (s *Service) Start() {
 	s.logger.Info(
-		"worker-controller starting",
-		wciLog.ComponentWorkerController,
+		"worker-controller-workers starting",
+		wciLog.ComponentWorkerControllerWorkers,
 	)
 
 	metrics.RestartCount.With(s.metricsHandler).Record(1)
@@ -100,8 +100,8 @@ func (s *Service) Start() {
 	)
 
 	s.logger.Info(
-		"worker-controller service started",
-		wciLog.ComponentWorkerController,
+		"worker-controller-workers service started",
+		wciLog.ComponentWorkerControllerWorkers,
 		tag.Address(s.hostInfo.GetAddress()),
 	)
 }
@@ -113,8 +113,8 @@ func (s *Service) Stop() {
 	s.clusterMetadata.Stop()
 
 	s.logger.Info(
-		"worker-controller service stopped",
-		wciLog.ComponentWorkerController,
+		"worker-controller-workers service stopped",
+		wciLog.ComponentWorkerControllerWorkers,
 		tag.Address(s.hostInfo.GetAddress()),
 	)
 }
