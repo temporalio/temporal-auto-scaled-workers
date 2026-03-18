@@ -16,7 +16,8 @@ import (
 
 const (
 	// Workflow types
-	WorkerControllerInstanceWorkflowType = "temporal-sys-worker-controller-instance-workflow"
+	WorkerControllerInstanceWorkflowType         = "temporal-sys-worker-controller-instance-workflow"
+	WorkerControllerInstanceValidateWorkflowType = "temporal-sys-worker-controller-instance-validate-workflow"
 
 	// Namespace division
 	WorkerControllerInstanceNamespaceDivision = "TemporalWorkerControllerInstance"
@@ -56,6 +57,10 @@ type (
 		LastBacklogCount   int64   `json:"last_backlog_count"`
 		LastArrivalRate    float32 `json:"last_arrival_rate"`
 		LastProcessingRate float32 `json:"last_processing_rate"`
+	}
+
+	ValidateWorkerControllerInstanceSpecWorkflowArgs struct {
+		Spec *WorkerControllerInstanceSpec `json:"spec"`
 	}
 
 	WorkerControllerInstanceWorkflowArgs struct {
