@@ -118,7 +118,7 @@ func validateFloat64InMap(m map[string]any, key string, minValidValue float64) e
 	case string:
 		i, err := strconv.ParseFloat(val, 64)
 		if err != nil || i < minValidValue {
-			return serviceerror.NewInvalidArgumentf("%s must be a number and at least %d", key, minValidValue)
+			return serviceerror.NewInvalidArgumentf("%s must be a number and at least %v", key, minValidValue)
 		}
 	default:
 		return serviceerror.NewInvalidArgumentf("%s must be a number and at least %v", key, minValidValue)

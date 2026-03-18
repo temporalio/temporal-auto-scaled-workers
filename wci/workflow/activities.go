@@ -175,6 +175,9 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddSignalActivityRequest) (*HandleTaskAddSignalActivityResponse, error) {
 	logger := activity.GetLogger(ctx)
 	updatedScalingStatus := req.ScalingStatus
+	if updatedScalingStatus == nil {
+		updatedScalingStatus = map[string]iface.ScalingAlgorithmStatus{}
+	}
 
 	if req.Spec == nil {
 		logger.Error("Did not receive a spec")
@@ -293,7 +296,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 			continue
 		}
 
-		logger.Info("Loaded scaling algo", "scaling_algo", scalingAlgo, "config", scalingConfig)
+		logger.Debug("Loaded scaling algo", "scaling_algo", scalingAlgo, "config", scalingConfig)
 
 		response, err := scalingAlgo.ProcessMetricsPoll(ctx, scalingConfig, scalingStatus, scalingMetricsSnapshot)
 		if err != nil {
@@ -333,7 +336,10 @@ func (a *Activities) getScalingAlgorithmAndConfig(ctx context.Context, entry ifa
 		return nil, nil, err
 	}
 	if scalingAlgo == nil {
-		return nil, nil, fmt.Errorf("Unknown scaling algorithm")
+		if entry.Scaling != nil {
+			return nil, nil, fmt.Errorf("unknown scaling algorithm %q", entry.Scaling.ScalingAlgorithm)
+		}
+		return nil, nil, fmt.Errorf("unknown default scaling algorithm for compute provider %q", entry.Compute.ProviderType)
 	}
 	var scalingConfig iface.ScalingAlgorithmConfig
 	if entry.Scaling != nil {
