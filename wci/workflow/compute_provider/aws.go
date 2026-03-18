@@ -16,7 +16,7 @@ import (
 
 // buildAWSConfig loads the default AWS config for the given region, applies any
 // intermediary role chain, then optionally assumes a final role.
-func buildAWSConfig(ctx context.Context, region, roleARN string, intermediaryRoles [][]client.AWSIAMRoleRequest) (aws.Config, error) {
+func buildAWSConfig(ctx context.Context, region, roleARN string, externalID *string, intermediaryRoles [][]client.AWSIAMRoleRequest) (aws.Config, error) {
 	awsConfig, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		return aws.Config{}, fmt.Errorf("failed to load AWS config: %w", err)
@@ -42,6 +42,7 @@ func buildAWSConfig(ctx context.Context, region, roleARN string, intermediaryRol
 		awsConfig, err = assumeRoleWithRequest(ctx, awsConfig, &client.AWSIAMRoleRequest{
 			RoleARN:         roleARN,
 			RoleSessionName: "managed-workers-aws",
+			ExternalID:      externalID,
 		})
 		if err != nil {
 			return aws.Config{}, err

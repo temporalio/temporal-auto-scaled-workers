@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	configAWSLambdaARN  = "arn"
-	configAWSLambdaRole = "role"
+	configAWSLambdaARN            = "arn"
+	configAWSLambdaRole           = "role"
+	configAWSLambdaRoleExternalID = "role_external_id"
 )
 
 type awsLambdaComputeProvider struct {
@@ -99,7 +100,12 @@ func (p *awsLambdaComputeProvider) getLambdaClientAndARN(ctx context.Context, cf
 		}
 	}
 
-	awsConfig, err := buildAWSConfig(ctx, region, roleARN, p.intermediaryRoles)
+	var roleExternalID *string
+	if eid, ok := cfg[configAWSLambdaRoleExternalID].(string); ok && eid != "" {
+		roleExternalID = &eid
+	}
+
+	awsConfig, err := buildAWSConfig(ctx, region, roleARN, roleExternalID, p.intermediaryRoles)
 	if err != nil {
 		return nil, "", err
 	}
