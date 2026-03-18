@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	configAWSECSCluster = "cluster"
-	configAWSECSService = "service"
-	configAWSECSRegion  = "region"
-	configAWSECSRole    = "role"
+	configAWSECSCluster        = "cluster"
+	configAWSECSService        = "service"
+	configAWSECSRegion         = "region"
+	configAWSECSRole           = "role"
+	configAWSECSRoleExternalID = "role_external_id"
 )
 
 type awsECSComputeProvider struct {
@@ -126,7 +127,12 @@ func (p *awsECSComputeProvider) getECSClientAndParams(ctx context.Context, cfg i
 		}
 	}
 
-	awsConfig, err := buildAWSConfig(ctx, region, roleARN, p.intermediaryRoles)
+	var roleExternalID *string
+	if eid, ok := cfg[configAWSECSRoleExternalID].(string); ok && eid != "" {
+		roleExternalID = &eid
+	}
+
+	awsConfig, err := buildAWSConfig(ctx, region, roleARN, roleExternalID, p.intermediaryRoles)
 	if err != nil {
 		return nil, "", "", err
 	}
