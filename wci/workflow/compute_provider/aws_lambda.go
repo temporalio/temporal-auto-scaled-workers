@@ -53,6 +53,11 @@ func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, cfg iface
 	}); err != nil {
 		return fmt.Errorf("lambda GetFunction failed: %w", err)
 	}
+
+	if err := p.checkExternalID(ctx, cfg, arn); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -79,6 +84,19 @@ func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, cfg iface.C
 
 func (p *awsLambdaComputeProvider) UpdateWorkerSetSize(_ context.Context, _ iface.ComputeProviderConfig, _ int32) error {
 	return errors.ErrUnsupported
+}
+
+func (p *awsLambdaComputeProvider) checkExternalID(ctx context.Context, cfg iface.ComputeProviderConfig, arn string) error {
+	roleARN, _ := cfg[configAWSLambdaRole].(string)
+	eid, _ := cfg[configAWSLambdaRoleExternalID].(string)
+	if roleARN == "" || eid == "" {
+		return nil
+	}
+	region, err := extractRegionFromARN(arn)
+	if err != nil {
+		return fmt.Errorf("cannot verify external ID enforcement: failed to extract region from Lambda ARN %q: %w", arn, err)
+	}
+	return verifyExternalIDEnforcedFn(ctx, region, roleARN, p.intermediaryRoles)
 }
 
 // getLambdaClientAndARN builds AWS config (including intermediary and config role assumption), returns a Lambda client and the function ARN.
