@@ -70,6 +70,13 @@ type (
 			spec *iface.WorkerControllerInstanceSpec,
 		) error
 
+		ValidateWorkerControllerInstanceSpec(
+			ctx context.Context,
+			namespaceEntry *namespace.Namespace,
+			spec *iface.WorkerControllerInstanceSpec,
+			identity string,
+		) error
+
 		DeleteWorkerControllerInstance(
 			ctx context.Context,
 			namespaceEntry *namespace.Namespace,
@@ -284,6 +291,41 @@ func (d *clientImpl) UpdateWorkerControllerInstance(
 		return serviceerror.NewInternal(failure.Message)
 	}
 	return nil
+}
+
+func (d *clientImpl) ValidateWorkerControllerInstanceSpec(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	spec *iface.WorkerControllerInstanceSpec,
+	identity string,
+) (retErr error) {
+	//revive:disable-next-line:defer
+	defer d.convertAndRecordError("ValidateWorkerControllerInstanceSpec", nil, &retErr, namespaceEntry.Name(), identity)()
+
+	if spec == nil {
+		return serviceerror.NewInvalidArgument("spec must be provided")
+	}
+	if err := spec.Validate(); err != nil {
+		return err
+	}
+
+	workflowID := uuid.NewString()
+	d.logger.Debug("starting validate worker controller instance spec workflow", tag.WorkflowID(workflowID))
+
+	return startWorkflowAndWait(
+		ctx,
+		d.historyClient,
+		namespaceEntry,
+		d.controllerTaskQueueName,
+		iface.WorkerControllerInstanceValidateWorkflowType,
+		workflowID,
+		&iface.ValidateWorkerControllerInstanceSpecWorkflowArgs{
+			Spec: spec,
+		},
+		identity,
+		uuid.NewString(),
+		validateWorkflowExecutionTimeout,
+	)
 }
 
 func (d *clientImpl) DeleteWorkerControllerInstance(

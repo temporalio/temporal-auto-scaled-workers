@@ -16,6 +16,14 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+const (
+	ValidateSpecActivityTimeout        = 2 * time.Second
+	PullStatsActivityTimeout           = 15 * time.Second
+	HandleTaskAddSignalActivityTimeout = 15 * time.Second
+	InvokeWorkerActivityTimeout        = 2 * time.Minute
+	UpdateWorkerSetSizeActivityTimeout = 2 * time.Minute
+)
+
 type WorkerControllerInstanceWorkflowVersion int64
 
 const (
@@ -190,7 +198,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 
 	if args.Spec != nil {
 		if err := workflow.ExecuteActivity(
-			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 2 * time.Second, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
+			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.ValidateSpec,
 			&ValidateSpecRequest{Spec: args.Spec},
 		).Get(ctx, nil); err != nil {
@@ -240,7 +248,7 @@ func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.
 func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration {
 	var resp PullStatsActivityResponse
 	if err := workflow.ExecuteActivity(
-		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 15 * time.Second, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
+		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: PullStatsActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 		d.a.PullStats,
 		&PullStatsActivityRequest{
 			NamespaceName:     d.NamespaceName,
@@ -271,7 +279,7 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 
 	var resp HandleTaskAddSignalActivityResponse
 	if err := workflow.ExecuteLocalActivity(
-		workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: 15 * time.Second, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
+		workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: HandleTaskAddSignalActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 		d.a.HandleTaskAddSignal,
 		HandleTaskAddSignalActivityRequest{
 			Request: *req,
@@ -326,7 +334,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			}
 
 			if err := workflow.ExecuteActivity(
-				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 2 * time.Minute, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
+				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: InvokeWorkerActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.InvokeWorker,
 				InvokeWorkerActivityRequest{
 					ComputeConfig: &spec.Compute,
@@ -336,7 +344,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			}
 		case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
 			if err := workflow.ExecuteActivity(
-				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 2 * time.Minute, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
+				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: UpdateWorkerSetSizeActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.UpdateWorkerSetSize,
 				UpdateWorkerSetSizeActivityRequest{
 					ComputeConfig: &spec.Compute,

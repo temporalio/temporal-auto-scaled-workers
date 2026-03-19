@@ -14,6 +14,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/namespace"
 )
@@ -87,7 +88,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	logger := activity.GetLogger(ctx)
 
 	if req == nil || req.Spec == nil {
-		return errors.Errorf("Invalid activity request")
+		return temporal.NewApplicationError("Invalid activity request", "InvalidArgument")
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, validateSpecTimeout)
@@ -96,32 +97,32 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	for _, entry := range req.Spec.TaskTypeSpecs {
 		provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.dc)
 		if err != nil {
-			return err
+			return temporal.NewApplicationError(err.Error(), "InvalidArgument")
 		}
 		if provider == nil {
-			return errors.Errorf("Could not instantiate compute provider with type '%s'", entry.Compute.ProviderType)
+			return temporal.NewApplicationError(fmt.Sprintf("Could not instantiate compute provider with type '%s'", entry.Compute.ProviderType), "InvalidArgument")
 		}
 		logger.Debug("Validating compute provider", "compute_provider_type", entry.Compute.ProviderType)
 		if err := provider.ValidateConfig(timeoutCtx, entry.Compute.Config); err != nil {
-			return err
+			return temporal.NewApplicationError(err.Error(), "InvalidArgument")
 		}
 
 		if entry.Scaling != nil {
 			scalingAlgo, err := scalingalgorithm.GetScalingAlgorithm(timeoutCtx, entry.Scaling.ScalingAlgorithm, a.dc)
 			if err != nil {
-				return err
+				return temporal.NewApplicationError(err.Error(), "InvalidArgument")
 			}
 			if scalingAlgo == nil {
-				return errors.Errorf("Could not instantiate scaling algorithm with type '%s'", entry.Scaling.ScalingAlgorithm)
+				return temporal.NewApplicationError(fmt.Sprintf("Could not instantiate scaling algorithm with type '%s'", entry.Scaling.ScalingAlgorithm), "InvalidArgument")
 			}
 			logger.Debug("Validating scaling algorithm", "scaling_algorithm_type", entry.Scaling.ScalingAlgorithm)
 			if err := scalingAlgo.ValidateConfig(timeoutCtx, entry.Scaling.Config); err != nil {
-				return err
+				return temporal.NewApplicationError(err.Error(), "InvalidArgument")
 			}
 
 			compatibleLaunchStrategies := scalingAlgo.CompatibleLaunchStrategies()
 			if !slices.Contains(compatibleLaunchStrategies, provider.LaunchStrategy()) {
-				return errors.Errorf("Scaling Algorithm '%s' is not compatible with compute provider '%s'", entry.Scaling.ScalingAlgorithm, entry.Compute.ProviderType)
+				return temporal.NewApplicationError(fmt.Sprintf("Scaling Algorithm '%s' is not compatible with compute provider '%s'", entry.Scaling.ScalingAlgorithm, entry.Compute.ProviderType), "InvalidArgument")
 			}
 		}
 	}

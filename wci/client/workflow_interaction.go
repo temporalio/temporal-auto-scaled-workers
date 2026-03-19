@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
 	commonpb "go.temporal.io/api/common/v1"
@@ -20,7 +21,107 @@ import (
 	"go.temporal.io/server/common/persistence/visibility/manager"
 	"go.temporal.io/server/common/sdk"
 	"go.temporal.io/server/common/searchattribute/sadefs"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
+
+const (
+	// validateWorkflowExecutionTimeout is the server-side execution timeout for the validate workflow.
+	// The validate activity has a 2s StartToCloseTimeout; this provides an upper bound for the full execution.
+	validateWorkflowExecutionTimeout = 30 * time.Second
+)
+
+func startWorkflowAndWait(
+	ctx context.Context,
+	historyClient historyservice.HistoryServiceClient,
+	namespaceEntry *namespace.Namespace,
+	taskQueueName string,
+	workflowType string,
+	workflowID string,
+	input interface{},
+	identity string,
+	requestID string,
+	timeout time.Duration,
+) error {
+	inputPayload, err := sdk.PreferProtoDataConverter.ToPayloads(input)
+	if err != nil {
+		return err
+	}
+
+	_, err = historyClient.StartWorkflowExecution(ctx, &historyservice.StartWorkflowExecutionRequest{
+		NamespaceId: namespaceEntry.ID().String(),
+		StartRequest: &workflowservice.StartWorkflowExecutionRequest{
+			RequestId:                requestID,
+			Namespace:                namespaceEntry.Name().String(),
+			WorkflowId:               workflowID,
+			WorkflowType:             &commonpb.WorkflowType{Name: workflowType},
+			TaskQueue:                &taskqueuepb.TaskQueue{Name: taskQueueName},
+			Input:                    inputPayload,
+			WorkflowExecutionTimeout: durationpb.New(timeout),
+			WorkflowIdReusePolicy:    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
+			WorkflowIdConflictPolicy: enumspb.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
+			SearchAttributes: &commonpb.SearchAttributes{
+				IndexedFields: map[string]*commonpb.Payload{
+					sadefs.TemporalNamespaceDivision: payload.EncodeString(iface.WorkerControllerInstanceNamespaceDivision),
+				},
+			},
+			Identity: identity,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	pollCtx, cancel := context.WithTimeout(ctx, timeout+5*time.Second)
+	defer cancel()
+
+	var nextPageToken []byte
+	for {
+		resp, err := historyClient.GetWorkflowExecutionHistory(pollCtx, &historyservice.GetWorkflowExecutionHistoryRequest{
+			NamespaceId: namespaceEntry.ID().String(),
+			Request: &workflowservice.GetWorkflowExecutionHistoryRequest{
+				Namespace:              namespaceEntry.Name().String(),
+				Execution:              &commonpb.WorkflowExecution{WorkflowId: workflowID},
+				MaximumPageSize:        1,
+				WaitNewEvent:           true,
+				HistoryEventFilterType: enumspb.HISTORY_EVENT_FILTER_TYPE_CLOSE_EVENT,
+				NextPageToken:          nextPageToken,
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		events := resp.GetResponse().GetHistory().GetEvents()
+		if len(events) > 0 {
+			event := events[0]
+			if event.GetWorkflowExecutionCompletedEventAttributes() != nil {
+				return nil
+			}
+			if attrs := event.GetWorkflowExecutionFailedEventAttributes(); attrs != nil {
+				failure := attrs.GetFailure()
+				if failure == nil {
+					return serviceerror.NewInternal("workflow execution failed")
+				}
+				if appInfo := failure.GetApplicationFailureInfo(); appInfo != nil && appInfo.GetType() == "InvalidArgument" {
+					return serviceerror.NewInvalidArgument(failure.GetMessage())
+				}
+				return serviceerror.NewInternal(failure.GetMessage())
+			}
+			if event.GetWorkflowExecutionTimedOutEventAttributes() != nil {
+				return serviceerror.NewInternalf("workflow execution for request %s timed out", requestID)
+			}
+			if event.GetWorkflowExecutionCanceledEventAttributes() != nil {
+				return serviceerror.NewInternalf("workflow execution for request %s was cancelled", requestID)
+			}
+			if event.GetWorkflowExecutionTerminatedEventAttributes() != nil {
+				return serviceerror.NewInternalf("workflow execution for request %s was terminated", requestID)
+			}
+			return serviceerror.NewInternalf("workflow for request %s closed unexpectedly (event type: %s)", requestID, event.GetEventType())
+		}
+
+		nextPageToken = resp.GetResponse().GetNextPageToken()
+	}
+}
 
 func queryWorkflowWithRetry(
 	ctx context.Context,

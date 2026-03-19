@@ -44,6 +44,10 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 		return instancewf.Workflow(ctx, workflowVersionGetter, maxVersionsGetter, args, activities)
 	}
 	registry.RegisterWorkflowWithOptions(versionWorkflow, workflow.RegisterOptions{Name: iface.WorkerControllerInstanceWorkflowType})
+	validateWorkflow := func(ctx workflow.Context, args *iface.ValidateWorkerControllerInstanceSpecWorkflowArgs) error {
+		return instancewf.ValidateSpecWorkflow(ctx, args, activities)
+	}
+	registry.RegisterWorkflowWithOptions(validateWorkflow, workflow.RegisterOptions{Name: iface.WorkerControllerInstanceValidateWorkflowType})
 	registry.RegisterActivity(activities)
 
 	return nil
