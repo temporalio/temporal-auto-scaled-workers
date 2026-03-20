@@ -22,7 +22,8 @@ const (
 )
 
 type awsECSComputeProvider struct {
-	intermediaryRoles [][]client.AWSIAMRoleRequest
+	intermediaryRoles        [][]client.AWSIAMRoleRequest
+	requireRoleAndExternalID bool
 }
 
 func init() {
@@ -31,12 +32,15 @@ func init() {
 
 func NewAWSECSComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (ComputeProvider, error) {
 	var intermediaryRoles [][]client.AWSIAMRoleRequest
+	requireRoleAndExternalID := true
 	if dc != nil {
 		intermediaryRoles = client.WorkerControllerAWSIntermediaryRoles.Get(dc)()
+		requireRoleAndExternalID = client.WorkerControllerAWSRequireRoleAndExternalID.Get(dc)()
 	}
 
 	return &awsECSComputeProvider{
-		intermediaryRoles: intermediaryRoles,
+		intermediaryRoles:        intermediaryRoles,
+		requireRoleAndExternalID: requireRoleAndExternalID,
 	}, nil
 }
 
@@ -45,6 +49,15 @@ func (p *awsECSComputeProvider) LaunchStrategy() LaunchStrategy {
 }
 
 func (p *awsECSComputeProvider) ValidateConfig(ctx context.Context, cfg iface.ComputeProviderConfig) error {
+	if p.requireRoleAndExternalID {
+		if roleARN, _ := cfg[configAWSECSRole].(string); roleARN == "" {
+			return fmt.Errorf("ECS compute provider requires %q to be configured", configAWSECSRole)
+		}
+		if eid, _ := cfg[configAWSECSRoleExternalID].(string); eid == "" {
+			return fmt.Errorf("ECS compute provider requires %q to be configured", configAWSECSRoleExternalID)
+		}
+	}
+
 	ecsClient, cluster, service, err := p.getECSClientAndParams(ctx, cfg)
 	if err != nil {
 		return err

@@ -20,7 +20,8 @@ const (
 )
 
 type awsLambdaComputeProvider struct {
-	intermediaryRoles [][]client.AWSIAMRoleRequest
+	intermediaryRoles          [][]client.AWSIAMRoleRequest
+	requireRoleAndExternalID   bool
 }
 
 func init() {
@@ -29,12 +30,15 @@ func init() {
 
 func NewAWSLambdaComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (ComputeProvider, error) {
 	var intermediaryRoles [][]client.AWSIAMRoleRequest
+	requireRoleAndExternalID := true
 	if dc != nil {
 		intermediaryRoles = client.WorkerControllerAWSIntermediaryRoles.Get(dc)()
+		requireRoleAndExternalID = client.WorkerControllerAWSRequireRoleAndExternalID.Get(dc)()
 	}
 
 	return &awsLambdaComputeProvider{
-		intermediaryRoles: intermediaryRoles,
+		intermediaryRoles:        intermediaryRoles,
+		requireRoleAndExternalID: requireRoleAndExternalID,
 	}, nil
 }
 
@@ -43,6 +47,15 @@ func (p *awsLambdaComputeProvider) LaunchStrategy() LaunchStrategy {
 }
 
 func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, cfg iface.ComputeProviderConfig) error {
+	if p.requireRoleAndExternalID {
+		if roleARN, _ := cfg[configAWSLambdaRole].(string); roleARN == "" {
+			return fmt.Errorf("AWS Lambda compute provider requires %q to be configured", configAWSLambdaRole)
+		}
+		if eid, _ := cfg[configAWSLambdaRoleExternalID].(string); eid == "" {
+			return fmt.Errorf("AWS Lambda compute provider requires %q to be configured", configAWSLambdaRoleExternalID)
+		}
+	}
+
 	lambdaClient, arn, err := p.getLambdaClientAndARN(ctx, cfg)
 	if err != nil {
 		return err
