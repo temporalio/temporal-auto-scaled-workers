@@ -33,4 +33,4 @@ go.work.sum
 # .vscode/
 
 # Executables produced by temporal repo
-/temporal-managed-workers
+/temporal-auto-scaled-workers
