@@ -3,7 +3,7 @@ package workflow
 import (
 	"errors"
 
-	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
+	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
