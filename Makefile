@@ -1,6 +1,6 @@
 ############################# Main targets #############################
 # Rebuild binaries (used by Dockerfile).
-bins: temporal-managed-workers
+bins: temporal-auto-scaled-workers
 
 # Install all tools, run all possible checks and tests (long but comprehensive).
 all: clean bins test
@@ -22,11 +22,11 @@ ALL_SRC         += go.mod
 ##### Binaries #####
 clean-bins:
 	@printf $(COLOR) "Delete old binaries..."
-	@rm -f temporal-managed-workers
+	@rm -f temporal-auto-scaled-workers
 
-temporal-managed-workers: $(ALL_SRC)
-	@printf $(COLOR) "Build temporal-managed-workers with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
-	CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o temporal-managed-workers ./cmd/worker
+temporal-auto-scaled-workers: $(ALL_SRC)
+	@printf $(COLOR) "Build temporal-auto-scaled-workers with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o temporal-auto-scaled-workers ./cmd/worker
 
 ##### Tests #####
 clean-test-output:
@@ -44,8 +44,8 @@ test: unit-test
 ##### Run server #####
 start: start-sqlite-file
 
-start-sqlite: temporal-managed-workers
-	./temporal-managed-workers --config-file config/development-sqlite.yaml start
+start-sqlite: temporal-auto-scaled-workers
+	./temporal-auto-scaled-workers --config-file config/development-sqlite.yaml start
 
-start-sqlite-file: temporal-managed-workers
-	./temporal-managed-workers --config-file config/development-sqlite-file.yaml start
+start-sqlite-file: temporal-auto-scaled-workers
+	./temporal-auto-scaled-workers --config-file config/development-sqlite-file.yaml start

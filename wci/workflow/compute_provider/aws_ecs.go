@@ -8,8 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
-	"github.com/temporalio/temporal-managed-workers/wci/client"
-	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
+	"github.com/temporalio/temporal-auto-scaled-workers/wci/client"
+	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
 )
 

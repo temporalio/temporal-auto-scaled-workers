@@ -6,8 +6,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/temporalio/temporal-managed-workers/wci/client"
-	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
+	"github.com/temporalio/temporal-auto-scaled-workers/wci/client"
+	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
 )
 

@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	smithy "github.com/aws/smithy-go"
-	"github.com/temporalio/temporal-managed-workers/wci/client"
+	"github.com/temporalio/temporal-auto-scaled-workers/wci/client"
 )
 
 type stsAPI interface {

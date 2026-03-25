@@ -5,7 +5,7 @@ import (
 	"os"
 	_ "time/tzdata" // embed tzdata as a fallback
 
-	"github.com/temporalio/temporal-managed-workers/wci"
+	"github.com/temporalio/temporal-auto-scaled-workers/wci"
 	"github.com/urfave/cli/v2"
 	"go.temporal.io/server/common/build"
 	"go.temporal.io/server/common/config"
@@ -36,8 +36,8 @@ func main() {
 // buildCLI is the main entry point for the temporal server
 func buildCLI() *cli.App {
 	app := cli.NewApp()
-	app.Name = "temporal-managed-workers"
-	app.Usage = "Temporal Managed workers - worker"
+	app.Name = "temporal-auto-scaled-workers"
+	app.Usage = "Temporal Auto Scaled workers - worker"
 	app.Version = headers.ServerVersion
 	app.ArgsUsage = " "
 	app.Flags = []cli.Flag{
@@ -51,7 +51,7 @@ func buildCLI() *cli.App {
 	app.Commands = []*cli.Command{
 		{
 			Name:      "start",
-			Usage:     "Start Managed Temporal Workers support services",
+			Usage:     "Start Auto Scaled Temporal Workers support services",
 			ArgsUsage: " ",
 			Flags:     []cli.Flag{},
 			Before: func(c *cli.Context) error {

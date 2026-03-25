@@ -7,8 +7,8 @@ import (
 	"math"
 	"time"
 
-	computeprovider "github.com/temporalio/temporal-managed-workers/wci/workflow/compute_provider"
-	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
+	computeprovider "github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/compute_provider"
+	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
 )
 
 const (

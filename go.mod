@@ -1,4 +1,4 @@
-module github.com/temporalio/temporal-managed-workers
+module github.com/temporalio/temporal-auto-scaled-workers
 
 go 1.25.7
 

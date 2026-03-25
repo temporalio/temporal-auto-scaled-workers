@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/temporalio/temporal-managed-workers/wci/workflow/iface"
+	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
