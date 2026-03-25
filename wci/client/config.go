@@ -50,4 +50,9 @@ var (
 		[]string(nil),
 		`WorkerControllerEnabledScalingAlgorithm defines the list of scaling algorithms enabled for use.`,
 	)
+	WorkerControllerAWSRequireRoleAndExternalID = dynamicconfig.NewGlobalBoolSetting(
+		"workercontroller.compute_providers.aws.require_role_and_external_id",
+		true,
+		`WorkerControllerAWSRequireRoleAndExternalID controls whether AWS compute providers require a role ARN and external ID. Defaults to true. Set to false to allow configurations without these fields and accepting the associated security risks.`,
+	)
 )

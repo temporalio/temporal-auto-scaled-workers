@@ -89,6 +89,48 @@ func TestAWSLambdaCheckExternalID_NoRole_SkipsFn(t *testing.T) {
 	}
 }
 
+func TestAWSLambdaValidateConfig_MissingRole_ReturnsError(t *testing.T) {
+	p := &awsLambdaComputeProvider{requireRoleAndExternalID: true}
+	cfg := iface.ComputeProviderConfig{
+		configAWSLambdaARN: testLambdaARN,
+		// no role
+	}
+
+	if err := p.ValidateConfig(context.Background(), cfg); err == nil {
+		t.Fatal("expected error when role is missing, got nil")
+	}
+}
+
+func TestAWSLambdaValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
+	p := &awsLambdaComputeProvider{requireRoleAndExternalID: true}
+	cfg := iface.ComputeProviderConfig{
+		configAWSLambdaARN:  testLambdaARN,
+		configAWSLambdaRole: testRoleARN,
+		// no role_external_id
+	}
+
+	if err := p.ValidateConfig(context.Background(), cfg); err == nil {
+		t.Fatal("expected error when external ID is missing, got nil")
+	}
+}
+
+func TestAWSLambdaValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(t *testing.T) {
+	// With requireRoleAndExternalID=false the mandatory check is skipped.
+	// The call will still fail when it tries to reach AWS, which is expected.
+	p := &awsLambdaComputeProvider{requireRoleAndExternalID: false}
+	cfg := iface.ComputeProviderConfig{
+		configAWSLambdaARN: testLambdaARN,
+		// no role or external ID
+	}
+
+	err := p.ValidateConfig(context.Background(), cfg)
+	// We expect a non-mandatory error (e.g. AWS call failure), not the mandatory check error.
+	if err != nil && (err.Error() == `AWS Lambda compute provider requires "role" to be configured` ||
+		err.Error() == `AWS Lambda compute provider requires "role_external_id" to be configured`) {
+		t.Fatalf("mandatory check should be skipped when requireRoleAndExternalID=false, got: %v", err)
+	}
+}
+
 func TestAWSLambdaCheckExternalID_FnError_Propagated(t *testing.T) {
 	orig := verifyExternalIDEnforcedFn
 	verifyExternalIDEnforcedFn = func(_ context.Context, _, _ string, _ [][]client.AWSIAMRoleRequest) error {
