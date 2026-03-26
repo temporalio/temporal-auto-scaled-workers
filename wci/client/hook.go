@@ -139,9 +139,17 @@ func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, 
 		last.noSyncMatchCount++
 	}
 
-	sendBy := last.timestamp.Add(minSignalIntervalSyncMatch)
+	minSignalIntervalSyncMatch := WorkerControllerMinSignalIntervalSyncMatchMilliseconds.Get(th.dc)(th.namespace.Name().String())
+	if minSignalIntervalSyncMatch <= 0 {
+		minSignalIntervalSyncMatch = 60_000
+	}
+	sendBy := last.timestamp.Add(time.Duration(minSignalIntervalSyncMatch) * time.Millisecond)
 	if last.noSyncMatchCount > 0 {
-		sendBy = last.timestamp.Add(minSignalIntervalNoSyncMatch)
+		minSignalIntervalNoSyncMatch := WorkerControllerMinSignalIntervalNoSyncMatchMilliseconds.Get(th.dc)(th.namespace.Name().String())
+		if minSignalIntervalNoSyncMatch <= 0 {
+			minSignalIntervalNoSyncMatch = 500
+		}
+		sendBy = last.timestamp.Add(time.Duration(minSignalIntervalNoSyncMatch) * time.Millisecond)
 	}
 
 	if sendBy.Before(now) {
