@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	commonpb "go.temporal.io/api/common/v1"
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"

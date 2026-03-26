@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
 )
 

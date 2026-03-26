@@ -103,7 +103,7 @@ A group with no `task_types` acts as a catch-all for any task type not claimed b
 ## Client API
 
 ```go
-import "github.com/temporalio/temporal-auto-scaled-workers/wci/client"
+import "go.temporal.io/auto-scaled-workers/wci/client"
 
 // Register the Fx module in your server
 fx.Provide(client.ClientProvider)

@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	computeprovider "github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/compute_provider"
-	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
 	enumspb "go.temporal.io/api/enums/v1"
+	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 )
 
 func newNoSync() *scalingAlgorithmNoSync {

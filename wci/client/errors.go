@@ -3,7 +3,7 @@ package client
 import (
 	"errors"
 
-	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"

@@ -1,9 +1,9 @@
 package wci
 
 import (
-	"github.com/temporalio/temporal-auto-scaled-workers/wci/client"
-	instancewf "github.com/temporalio/temporal-auto-scaled-workers/wci/workflow"
-	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/auto-scaled-workers/wci/client"
+	instancewf "go.temporal.io/auto-scaled-workers/wci/workflow"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	sdkclient "go.temporal.io/sdk/client"
 	sdkworker "go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"

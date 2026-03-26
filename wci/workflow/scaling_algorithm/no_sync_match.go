@@ -7,8 +7,8 @@ import (
 	"math"
 	"time"
 
-	computeprovider "github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/compute_provider"
-	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
+	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/sdk/activity"
 )
 
