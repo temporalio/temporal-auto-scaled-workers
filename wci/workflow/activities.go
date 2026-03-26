@@ -94,7 +94,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	timeoutCtx, cancel := context.WithTimeout(ctx, validateSpecTimeout)
 	defer cancel()
 
-	for _, entry := range req.Spec.TaskTypeSpecs {
+	for _, entry := range req.Spec.ScalingGroupSpecs {
 		provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.dc)
 		if err != nil {
 			return temporal.NewApplicationError(err.Error(), "InvalidArgument")
@@ -129,6 +129,30 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	return nil
 }
 
+func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req *iface.WorkerControllerInstanceSpec) error {
+	if req == nil {
+		return temporal.NewApplicationError("Invalid activity request", "InternalError")
+	}
+
+	for k, v := range req.ScalingGroupSpecs {
+		provider, err := computeprovider.GetComputeProvider(ctx, v.Compute.ProviderType, a.dc)
+		if err != nil {
+			return temporal.NewApplicationError(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument")
+		}
+		if provider == nil {
+			return temporal.NewApplicationError(fmt.Sprintf("%s: '%s' is an unknown compute provider", k, v.Compute.ProviderType), "InvalidArgument")
+		}
+
+		if provider.LaunchStrategy() == computeprovider.LaunchStrategyInvoke {
+			if err := provider.InvokeWorker(ctx, v.Compute.Config); err != nil {
+				return temporal.NewApplicationError(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed")
+			}
+		}
+	}
+
+	return nil
+}
+
 func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivityRequest) error {
 	logger := activity.GetLogger(ctx)
 
@@ -141,14 +165,17 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 		return err
 	}
 	if provider == nil {
-		return errors.Errorf("Could not instantiate compute provider with type '%s'", req.ComputeConfig.ProviderType)
+		return temporal.NewApplicationError(fmt.Sprintf("Could not instantiate compute provider with type '%s'", req.ComputeConfig.ProviderType), "InvalidArgument")
 	}
 
 	logger.Debug("Instantiated compute provider", "compute_provider_type", req.ComputeConfig.ProviderType)
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, startNewWorkerInstanceTimeout)
 	defer cancel()
-	return provider.InvokeWorker(timeoutCtx, req.ComputeConfig.Config)
+	if err := provider.InvokeWorker(timeoutCtx, req.ComputeConfig.Config); err != nil {
+		return temporal.NewApplicationError(err.Error(), "InvokeWorkerFailed")
+	}
+	return nil
 }
 
 func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerSetSizeActivityRequest) error {
@@ -185,11 +212,10 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 	}
 
-	for _, entry := range req.Spec.TaskTypeSpecs {
+	for key, entry := range req.Spec.ScalingGroupSpecs {
 		if !slices.Contains(entry.TaskTypes, req.Request.TaskQueueType) {
 			continue
 		}
-		specKey := entry.GetSpecKey()
 
 		scalingAlgo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, entry)
 		if err != nil {
@@ -197,7 +223,7 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 		}
 
-		scalingStatus := req.ScalingStatus[specKey]
+		scalingStatus := req.ScalingStatus[key]
 
 		response, err := scalingAlgo.ProcessTaskAdd(ctx, scalingConfig, scalingStatus, req.Request)
 		if err != nil {
@@ -205,10 +231,10 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 		}
 
-		updatedScalingStatus[specKey] = response.Status
+		updatedScalingStatus[key] = response.Status
 		updatedActions := []scalingalgorithm.ScalingAction{}
 		for _, act := range response.Actions {
-			act.SpecKey = specKey
+			act.ScalingGroupKey = key
 			updatedActions = append(updatedActions, act)
 		}
 
@@ -272,18 +298,18 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	updatedScalingStatus := map[string]iface.ScalingAlgorithmStatus{}
 	nextPoll := maxPollInterval
 
-	for _, entry := range req.Spec.TaskTypeSpecs {
-		specKey := entry.GetSpecKey()
-		scalingStatus := req.ScalingStatus[specKey]
+	for key, entry := range req.Spec.ScalingGroupSpecs {
+		scalingStatus := req.ScalingStatus[key]
+		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key)
 
 		scalingMetricsSnapshot := metricsSnapshot
-		if !slices.Contains(entry.TaskTypes, enumspb.TASK_QUEUE_TYPE_WORKFLOW) {
+		if !slices.Contains(scalingGroupEffectiveTaskTypes, enumspb.TASK_QUEUE_TYPE_WORKFLOW) {
 			scalingMetricsSnapshot.Workflow = nil
 		}
-		if !slices.Contains(entry.TaskTypes, enumspb.TASK_QUEUE_TYPE_ACTIVITY) {
+		if !slices.Contains(scalingGroupEffectiveTaskTypes, enumspb.TASK_QUEUE_TYPE_ACTIVITY) {
 			scalingMetricsSnapshot.Activity = nil
 		}
-		if !slices.Contains(entry.TaskTypes, enumspb.TASK_QUEUE_TYPE_NEXUS) {
+		if !slices.Contains(scalingGroupEffectiveTaskTypes, enumspb.TASK_QUEUE_TYPE_NEXUS) {
 			scalingMetricsSnapshot.Nexus = nil
 		}
 
@@ -293,7 +319,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 
 			// let's keep the last state so we can try again in the next round
 			// instead of from scratch
-			updatedScalingStatus[specKey] = scalingStatus
+			updatedScalingStatus[key] = scalingStatus
 			continue
 		}
 
@@ -305,13 +331,13 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 
 			// let's keep the last state so we can try again in the next round
 			// instead of from scratch
-			updatedScalingStatus[specKey] = scalingStatus
+			updatedScalingStatus[key] = scalingStatus
 			continue
 		}
 
-		updatedScalingStatus[specKey] = response.Status
+		updatedScalingStatus[key] = response.Status
 		for _, act := range response.Actions {
-			act.SpecKey = specKey
+			act.ScalingGroupKey = key
 			actions = append(actions, act)
 		}
 
@@ -323,8 +349,8 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	return &PullStatsActivityResponse{Actions: actions, UpdatedScalingStatus: updatedScalingStatus, NextPollSeconds: uint32(nextPoll.Seconds())}, nil
 }
 
-// getScalingAlgorithmAndConfig resolves the scaling algorithm and config for a TaskTypeSpec entry.
-func (a *Activities) getScalingAlgorithmAndConfig(ctx context.Context, entry iface.TaskTypeSpec) (scalingalgorithm.ScalingAlgorithm, iface.ScalingAlgorithmConfig, error) {
+// getScalingAlgorithmAndConfig resolves the scaling algorithm and config for a ScalingGroupSpec entry.
+func (a *Activities) getScalingAlgorithmAndConfig(ctx context.Context, entry iface.ScalingGroupSpec) (scalingalgorithm.ScalingAlgorithm, iface.ScalingAlgorithmConfig, error) {
 	var scalingAlgo scalingalgorithm.ScalingAlgorithm
 	var err error
 

@@ -17,11 +17,12 @@ import (
 )
 
 const (
-	ValidateSpecActivityTimeout        = 2 * time.Second
-	PullStatsActivityTimeout           = 15 * time.Second
-	HandleTaskAddSignalActivityTimeout = 15 * time.Second
-	InvokeWorkerActivityTimeout        = 2 * time.Minute
-	UpdateWorkerSetSizeActivityTimeout = 2 * time.Minute
+	ValidateSpecActivityTimeout                 = 2 * time.Second
+	PullStatsActivityTimeout                    = 15 * time.Second
+	HandleTaskAddSignalActivityTimeout          = 15 * time.Second
+	InvokeWorkerActivityTimeout                 = 2 * time.Minute
+	UpdateWorkerSetSizeActivityTimeout          = 2 * time.Minute
+	RegisterTaskQueuesViaWorkersActivityTimeout = 30 * time.Second
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -210,6 +211,24 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			}
 		}
 
+		// we need to scale up each of the groups for a moment to get them to register the task queues
+		if err := workflow.ExecuteActivity(
+			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: RegisterTaskQueuesViaWorkersActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
+			d.a.InvokeWorkersToRegisterTaskQueues,
+			args.Spec,
+		).Get(ctx, nil); err != nil {
+			var appErr *temporal.ApplicationError
+			if errors.As(err, &appErr) {
+				if appErr.Type() == "InvalidArgument" {
+					return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
+				} else {
+					return nil, serviceerror.NewFailedPreconditionf("%s", appErr.Message())
+				}
+			} else {
+				return nil, err
+			}
+		}
+
 		d.State.ConflictToken = args.ConflictToken
 		d.State.Spec = args.Spec
 	}
@@ -246,6 +265,10 @@ func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.
 }
 
 func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration {
+	if d.State == nil || d.State.Spec == nil || len(d.State.Spec.ScalingGroupSpecs) == 0 {
+		return maxPollInterval
+	}
+
 	var resp PullStatsActivityResponse
 	if err := workflow.ExecuteActivity(
 		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: PullStatsActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
@@ -306,14 +329,14 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 	}
 
 	for _, action := range actions {
-		if action.SpecKey == "" {
+		if action.ScalingGroupKey == "" {
 			d.logger.Warn("Scaling action misses spec key", "action", action.Action)
 			continue
 		}
 
-		spec := d.State.Spec.ForSpecKey(action.SpecKey)
-		if spec == nil {
-			d.logger.Warn("No compute provider spec for scale up action")
+		spec, specOk := d.State.Spec.ScalingGroupSpecs[action.ScalingGroupKey]
+		if !specOk {
+			d.logger.Warn("No compute provider spec for scale up action", "scale_group_id", action.ScalingGroupKey)
 			continue
 		}
 

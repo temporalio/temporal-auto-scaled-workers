@@ -47,6 +47,7 @@ func ClientProvider(
 	taskHookFactory := &taskHookFactoryImpl{
 		logger:         logger,
 		client:         client,
+		dc:             dc,
 		metricsHandler: metricsHandler,
 	}
 

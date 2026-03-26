@@ -103,7 +103,7 @@ type (
 	ScalingAlgorithmSpec = iface.ScalingAlgorithmSpec
 	ScalingAlgorithmType = iface.ScalingAlgorithmType
 	Spec                 = iface.WorkerControllerInstanceSpec
-	TaskTypeSpec         = iface.TaskTypeSpec
+	ScalingGroupSpec     = iface.ScalingGroupSpec
 
 	clientImpl struct {
 		logger                       log.Logger

@@ -19,9 +19,9 @@ type (
 	ScalingAlgorithmConstructor func(context.Context) (ScalingAlgorithm, error)
 
 	ScalingAction struct {
-		SpecKey string     `json:"spec_key"`
-		Action  ActionType `json:"action"`
-		Count   *int32     `json:"count,omitempty"`
+		ScalingGroupKey string     `json:"scaling_group_key"`
+		Action          ActionType `json:"action"`
+		Count           *int32     `json:"count,omitempty"`
 	}
 
 	ScalingMetricsSnapshot struct {

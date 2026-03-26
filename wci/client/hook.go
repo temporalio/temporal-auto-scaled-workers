@@ -8,6 +8,7 @@ import (
 	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/api/enums/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/metrics"
@@ -19,6 +20,7 @@ type (
 	taskHookFactoryImpl struct {
 		logger         log.Logger
 		client         Client
+		dc             *dynamicconfig.Collection
 		metricsHandler metrics.Handler
 	}
 
@@ -31,6 +33,7 @@ type (
 	taskHookImpl struct {
 		logger         log.Logger
 		client         Client
+		dc             *dynamicconfig.Collection
 		metricsHandler metrics.Handler
 
 		namespace     *namespace.Namespace
@@ -52,9 +55,14 @@ func (thf *taskHookFactoryImpl) Create(details *hooks.TaskHookFactoryCreateDetai
 		return nil
 	}
 
+	if !WorkerControllerEnabled.Get(thf.dc)(details.Namespace.Name().String()) {
+		return nil
+	}
+
 	return &taskHookImpl{
 		logger:         thf.logger,
 		client:         thf.client,
+		dc:             thf.dc,
 		metricsHandler: thf.metricsHandler,
 
 		namespace:     details.Namespace,
@@ -73,6 +81,9 @@ func (th *taskHookImpl) Stop() {
 
 func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAddHookDetails) {
 	if event == nil || event.DeploymentVersion == nil {
+		return
+	}
+	if !WorkerControllerEnabled.Get(th.dc)(th.namespace.Name().String()) {
 		return
 	}
 	workflowID := GenerateWorkerControllerInstanceWorkflowID(event.DeploymentVersion)
@@ -104,7 +115,6 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	if err := th.client.SignalTaskAddEvent(ctx, th.namespace, event.DeploymentVersion, request); err != nil {
 		th.logger.Error("Failed to signal task add event", tag.Error(err), tag.WorkflowID(workflowID))
 		iface.WorkerControllerInstanceProcessTaskMatchErrorCount.With(th.metricsHandler).Record(1)
-
 	}
 }
 

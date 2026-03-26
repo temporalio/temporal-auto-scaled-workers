@@ -2,7 +2,6 @@ package iface
 
 import (
 	"slices"
-	"strings"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
@@ -27,16 +26,16 @@ type (
 		Config           ScalingAlgorithmConfig `json:"config,omitempty"`
 	}
 
-	// TaskTypeSpec is one entry: a list of task types and the compute/scaling spec that applies to them.
-	TaskTypeSpec struct {
+	// ScalingGroupSpec is one entry: a list of task types and the compute/scaling spec that applies to them.
+	ScalingGroupSpec struct {
 		TaskTypes []enumspb.TaskQueueType `json:"task_types"`
 		Compute   ComputeProviderSpec     `json:"compute"`
 		Scaling   *ScalingAlgorithmSpec   `json:"scaling,omitempty"`
 	}
 
-	// WorkerControllerInstanceSpec holds a list of TaskTypeSpec entries.
+	// WorkerControllerInstanceSpec contains the individual scaling group specs
 	WorkerControllerInstanceSpec struct {
-		TaskTypeSpecs []TaskTypeSpec `json:"task_type_specs"`
+		ScalingGroupSpecs map[string]ScalingGroupSpec `json:"scaling_group_specs"`
 	}
 )
 
@@ -80,45 +79,54 @@ func ValidScalingAlgorithmType(s string) bool {
 	return false
 }
 
-// GetSpecKey returns a canonical, order-independent key based on the task types
-func (tts *TaskTypeSpec) GetSpecKey() string {
-	var b strings.Builder
-	if slices.Contains(tts.TaskTypes, enumspb.TASK_QUEUE_TYPE_ACTIVITY) {
-		b.WriteString("activity-")
-	}
-	if slices.Contains(tts.TaskTypes, enumspb.TASK_QUEUE_TYPE_NEXUS) {
-		b.WriteString("nexus-")
-	}
-	if slices.Contains(tts.TaskTypes, enumspb.TASK_QUEUE_TYPE_WORKFLOW) {
-		b.WriteString("workflow-")
-	}
-
-	return strings.TrimSuffix(b.String(), "-")
-}
-
-func (c *WorkerControllerInstanceSpec) findTaskTypeSpec(pred func(*TaskTypeSpec) bool) *TaskTypeSpec {
+// ForTaskQueueType returns the ScalingGroupSpec for the given task queue type (first entry whose TaskTypes contain t). Returns nil if none applies.
+func (c *WorkerControllerInstanceSpec) ForTaskQueueType(t enumspb.TaskQueueType) *ScalingGroupSpec {
 	if c == nil {
 		return nil
 	}
-	for i := range c.TaskTypeSpecs {
-		e := &c.TaskTypeSpecs[i]
-		if pred(e) {
-			return e
+	for _, v := range c.ScalingGroupSpecs {
+		if slices.Contains(v.TaskTypes, t) {
+			localCopy := v
+			return &localCopy
+		}
+	}
+	// as there should be only max one scaling group without types, this is still deterministic
+	for _, v := range c.ScalingGroupSpecs {
+		if len(v.TaskTypes) == 0 {
+			localCopy := v
+			return &localCopy
 		}
 	}
 	return nil
 }
 
-// ForTaskQueueType returns the TaskTypeSpec for the given task queue type (first entry whose TaskTypes contain t). Returns nil if none applies.
-func (c *WorkerControllerInstanceSpec) ForTaskQueueType(t enumspb.TaskQueueType) *TaskTypeSpec {
-	return c.findTaskTypeSpec(func(e *TaskTypeSpec) bool {
-		return slices.Contains(e.TaskTypes, t)
-	})
-}
+func (c *WorkerControllerInstanceSpec) EffectiveTaskTypesForGroup(scalingGroupId string) []enumspb.TaskQueueType {
+	if c == nil {
+		return nil
+	}
 
-// ForSpecKey returns the TaskTypeSpec for the given spec key. Returns nil if none applies.
-func (c *WorkerControllerInstanceSpec) ForSpecKey(specKey string) *TaskTypeSpec {
-	return c.findTaskTypeSpec(func(e *TaskTypeSpec) bool { return e.GetSpecKey() == specKey })
+	scalingGroup, ok := c.ScalingGroupSpecs[scalingGroupId]
+	if !ok {
+		return nil
+	}
+
+	if len(scalingGroup.TaskTypes) > 0 {
+		return scalingGroup.TaskTypes
+	}
+
+	seen := []enumspb.TaskQueueType{}
+	for _, v := range c.ScalingGroupSpecs {
+		seen = append(seen, v.TaskTypes...)
+	}
+
+	catchAll := []enumspb.TaskQueueType{}
+	for _, t := range []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_ACTIVITY, enumspb.TASK_QUEUE_TYPE_NEXUS, enumspb.TASK_QUEUE_TYPE_WORKFLOW} {
+		if !slices.Contains(seen, t) {
+			catchAll = append(catchAll, t)
+		}
+	}
+
+	return catchAll
 }
 
 // ScalingSpecForTaskQueueType returns the ScalingAlgorithmSpec for the given task queue type. Returns nil if task queue type is not found or Scaling is nil.
@@ -135,30 +143,37 @@ func (c *WorkerControllerInstanceSpec) Validate() error {
 	if c == nil {
 		return serviceerror.NewInvalidArgumentf("spec must be provided")
 	}
-	if len(c.TaskTypeSpecs) == 0 {
+	if len(c.ScalingGroupSpecs) == 0 {
 		return serviceerror.NewInvalidArgumentf("spec must have at least one entry")
 	}
 
 	seen := make(map[enumspb.TaskQueueType]struct{})
-	for i, e := range c.TaskTypeSpecs {
-		if len(e.TaskTypes) == 0 {
-			return serviceerror.NewInvalidArgumentf("entry %d: task_types must not be empty", i)
+	seenTaskTypeCatchAll := false
+	for k, v := range c.ScalingGroupSpecs {
+		if len(k) == 0 {
+			return serviceerror.NewInvalidArgument("scaling groups without an ID are not supported")
 		}
-		for _, t := range e.TaskTypes {
+		if len(v.TaskTypes) == 0 {
+			if seenTaskTypeCatchAll {
+				return serviceerror.NewInvalidArgumentf("entry %s: only one scaling group can have no task types defined", k)
+			}
+			seenTaskTypeCatchAll = true
+		}
+		for _, t := range v.TaskTypes {
 			if _, ok := seen[t]; ok {
-				return serviceerror.NewInvalidArgumentf("task type %s appears in more than one entry", t.String())
+				return serviceerror.NewInvalidArgumentf("entry %s: task type %s appears in more than one entry", k, t.String())
 			}
 			if t == enumspb.TASK_QUEUE_TYPE_UNSPECIFIED {
-				return serviceerror.NewInvalidArgument("task type undefined not allowed in compute spec")
+				return serviceerror.NewInvalidArgumentf("entry %s: task type undefined not allowed in compute spec", k)
 			}
 			seen[t] = struct{}{}
 		}
-		if !ValidComputeProviderType(string(e.Compute.ProviderType)) {
-			return serviceerror.NewInvalidArgumentf("entry %d: invalid compute provider type '%s'", i, e.Compute.ProviderType)
+		if !ValidComputeProviderType(string(v.Compute.ProviderType)) {
+			return serviceerror.NewInvalidArgumentf("entry %s: invalid compute provider type '%s'", k, v.Compute.ProviderType)
 		}
-		if e.Scaling != nil {
-			if !ValidScalingAlgorithmType(string(e.Scaling.ScalingAlgorithm)) {
-				return serviceerror.NewInvalidArgumentf("entry %d: invalid scaling algorithm type '%s'", i, e.Scaling.ScalingAlgorithm)
+		if v.Scaling != nil {
+			if !ValidScalingAlgorithmType(string(v.Scaling.ScalingAlgorithm)) {
+				return serviceerror.NewInvalidArgumentf("entry %s: invalid scaling algorithm type '%s'", k, v.Scaling.ScalingAlgorithm)
 			}
 		}
 	}

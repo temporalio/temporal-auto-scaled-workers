@@ -74,7 +74,7 @@ type (
 	WorkerControllerInstanceLocalState struct {
 		Spec *WorkerControllerInstanceSpec `json:"spec,omitempty"`
 
-		// ScalingStatus contains the state information keyd by TaskTypeSpec.GetSpecKey()
+		// ScalingStatus contains the state information keyd by the ScalingGroups key
 		ScalingStatus map[string]ScalingAlgorithmStatus `json:"scaling_state"`
 
 		ConflictToken        []byte                 `json:"conflict_token,omitempty"`
