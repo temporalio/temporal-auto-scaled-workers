@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	validateSpecTimeout           = 2 * time.Second
+	validateSpecTimeout           = 15 * time.Second
 	startNewWorkerInstanceTimeout = 60 * time.Second
 	updateWorkerSetSizeTimeout    = 60 * time.Second
 

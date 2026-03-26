@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ValidateSpecActivityTimeout                 = 2 * time.Second
+	ValidateSpecActivityTimeout                 = 15 * time.Second
 	PullStatsActivityTimeout                    = 15 * time.Second
 	HandleTaskAddSignalActivityTimeout          = 15 * time.Second
 	InvokeWorkerActivityTimeout                 = 2 * time.Minute
