@@ -213,7 +213,9 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 	}
 
 	for key, entry := range req.Spec.ScalingGroupSpecs {
-		if !slices.Contains(entry.TaskTypes, req.Request.TaskQueueType) {
+		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key)
+
+		if !slices.Contains(scalingGroupEffectiveTaskTypes, req.Request.TaskQueueType) {
 			continue
 		}
 
