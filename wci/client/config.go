@@ -55,4 +55,14 @@ var (
 		true,
 		`WorkerControllerAWSRequireRoleAndExternalID controls whether AWS compute providers require a role ARN and external ID. Defaults to true. Set to false to allow configurations without these fields and accepting the associated security risks.`,
 	)
+	WorkerControllerMinSignalIntervalNoSyncMatchMilliseconds = dynamicconfig.NewNamespaceIntSetting(
+		"workercontroller.hook.min_signal_interval_no_sync_match",
+		500,
+		`WorkerControllerMinSignalIntervalNoSyncMatchMilliseconds controls the batching interval of no-sync matches grouped by WCI in milliseconds (per namespace). Each batch triggers a signal. `,
+	)
+	WorkerControllerMinSignalIntervalSyncMatchMilliseconds = dynamicconfig.NewNamespaceIntSetting(
+		"workercontroller.hook.min_signal_interval_sync_match",
+		60_000, // 1 minute
+		`WorkerControllerMinSignalIntervalSyncMatchMilliseconds controls the batching interval of sync matches grouped by WCI in milliseconds (per namespace). Each batch triggers a signal.`,
+	)
 )

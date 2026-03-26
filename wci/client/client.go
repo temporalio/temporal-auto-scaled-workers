@@ -33,11 +33,6 @@ import (
 
 const (
 	WorkerControllerPerNSWorkerTaskQueue = "temporal-sys-worker-controller-per-ns-tq"
-
-	// minSignalIntervalNoSyncMatch is the minimum time between SignalWorkflowExecution calls per (namespace, workflow ID) for no-sync matches.
-	minSignalIntervalNoSyncMatch = 500 * time.Millisecond
-	// minSignalIntervalSyncMatch is the minimum time between SignalWorkflowExecution calls per (namespace, workflow ID) for sync matches.
-	minSignalIntervalSyncMatch = 1 * time.Minute
 )
 
 type (
