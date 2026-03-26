@@ -6,8 +6,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
-	scalingalgorithm "github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/scaling_algorithm"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
 	"go.temporal.io/api/serviceerror"
 	sdkclient "go.temporal.io/sdk/client"
 	sdklog "go.temporal.io/sdk/log"

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/api/enums/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/server/common/dynamicconfig"

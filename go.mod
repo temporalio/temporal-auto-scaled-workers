@@ -1,4 +1,4 @@
-module github.com/temporalio/temporal-auto-scaled-workers
+module go.temporal.io/auto-scaled-workers
 
 go 1.26.0
 

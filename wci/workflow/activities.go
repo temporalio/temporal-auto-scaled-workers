@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	computeprovider "github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/compute_provider"
-	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
-	scalingalgorithm "github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/scaling_algorithm"
+	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
