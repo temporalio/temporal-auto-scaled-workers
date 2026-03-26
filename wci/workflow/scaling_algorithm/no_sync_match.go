@@ -9,6 +9,7 @@ import (
 
 	computeprovider "github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/compute_provider"
 	"github.com/temporalio/temporal-auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/sdk/activity"
 )
 
 const (
@@ -125,6 +126,8 @@ func (a *scalingAlgorithmNoSync) ValidateConfig(ctx context.Context, config ifac
 }
 
 func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config iface.ScalingAlgorithmConfig, priorState iface.ScalingAlgorithmStatus, event iface.SignalTaskAddRequest) (*TaskAddResponse, error) {
+	logger := activity.GetLogger(ctx)
+
 	updatedState := maps.Clone(priorState)
 	actions := []ScalingAction{}
 
@@ -154,6 +157,8 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 		if elapsedMs >= cooloffMs {
 			actions = append(actions, ScalingAction{Action: ActionTypeInvokeWorker})
 			updatedState[stateLastScaleUpTimestampKey] = nowMs
+		} else {
+			logger.Info("Throttled worker invocation", "elapsed_ms", elapsedMs)
 		}
 	}
 
