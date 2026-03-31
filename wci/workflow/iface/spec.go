@@ -40,22 +40,26 @@ type (
 )
 
 const (
-	ComputeProviderTypeAWSLambda   ComputeProviderType = "aws-lambda"
-	ComputeProviderTypeAWSECS      ComputeProviderType = "aws-ecs"
-	ComputeProviderTypeSubprocess  ComputeProviderType = "subprocess"
-	ComputeProviderTypeK8s         ComputeProviderType = "k8s"
-	ComputeProviderTypeGCPCloudRun ComputeProviderType = "gcp-cloud-run"
+	ComputeProviderTypeAWSLambda     ComputeProviderType = "aws-lambda"
+	ComputeProviderTypeAWSECS        ComputeProviderType = "aws-ecs"
+	ComputeProviderTypeSubprocess    ComputeProviderType = "subprocess"
+	ComputeProviderTypeK8s           ComputeProviderType = "k8s"
+	ComputeProviderTypeGCPCloudRun   ComputeProviderType = "gcp-cloud-run"
+	ComputeProviderTypeTestInvoke    ComputeProviderType = "test-invoke"
+	ComputeProviderTypeTestWorkerSet ComputeProviderType = "test-worker-set"
 
 	ScalingAlgorithmNoSync    ScalingAlgorithmType = "no-sync"
 	ScalingAlgorithmRateBased ScalingAlgorithmType = "rate-based"
 )
 
 var validComputeProviderTypes = map[string]ComputeProviderType{
-	string(ComputeProviderTypeAWSLambda):   ComputeProviderTypeAWSLambda,
-	string(ComputeProviderTypeAWSECS):      ComputeProviderTypeAWSECS,
-	string(ComputeProviderTypeSubprocess):  ComputeProviderTypeSubprocess,
-	string(ComputeProviderTypeK8s):         ComputeProviderTypeK8s,
-	string(ComputeProviderTypeGCPCloudRun): ComputeProviderTypeGCPCloudRun,
+	string(ComputeProviderTypeAWSLambda):     ComputeProviderTypeAWSLambda,
+	string(ComputeProviderTypeAWSECS):        ComputeProviderTypeAWSECS,
+	string(ComputeProviderTypeSubprocess):    ComputeProviderTypeSubprocess,
+	string(ComputeProviderTypeK8s):           ComputeProviderTypeK8s,
+	string(ComputeProviderTypeGCPCloudRun):   ComputeProviderTypeGCPCloudRun,
+	string(ComputeProviderTypeTestInvoke):    ComputeProviderTypeTestInvoke,
+	string(ComputeProviderTypeTestWorkerSet): ComputeProviderTypeTestWorkerSet,
 }
 
 var validScalingAlgorithmTypes = map[string]ScalingAlgorithmType{
