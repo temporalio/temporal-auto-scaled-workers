@@ -3,6 +3,7 @@ package wci
 
 import (
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	"go.temporal.io/auto-scaled-workers/wci/workercomponent"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/config"
@@ -139,7 +140,7 @@ func PerNamespaceWorkerManagerProvider(
 	dynamicConfig *dynamicconfig.Collection,
 ) *worker.PerNamespaceWorkerManager {
 	components := []workercommon.PerNSWorkerComponent{
-		&workerComponent{dynamicConfig: dynamicConfig, sdkClientFactory: sdkClientFactory},
+		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory),
 	}
 
 	return worker.NewPerNamespaceWorkerManager(
