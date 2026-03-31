@@ -3,18 +3,19 @@ package iface
 import (
 	"slices"
 
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	"google.golang.org/protobuf/proto"
 )
 
 type (
-	ComputeProviderType   string
-	ComputeProviderConfig map[string]any
+	ComputeProviderType string
 
 	// ComputeProviderSpec is a single provider type and its settings (used per task queue type or as default).
 	ComputeProviderSpec struct {
-		ProviderType ComputeProviderType   `json:"provider_type,omitempty"`
-		Config       ComputeProviderConfig `json:"config,omitempty"`
+		ProviderType ComputeProviderType `json:"provider_type,omitempty"`
+		Config       *commonpb.Payload   `json:"config,omitempty"`
 	}
 
 	ScalingAlgorithmType   string
@@ -22,8 +23,8 @@ type (
 
 	// ScalingAlgorithmSpec is a single scaling algorithm and its settings (used per task queue type or as default).
 	ScalingAlgorithmSpec struct {
-		ScalingAlgorithm ScalingAlgorithmType   `json:"scaling_algorithm,omitempty"`
-		Config           ScalingAlgorithmConfig `json:"config,omitempty"`
+		ScalingAlgorithm ScalingAlgorithmType `json:"scaling_algorithm,omitempty"`
+		Config           *commonpb.Payload    `json:"config,omitempty"`
 	}
 
 	// ScalingGroupSpec is one entry: a list of task types and the compute/scaling spec that applies to them.

@@ -48,7 +48,7 @@ func (p *awsECSComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyWorkerSet
 }
 
-func (p *awsECSComputeProvider) ValidateConfig(ctx context.Context, cfg iface.ComputeProviderConfig) error {
+func (p *awsECSComputeProvider) ValidateConfig(ctx context.Context, cfg ComputeProviderConfig) error {
 	if p.requireRoleAndExternalID {
 		if roleARN, _ := cfg[configAWSECSRole].(string); roleARN == "" {
 			return fmt.Errorf("ECS compute provider requires %q to be configured", configAWSECSRole)
@@ -88,11 +88,11 @@ func (p *awsECSComputeProvider) ValidateConfig(ctx context.Context, cfg iface.Co
 	return nil
 }
 
-func (p *awsECSComputeProvider) InvokeWorker(ctx context.Context, cfg iface.ComputeProviderConfig) error {
+func (p *awsECSComputeProvider) InvokeWorker(ctx context.Context, cfg ComputeProviderConfig) error {
 	return errors.ErrUnsupported
 }
 
-func (p *awsECSComputeProvider) UpdateWorkerSetSize(ctx context.Context, cfg iface.ComputeProviderConfig, size int32) error {
+func (p *awsECSComputeProvider) UpdateWorkerSetSize(ctx context.Context, cfg ComputeProviderConfig, size int32) error {
 	ecsClient, cluster, service, err := p.getECSClientAndParams(ctx, cfg)
 	if err != nil {
 		return err
@@ -109,7 +109,7 @@ func (p *awsECSComputeProvider) UpdateWorkerSetSize(ctx context.Context, cfg ifa
 	return nil
 }
 
-func (p *awsECSComputeProvider) checkExternalID(ctx context.Context, cfg iface.ComputeProviderConfig, cluster string) error {
+func (p *awsECSComputeProvider) checkExternalID(ctx context.Context, cfg ComputeProviderConfig, cluster string) error {
 	roleARN, _ := cfg[configAWSECSRole].(string)
 	eid, _ := cfg[configAWSECSRoleExternalID].(string)
 	if roleARN == "" || eid == "" {
@@ -133,7 +133,7 @@ func (p *awsECSComputeProvider) checkExternalID(ctx context.Context, cfg iface.C
 
 // getECSClientAndParams builds AWS config (including intermediary and config role assumption),
 // returns an ECS client, cluster, and service.
-func (p *awsECSComputeProvider) getECSClientAndParams(ctx context.Context, cfg iface.ComputeProviderConfig) (*ecs.Client, string, string, error) {
+func (p *awsECSComputeProvider) getECSClientAndParams(ctx context.Context, cfg ComputeProviderConfig) (*ecs.Client, string, string, error) {
 	cluster, ok := cfg[configAWSECSCluster].(string)
 	if !ok || cluster == "" {
 		return nil, "", "", fmt.Errorf("ECS cluster ARN or name not found or invalid")

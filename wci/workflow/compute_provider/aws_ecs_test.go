@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
-	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 )
 
 const (
@@ -31,7 +30,7 @@ func TestAWSECSCheckExternalID_ClusterARN_CallsFn(t *testing.T) {
 	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
 
 	p := newECSProvider()
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSECSRole:           testRoleARN,
 		configAWSECSRoleExternalID: "my-eid",
 	}
@@ -63,7 +62,7 @@ func TestAWSECSCheckExternalID_PlainClusterWithRegionConfig_CallsFn(t *testing.T
 	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
 
 	p := newECSProvider()
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSECSRole:           testRoleARN,
 		configAWSECSRoleExternalID: "my-eid",
 		configAWSECSRegion:         "eu-central-1",
@@ -89,7 +88,7 @@ func TestAWSECSCheckExternalID_PlainClusterNoRegion_ReturnsError(t *testing.T) {
 	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
 
 	p := newECSProvider()
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSECSRole:           testRoleARN,
 		configAWSECSRoleExternalID: "my-eid",
 		// no region, plain cluster name
@@ -109,7 +108,7 @@ func TestAWSECSCheckExternalID_NoExternalID_SkipsFn(t *testing.T) {
 	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
 
 	p := newECSProvider()
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSECSRole: testRoleARN,
 		// no role_external_id
 	}
@@ -128,7 +127,7 @@ func TestAWSECSCheckExternalID_NoRole_SkipsFn(t *testing.T) {
 	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
 
 	p := newECSProvider()
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSECSRoleExternalID: "my-eid",
 		// no role
 	}
@@ -140,7 +139,7 @@ func TestAWSECSCheckExternalID_NoRole_SkipsFn(t *testing.T) {
 
 func TestAWSECSValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 	p := &awsECSComputeProvider{requireRoleAndExternalID: true}
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSECSCluster: testClusterARN,
 		configAWSECSService: "my-service",
 		// no role
@@ -153,7 +152,7 @@ func TestAWSECSValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 
 func TestAWSECSValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
 	p := &awsECSComputeProvider{requireRoleAndExternalID: true}
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSECSCluster: testClusterARN,
 		configAWSECSService: "my-service",
 		configAWSECSRole:    testRoleARN,
@@ -169,7 +168,7 @@ func TestAWSECSValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(t *testing
 	// With requireRoleAndExternalID=false the mandatory check is skipped.
 	// The call will still fail when it tries to reach AWS, which is expected.
 	p := &awsECSComputeProvider{requireRoleAndExternalID: false}
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSECSCluster: testClusterARN,
 		configAWSECSService: "my-service",
 		// no role or external ID
@@ -191,7 +190,7 @@ func TestAWSECSCheckExternalID_FnError_Propagated(t *testing.T) {
 	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
 
 	p := newECSProvider()
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSECSRole:           testRoleARN,
 		configAWSECSRoleExternalID: "my-eid",
 	}

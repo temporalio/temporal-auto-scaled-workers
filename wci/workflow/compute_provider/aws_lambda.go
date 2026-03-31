@@ -46,7 +46,7 @@ func (p *awsLambdaComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyInvoke
 }
 
-func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, cfg iface.ComputeProviderConfig) error {
+func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, cfg ComputeProviderConfig) error {
 	if p.requireRoleAndExternalID {
 		if roleARN, _ := cfg[configAWSLambdaRole].(string); roleARN == "" {
 			return fmt.Errorf("AWS Lambda compute provider requires %q to be configured", configAWSLambdaRole)
@@ -74,7 +74,7 @@ func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, cfg iface
 	return nil
 }
 
-func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, cfg iface.ComputeProviderConfig) error {
+func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, cfg ComputeProviderConfig) error {
 	lambdaClient, arn, err := p.getLambdaClientAndARN(ctx, cfg)
 	if err != nil {
 		return err
@@ -95,11 +95,11 @@ func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, cfg iface.C
 	return nil
 }
 
-func (p *awsLambdaComputeProvider) UpdateWorkerSetSize(_ context.Context, _ iface.ComputeProviderConfig, _ int32) error {
+func (p *awsLambdaComputeProvider) UpdateWorkerSetSize(_ context.Context, _ ComputeProviderConfig, _ int32) error {
 	return errors.ErrUnsupported
 }
 
-func (p *awsLambdaComputeProvider) checkExternalID(ctx context.Context, cfg iface.ComputeProviderConfig, arn string) error {
+func (p *awsLambdaComputeProvider) checkExternalID(ctx context.Context, cfg ComputeProviderConfig, arn string) error {
 	roleARN, _ := cfg[configAWSLambdaRole].(string)
 	eid, _ := cfg[configAWSLambdaRoleExternalID].(string)
 	if roleARN == "" || eid == "" {
@@ -113,7 +113,7 @@ func (p *awsLambdaComputeProvider) checkExternalID(ctx context.Context, cfg ifac
 }
 
 // getLambdaClientAndARN builds AWS config (including intermediary and config role assumption), returns a Lambda client and the function ARN.
-func (p *awsLambdaComputeProvider) getLambdaClientAndARN(ctx context.Context, cfg iface.ComputeProviderConfig) (*lambda.Client, string, error) {
+func (p *awsLambdaComputeProvider) getLambdaClientAndARN(ctx context.Context, cfg ComputeProviderConfig) (*lambda.Client, string, error) {
 	arn, ok := cfg[configAWSLambdaARN].(string)
 	if !ok || arn == "" {
 		return nil, "", fmt.Errorf("AWS Lambda Function ARN not found or invalid")

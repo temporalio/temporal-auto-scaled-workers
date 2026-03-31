@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
-	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 )
 
 const (
@@ -32,7 +31,7 @@ func TestAWSLambdaCheckExternalID_BothSet_CallsFn(t *testing.T) {
 	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
 
 	p := newLambdaProvider()
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSLambdaRole:           testRoleARN,
 		configAWSLambdaRoleExternalID: "my-eid",
 	}
@@ -60,7 +59,7 @@ func TestAWSLambdaCheckExternalID_NoExternalID_SkipsFn(t *testing.T) {
 	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
 
 	p := newLambdaProvider()
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSLambdaRole: testRoleARN,
 		// no role_external_id
 	}
@@ -79,7 +78,7 @@ func TestAWSLambdaCheckExternalID_NoRole_SkipsFn(t *testing.T) {
 	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
 
 	p := newLambdaProvider()
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSLambdaRoleExternalID: "my-eid",
 		// no role
 	}
@@ -91,7 +90,7 @@ func TestAWSLambdaCheckExternalID_NoRole_SkipsFn(t *testing.T) {
 
 func TestAWSLambdaValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 	p := &awsLambdaComputeProvider{requireRoleAndExternalID: true}
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSLambdaARN: testLambdaARN,
 		// no role
 	}
@@ -103,7 +102,7 @@ func TestAWSLambdaValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 
 func TestAWSLambdaValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
 	p := &awsLambdaComputeProvider{requireRoleAndExternalID: true}
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSLambdaARN:  testLambdaARN,
 		configAWSLambdaRole: testRoleARN,
 		// no role_external_id
@@ -118,7 +117,7 @@ func TestAWSLambdaValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(t *test
 	// With requireRoleAndExternalID=false the mandatory check is skipped.
 	// The call will still fail when it tries to reach AWS, which is expected.
 	p := &awsLambdaComputeProvider{requireRoleAndExternalID: false}
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSLambdaARN: testLambdaARN,
 		// no role or external ID
 	}
@@ -139,7 +138,7 @@ func TestAWSLambdaCheckExternalID_FnError_Propagated(t *testing.T) {
 	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
 
 	p := newLambdaProvider()
-	cfg := iface.ComputeProviderConfig{
+	cfg := ComputeProviderConfig{
 		configAWSLambdaRole:           testRoleARN,
 		configAWSLambdaRoleExternalID: "my-eid",
 	}
