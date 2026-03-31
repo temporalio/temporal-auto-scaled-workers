@@ -37,6 +37,10 @@ const (
 
 type (
 	Client interface {
+		UpdateTaskQueueName(
+			ctx context.Context,
+			newTaskQueueName string,
+		) error
 		WorkerControllerInstanceExists(
 			ctx context.Context,
 			namespaceEntry *namespace.Namespace,
@@ -69,8 +73,10 @@ type (
 		ValidateWorkerControllerInstanceSpec(
 			ctx context.Context,
 			namespaceEntry *namespace.Namespace,
-			spec *iface.WorkerControllerInstanceSpec,
+			version *deploymentpb.WorkerDeploymentVersion,
 			identity string,
+			upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
+			removeScalingGroups []string,
 		) error
 
 		DeleteWorkerControllerInstance(
@@ -123,6 +129,15 @@ var retryPolicy = backoff.NewExponentialRetryPolicy(100 * time.Millisecond).With
 
 var _ Client = (*clientImpl)(nil)
 
+func (d *clientImpl) UpdateTaskQueueName(ctx context.Context, newTaskQueueName string) error {
+	if len(newTaskQueueName) == 0 {
+		return fmt.Errorf("Invalid task queue name")
+	}
+
+	d.controllerTaskQueueName = newTaskQueueName
+	return nil
+}
+
 func (d *clientImpl) DescribeWorkerControllerInstance(
 	ctx context.Context,
 	namespaceEntry *namespace.Namespace,
@@ -139,7 +154,7 @@ func (d *clientImpl) DescribeWorkerControllerInstance(
 		return nil, nil, err
 	}
 
-	res, err := queryWorkflowWithRetry(ctx, d.historyClient, namespaceEntry, version, iface.QueryDescribeWorkerControllerInstance)
+	res, err := queryWorkflowWithRetry(ctx, d.historyClient, namespaceEntry, version, iface.QueryDescribeWorkerControllerInstance, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -291,17 +306,49 @@ func (d *clientImpl) UpdateWorkerControllerInstance(
 func (d *clientImpl) ValidateWorkerControllerInstanceSpec(
 	ctx context.Context,
 	namespaceEntry *namespace.Namespace,
-	spec *iface.WorkerControllerInstanceSpec,
+	version *deploymentpb.WorkerDeploymentVersion,
 	identity string,
+	upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
+	removeScalingGroups []string,
 ) (retErr error) {
 	//revive:disable-next-line:defer
 	defer d.convertAndRecordError("ValidateWorkerControllerInstanceSpec", nil, &retErr, namespaceEntry.Name(), identity)()
 
-	if spec == nil {
-		return serviceerror.NewInvalidArgument("spec must be provided")
+	if version != nil {
+		updatePayload, err := sdk.PreferProtoDataConverter.ToPayloads(iface.ValidateSpecRequest{Identity: identity, UpsertScalingGroups: upsertScalingGroups, RemoveScalingGroups: removeScalingGroups})
+		if err != nil {
+			return err
+		}
+
+		workflowID := GenerateWorkerControllerInstanceWorkflowID(version)
+		requestID := uuid.NewString()
+		outcome, err := updateWorkflow(
+			ctx,
+			d.historyClient,
+			namespaceEntry,
+			workflowID,
+			&updatepb.Request{
+				Input: &updatepb.Input{Name: iface.ValidateWorkerControllerInstanceSpec, Args: updatePayload},
+				Meta:  &updatepb.Meta{UpdateId: requestID, Identity: identity},
+			},
+		)
+		if err != nil {
+			var notFound *serviceerror.NotFound
+			if !errors.As(err, &notFound) {
+				// if the instance doesn't exist, we run the other validation below instead of returning an error
+				// as it means this is a dry-run
+				return err
+			}
+		} else if outcome != nil {
+			if failure := outcome.GetFailure(); failure != nil {
+				return serviceerror.NewInvalidArgument(failure.Message)
+			}
+			return nil
+		}
 	}
-	if err := spec.Validate(); err != nil {
-		return err
+
+	if len(upsertScalingGroups) == 0 || len(removeScalingGroups) > 0 {
+		return serviceerror.NewInvalidArgument("No prior compute config found, which means nothing can be removed and something needs to be added to be valid")
 	}
 
 	workflowID := uuid.NewString()
@@ -315,7 +362,7 @@ func (d *clientImpl) ValidateWorkerControllerInstanceSpec(
 		iface.WorkerControllerInstanceValidateWorkflowType,
 		workflowID,
 		&iface.ValidateWorkerControllerInstanceSpecWorkflowArgs{
-			Spec: spec,
+			UpsertScalingGroups: upsertScalingGroups,
 		},
 		identity,
 		uuid.NewString(),

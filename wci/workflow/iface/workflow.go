@@ -30,8 +30,9 @@ const (
 	WorkerControllerInstanceMemoField = "WorkerControllerInstanceMemo"
 
 	// Updates
-	UpdateWorkerControllerInstance = "update-worker-controller-instance"
-	DeleteWorkerControllerInstance = "delete-worker-controller-instance"
+	UpdateWorkerControllerInstance       = "update-worker-controller-instance"
+	DeleteWorkerControllerInstance       = "delete-worker-controller-instance"
+	ValidateWorkerControllerInstanceSpec = "validate-spec"
 
 	// Signals
 	SignalTaskAdd = "task-add-signal"
@@ -60,7 +61,7 @@ type (
 	}
 
 	ValidateWorkerControllerInstanceSpecWorkflowArgs struct {
-		Spec *WorkerControllerInstanceSpec `json:"spec"`
+		UpsertScalingGroups map[string]ScalingGroupSpecUpdate `json:"upsert_scaling_groups"`
 	}
 
 	WorkerControllerInstanceWorkflowArgs struct {
@@ -107,6 +108,15 @@ type (
 		Identity string `json:"identity,omitempty"`
 	}
 	DeleteWorkerControllerInstanceResponse struct{}
+
+	ValidateSpecRequest struct {
+		Identity string `json:"identity,omitempty"`
+
+		UpsertScalingGroups map[string]ScalingGroupSpecUpdate `json:"upsert_scaling_groups"`
+		RemoveScalingGroups []string                          `json:"remove_scaling_groups"`
+	}
+
+	ValidateSpecResponse struct{}
 
 	SignalTaskAddRequest struct {
 		TaskQueueName string                `json:"task_queue_name"`

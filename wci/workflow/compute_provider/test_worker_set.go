@@ -24,21 +24,21 @@ func NewTestWorkerSetComputeProvider(_ context.Context, _ *dynamicconfig.Collect
 }
 
 func (p *testWorkerSetComputeProvider) LaunchStrategy() LaunchStrategy {
-	return LaunchStrategyInvoke
+	return LaunchStrategyWorkerSet
 }
 
-func (p *testWorkerSetComputeProvider) ValidateConfig(ctx context.Context, config iface.ComputeProviderConfig) error {
-	if _, ok := config[configTestInvokeIllegalField].(string); ok {
+func (p *testWorkerSetComputeProvider) ValidateConfig(ctx context.Context, config ComputeProviderConfig) error {
+	if _, ok := config[configTestWorkerSetIllegalField].(string); ok {
 		return fmt.Errorf("illegal_field found in config")
 	}
 
 	return nil
 }
 
-func (p *testWorkerSetComputeProvider) InvokeWorker(ctx context.Context, config iface.ComputeProviderConfig) error {
+func (p *testWorkerSetComputeProvider) InvokeWorker(ctx context.Context, config ComputeProviderConfig) error {
 	return errors.ErrUnsupported
 }
 
-func (p *testWorkerSetComputeProvider) UpdateWorkerSetSize(_ context.Context, _ iface.ComputeProviderConfig, _ int32) error {
+func (p *testWorkerSetComputeProvider) UpdateWorkerSetSize(_ context.Context, _ ComputeProviderConfig, _ int32) error {
 	return nil
 }

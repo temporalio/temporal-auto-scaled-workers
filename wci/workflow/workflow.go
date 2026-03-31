@@ -138,6 +138,9 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	if err = workflow.SetUpdateHandlerWithOptions(ctx, iface.DeleteWorkerControllerInstance, d.handleDeleteInstance, workflow.UpdateHandlerOptions{Validator: d.validateDeleteInstance}); err != nil {
 		return err
 	}
+	if err = workflow.SetUpdateHandlerWithOptions(ctx, iface.ValidateWorkerControllerInstanceSpec, d.handleValidateSpec, workflow.UpdateHandlerOptions{Validator: d.validateValidateSpec}); err != nil {
+		return err
+	}
 
 	// Listen to signals in a different goroutine to make business logic clearer
 	workflow.Go(ctx, d.listenToSignals)
@@ -163,6 +166,52 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	// workflow history with just two initial events. This minimizes the risk of NDE (Non-Deterministic Execution)
 	// errors during server rollbacks.
 	return workflow.NewContinueAsNewError(ctx, iface.WorkerControllerInstanceWorkflowType, d.WorkerControllerInstanceWorkflowArgs)
+}
+
+func (d *WorkflowRunner) validateValidateSpec(args *iface.ValidateSpecRequest) error {
+	if err := d.ensureNotDeleted(); err != nil {
+		return err
+	}
+	if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
+		return temporal.NewApplicationError("no change found", iface.ErrFailedPrecondition)
+	}
+	return nil
+}
+
+func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.ValidateSpecRequest) (*iface.ValidateSpecResponse, error) {
+	if err := d.preUpdateChecks(ctx); err != nil {
+		return nil, err
+	}
+
+	updatedSpec, err := iface.BuildUpdatedSpec(d.State.Spec, &iface.UpdateWorkerControllerInstanceRequest{
+		Identity:            args.Identity,
+		UpsertScalingGroups: args.UpsertScalingGroups,
+		RemoveScalingGroups: args.RemoveScalingGroups,
+	})
+	if err != nil {
+		return nil, serviceerror.NewInvalidArgumentf("%w", err)
+	}
+
+	if updatedSpec != nil {
+		if err := updatedSpec.Validate(); err != nil {
+			return nil, serviceerror.NewInvalidArgumentf("%w", err)
+		}
+
+		if err := workflow.ExecuteActivity(
+			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
+			d.a.ValidateSpec,
+			&ValidateSpecRequest{Spec: updatedSpec},
+		).Get(ctx, nil); err != nil {
+			var appErr *temporal.ApplicationError
+			if errors.As(err, &appErr) {
+				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
+			} else {
+				return nil, err
+			}
+		}
+	}
+
+	return &iface.ValidateSpecResponse{}, nil
 }
 
 func (d *WorkflowRunner) validateUpdateInstance(args *iface.UpdateWorkerControllerInstanceRequest) error {
@@ -196,9 +245,23 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 
 	updatedSpec, err := iface.BuildUpdatedSpec(d.State.Spec, args)
 	if err != nil {
-		return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
+		return nil, serviceerror.NewInvalidArgumentf("%w", err)
 	}
+
 	if updatedSpec != nil {
+		// if there are no scaling groups after the update, it is seen as implicit delete
+		// that way no orphaned workflows stick around and waste cycles
+		if len(updatedSpec.ScalingGroupSpecs) == 0 {
+			d.deleteInstance = true
+			d.State.ConflictToken = args.ConflictToken
+			d.State.Spec = updatedSpec
+			return &iface.UpdateWorkerControllerInstanceResponse{}, nil
+		}
+
+		if err := updatedSpec.Validate(); err != nil {
+			return nil, serviceerror.NewInvalidArgumentf("%w", err)
+		}
+
 		if err := workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.ValidateSpec,
@@ -385,7 +448,6 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 
 func (d *WorkflowRunner) listenToSignals(ctx workflow.Context) {
 	noSyncMatchSignalChannel := workflow.GetSignalChannel(ctx, iface.SignalTaskAdd)
-
 	d.signalHandler.signalSelector.AddReceive(noSyncMatchSignalChannel, func(c workflow.ReceiveChannel, more bool) {
 		d.signalHandler.processingSignals++
 		defer func() { d.signalHandler.processingSignals-- }()

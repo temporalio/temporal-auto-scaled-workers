@@ -207,7 +207,12 @@ func (config ScalingAlgorithmConfig) ValidateFloat64Field(key string, minValidVa
 }
 
 func (c *ScalingGroupSpec) Clone() *ScalingGroupSpec {
-	cloned := *c
+	cloned := &ScalingGroupSpec{
+		TaskTypes: slices.Clone(c.TaskTypes),
+		Compute: ComputeProviderSpec{
+			ProviderType: c.Compute.ProviderType,
+		},
+	}
 
 	if c.Compute.Config != nil {
 		cloned.Compute.Config = proto.Clone(c.Compute.Config).(*commonpb.Payload)
@@ -220,5 +225,5 @@ func (c *ScalingGroupSpec) Clone() *ScalingGroupSpec {
 		}
 	}
 
-	return &cloned
+	return cloned
 }
