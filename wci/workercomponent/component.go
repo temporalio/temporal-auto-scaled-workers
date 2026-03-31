@@ -1,4 +1,4 @@
-package wci
+package workercomponent
 
 import (
 	"go.temporal.io/auto-scaled-workers/wci/client"
@@ -19,6 +19,10 @@ type (
 		sdkClientFactory sdk.ClientFactory
 	}
 )
+
+func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory) workercommon.PerNSWorkerComponent {
+	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory}
+}
 
 func (s *workerComponent) DedicatedWorkerOptions(ns *namespace.Namespace) *workercommon.PerNSDedicatedWorkerOptions {
 	return &workercommon.PerNSDedicatedWorkerOptions{
