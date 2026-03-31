@@ -10,13 +10,13 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	commonpb "go.temporal.io/api/common/v1"
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	updatepb "go.temporal.io/api/update/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/backoff"
@@ -62,7 +62,8 @@ type (
 			version *deploymentpb.WorkerDeploymentVersion,
 			conflictToken []byte,
 			identity string,
-			spec *iface.WorkerControllerInstanceSpec,
+			upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
+			removeScalingGroups []string,
 		) error
 
 		ValidateWorkerControllerInstanceSpec(
@@ -226,7 +227,8 @@ func (d *clientImpl) UpdateWorkerControllerInstance(
 	version *deploymentpb.WorkerDeploymentVersion,
 	conflictToken []byte,
 	identity string,
-	spec *iface.WorkerControllerInstanceSpec,
+	upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
+	removeScalingGroups []string,
 ) (retErr error) {
 	//revive:disable-next-line:defer
 	defer d.convertAndRecordError("UpdateWorkerControllerInstance", version, &retErr, namespaceEntry.Name(), identity)()
@@ -238,18 +240,16 @@ func (d *clientImpl) UpdateWorkerControllerInstance(
 	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, version.BuildId, d.maxIDLengthLimit()); err != nil {
 		return err
 	}
-	if err := spec.Validate(); err != nil {
-		return err
-	}
 	if err := d.checkInstanceCount(ctx, namespaceEntry, version); err != nil {
 		return err
 	}
 
 	requestID := uuid.NewString()
 	updateReq := &iface.UpdateWorkerControllerInstanceRequest{
-		Identity:      identity,
-		ConflictToken: conflictToken,
-		Spec:          spec,
+		Identity:            identity,
+		ConflictToken:       conflictToken,
+		UpsertScalingGroups: upsertScalingGroups,
+		RemoveScalingGroups: removeScalingGroups,
 	}
 
 	workflowID := GenerateWorkerControllerInstanceWorkflowID(version)

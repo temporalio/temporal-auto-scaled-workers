@@ -97,7 +97,8 @@ type (
 		Identity      string `json:"identity,omitempty"`
 		ConflictToken []byte `json:"conflict_token,omitempty"`
 
-		Spec *WorkerControllerInstanceSpec `json:"spec,omitempty"`
+		UpsertScalingGroups map[string]ScalingGroupSpecUpdate `json:"upsert_scaling_groups"`
+		RemoveScalingGroups []string                          `json:"remove_scaling_groups"`
 	}
 
 	UpdateWorkerControllerInstanceResponse struct{}

@@ -6,9 +6,9 @@ import (
 	"errors"
 	"time"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
-	"go.temporal.io/api/serviceerror"
 	sdkclient "go.temporal.io/sdk/client"
 	sdklog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
@@ -169,11 +169,8 @@ func (d *WorkflowRunner) validateUpdateInstance(args *iface.UpdateWorkerControll
 	if err := d.ensureNotDeleted(); err != nil {
 		return err
 	}
-	if args.Spec == nil {
-		return temporal.NewApplicationError("worker controller instance spec must be set", iface.ErrFailedPrecondition)
-	}
-	if err := args.Spec.Validate(); err != nil {
-		return err
+	if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
+		return temporal.NewApplicationError("no change found", iface.ErrFailedPrecondition)
 	}
 	if args.ConflictToken != nil && !bytes.Equal(args.ConflictToken, d.State.ConflictToken) {
 		return temporal.NewApplicationError("conflict token mismatch", iface.ErrFailedPrecondition)
@@ -197,11 +194,15 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		d.lock.Unlock()
 	}()
 
-	if args.Spec != nil {
+	updatedSpec, err := iface.BuildUpdatedSpec(d.State.Spec, args)
+	if err != nil {
+		return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
+	}
+	if updatedSpec != nil {
 		if err := workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.ValidateSpec,
-			&ValidateSpecRequest{Spec: args.Spec},
+			&ValidateSpecRequest{Spec: updatedSpec},
 		).Get(ctx, nil); err != nil {
 			var appErr *temporal.ApplicationError
 			if errors.As(err, &appErr) {
@@ -215,7 +216,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		if err := workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: RegisterTaskQueuesViaWorkersActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.InvokeWorkersToRegisterTaskQueues,
-			args.Spec,
+			updatedSpec,
 		).Get(ctx, nil); err != nil {
 			var appErr *temporal.ApplicationError
 			if errors.As(err, &appErr) {
@@ -230,7 +231,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		}
 
 		d.State.ConflictToken = args.ConflictToken
-		d.State.Spec = args.Spec
+		d.State.Spec = updatedSpec
 	}
 
 	return &iface.UpdateWorkerControllerInstanceResponse{}, nil

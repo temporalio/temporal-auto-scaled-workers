@@ -34,6 +34,11 @@ type (
 		Scaling   *ScalingAlgorithmSpec   `json:"scaling,omitempty"`
 	}
 
+	ScalingGroupSpecUpdate struct {
+		Spec       ScalingGroupSpec `json:"spec"`
+		UpdateMask []string         `json:"update_mask"`
+	}
+
 	// WorkerControllerInstanceSpec contains the individual scaling group specs
 	WorkerControllerInstanceSpec struct {
 		ScalingGroupSpecs map[string]ScalingGroupSpec `json:"scaling_group_specs"`
@@ -199,4 +204,21 @@ func (config ScalingAlgorithmConfig) GetFloat64Field(key string, defaultValue fl
 
 func (config ScalingAlgorithmConfig) ValidateFloat64Field(key string, minValidValue float64) error {
 	return validateFloat64InMap(config, key, minValidValue)
+}
+
+func (c *ScalingGroupSpec) Clone() *ScalingGroupSpec {
+	cloned := *c
+
+	if c.Compute.Config != nil {
+		cloned.Compute.Config = proto.Clone(c.Compute.Config).(*commonpb.Payload)
+	}
+	if c.Scaling != nil {
+		clonedScaling := *c.Scaling
+		cloned.Scaling = &clonedScaling
+		if c.Scaling.Config != nil {
+			cloned.Scaling.Config = proto.Clone(c.Scaling.Config).(*commonpb.Payload)
+		}
+	}
+
+	return &cloned
 }
