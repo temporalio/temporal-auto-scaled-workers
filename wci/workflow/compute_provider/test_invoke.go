@@ -57,7 +57,7 @@ func TestInvokeComputeProviderValidComputeProvider() *computepb.ComputeProvider 
 }
 
 // TestInvokeComputeProviderInvalidProviderDetails provides an example invalid config for testing code to use
-func TestInvokeComputeProviderInvalidSpec() *computepb.ComputeProvider {
+func TestInvokeComputeProviderInvalidComputeProvider() *computepb.ComputeProvider {
 	providerDetails := map[string]string{
 		configTestInvokeIllegalField: "something",
 	}
