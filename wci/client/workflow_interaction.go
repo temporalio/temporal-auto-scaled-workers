@@ -91,9 +91,11 @@ func startWorkflowAndWait(
 			return err
 		}
 
-		events := resp.GetResponse().GetHistory().GetEvents()
+		events := resp.GetHistory().GetEvents()
 		if len(events) > 0 {
-			event := events[0]
+			// the very last event is the one we are looking for
+			event := events[len(events)-1]
+
 			if event.GetWorkflowExecutionCompletedEventAttributes() != nil {
 				return nil
 			}
