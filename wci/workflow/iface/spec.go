@@ -3,18 +3,19 @@ package iface
 import (
 	"slices"
 
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	"google.golang.org/protobuf/proto"
 )
 
 type (
-	ComputeProviderType   string
-	ComputeProviderConfig map[string]any
+	ComputeProviderType string
 
 	// ComputeProviderSpec is a single provider type and its settings (used per task queue type or as default).
 	ComputeProviderSpec struct {
-		ProviderType ComputeProviderType   `json:"provider_type,omitempty"`
-		Config       ComputeProviderConfig `json:"config,omitempty"`
+		ProviderType ComputeProviderType `json:"provider_type,omitempty"`
+		Config       *commonpb.Payload   `json:"config,omitempty"`
 	}
 
 	ScalingAlgorithmType   string
@@ -22,8 +23,8 @@ type (
 
 	// ScalingAlgorithmSpec is a single scaling algorithm and its settings (used per task queue type or as default).
 	ScalingAlgorithmSpec struct {
-		ScalingAlgorithm ScalingAlgorithmType   `json:"scaling_algorithm,omitempty"`
-		Config           ScalingAlgorithmConfig `json:"config,omitempty"`
+		ScalingAlgorithm ScalingAlgorithmType `json:"scaling_algorithm,omitempty"`
+		Config           *commonpb.Payload    `json:"config,omitempty"`
 	}
 
 	// ScalingGroupSpec is one entry: a list of task types and the compute/scaling spec that applies to them.
@@ -31,6 +32,11 @@ type (
 		TaskTypes []enumspb.TaskQueueType `json:"task_types"`
 		Compute   ComputeProviderSpec     `json:"compute"`
 		Scaling   *ScalingAlgorithmSpec   `json:"scaling,omitempty"`
+	}
+
+	ScalingGroupSpecUpdate struct {
+		Spec       ScalingGroupSpec `json:"spec"`
+		UpdateMask []string         `json:"update_mask"`
 	}
 
 	// WorkerControllerInstanceSpec contains the individual scaling group specs
@@ -198,4 +204,26 @@ func (config ScalingAlgorithmConfig) GetFloat64Field(key string, defaultValue fl
 
 func (config ScalingAlgorithmConfig) ValidateFloat64Field(key string, minValidValue float64) error {
 	return validateFloat64InMap(config, key, minValidValue)
+}
+
+func (c *ScalingGroupSpec) Clone() *ScalingGroupSpec {
+	cloned := &ScalingGroupSpec{
+		TaskTypes: slices.Clone(c.TaskTypes),
+		Compute: ComputeProviderSpec{
+			ProviderType: c.Compute.ProviderType,
+		},
+	}
+
+	if c.Compute.Config != nil {
+		cloned.Compute.Config = proto.Clone(c.Compute.Config).(*commonpb.Payload)
+	}
+	if c.Scaling != nil {
+		clonedScaling := *c.Scaling
+		cloned.Scaling = &clonedScaling
+		if c.Scaling.Config != nil {
+			cloned.Scaling.Config = proto.Clone(c.Scaling.Config).(*commonpb.Payload)
+		}
+	}
+
+	return cloned
 }

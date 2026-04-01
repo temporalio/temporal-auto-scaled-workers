@@ -7,16 +7,17 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
-	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
-	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
+	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/namespace"
+	"go.temporal.io/server/common/sdk"
 )
 
 const (
@@ -94,35 +95,43 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	timeoutCtx, cancel := context.WithTimeout(ctx, validateSpecTimeout)
 	defer cancel()
 
-	for _, entry := range req.Spec.ScalingGroupSpecs {
+	for key, entry := range req.Spec.ScalingGroupSpecs {
 		provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.dc)
 		if err != nil {
-			return temporal.NewApplicationError(err.Error(), "InvalidArgument")
+			return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument")
 		}
 		if provider == nil {
-			return temporal.NewApplicationError(fmt.Sprintf("Could not instantiate compute provider with type '%s'", entry.Compute.ProviderType), "InvalidArgument")
+			return temporal.NewApplicationError(fmt.Sprintf("%s: Could not instantiate compute provider with type '%s'", key, entry.Compute.ProviderType), "InvalidArgument")
 		}
-		logger.Debug("Validating compute provider", "compute_provider_type", entry.Compute.ProviderType)
-		if err := provider.ValidateConfig(timeoutCtx, entry.Compute.Config); err != nil {
-			return temporal.NewApplicationError(err.Error(), "InvalidArgument")
+		logger.Debug("Validating compute provider", "scaling_group_name", key, "compute_provider_type", entry.Compute.ProviderType)
+		config := map[string]any{}
+		if err := sdk.PreferProtoDataConverter.FromPayload(entry.Compute.Config, &config); err != nil {
+			return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument")
+		}
+		if err := provider.ValidateConfig(timeoutCtx, config); err != nil {
+			return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument")
 		}
 
 		if entry.Scaling != nil {
 			scalingAlgo, err := scalingalgorithm.GetScalingAlgorithm(timeoutCtx, entry.Scaling.ScalingAlgorithm, a.dc)
 			if err != nil {
-				return temporal.NewApplicationError(err.Error(), "InvalidArgument")
+				return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument")
 			}
 			if scalingAlgo == nil {
-				return temporal.NewApplicationError(fmt.Sprintf("Could not instantiate scaling algorithm with type '%s'", entry.Scaling.ScalingAlgorithm), "InvalidArgument")
+				return temporal.NewApplicationError(fmt.Sprintf("%s: Could not instantiate scaling algorithm with type '%s'", key, entry.Scaling.ScalingAlgorithm), "InvalidArgument")
 			}
 			logger.Debug("Validating scaling algorithm", "scaling_algorithm_type", entry.Scaling.ScalingAlgorithm)
-			if err := scalingAlgo.ValidateConfig(timeoutCtx, entry.Scaling.Config); err != nil {
-				return temporal.NewApplicationError(err.Error(), "InvalidArgument")
+			config := map[string]any{}
+			if err := sdk.PreferProtoDataConverter.FromPayload(entry.Scaling.Config, &config); err != nil {
+				return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument")
+			}
+			if err := scalingAlgo.ValidateConfig(timeoutCtx, config); err != nil {
+				return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err), "InvalidArgument")
 			}
 
 			compatibleLaunchStrategies := scalingAlgo.CompatibleLaunchStrategies()
 			if !slices.Contains(compatibleLaunchStrategies, provider.LaunchStrategy()) {
-				return temporal.NewApplicationError(fmt.Sprintf("Scaling Algorithm '%s' is not compatible with compute provider '%s'", entry.Scaling.ScalingAlgorithm, entry.Compute.ProviderType), "InvalidArgument")
+				return temporal.NewApplicationError(fmt.Sprintf("%s: Scaling Algorithm '%s' is not compatible with compute provider '%s'", key, entry.Scaling.ScalingAlgorithm, entry.Compute.ProviderType), "InvalidArgument")
 			}
 		}
 	}
@@ -144,7 +153,12 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 		}
 
 		if provider.LaunchStrategy() == computeprovider.LaunchStrategyInvoke {
-			if err := provider.InvokeWorker(ctx, v.Compute.Config); err != nil {
+			config := map[string]any{}
+			if err := sdk.PreferProtoDataConverter.FromPayload(v.Compute.Config, &config); err != nil {
+				return temporal.NewApplicationError(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument")
+			}
+
+			if err := provider.InvokeWorker(ctx, config); err != nil {
 				return temporal.NewApplicationError(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed")
 			}
 		}
@@ -170,9 +184,14 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 
 	logger.Debug("Instantiated compute provider", "compute_provider_type", req.ComputeConfig.ProviderType)
 
+	config := map[string]any{}
+	if err := sdk.PreferProtoDataConverter.FromPayload(req.ComputeConfig.Config, &config); err != nil {
+		return temporal.NewApplicationError(err.Error(), "InvalidArgument")
+	}
+
 	timeoutCtx, cancel := context.WithTimeout(ctx, startNewWorkerInstanceTimeout)
 	defer cancel()
-	if err := provider.InvokeWorker(timeoutCtx, req.ComputeConfig.Config); err != nil {
+	if err := provider.InvokeWorker(timeoutCtx, config); err != nil {
 		return temporal.NewApplicationError(err.Error(), "InvokeWorkerFailed")
 	}
 	return nil
@@ -195,9 +214,17 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 
 	logger.Debug("Instantiated compute provider", "compute_provider_type", req.ComputeConfig.ProviderType)
 
+	config := map[string]any{}
+	if err := sdk.PreferProtoDataConverter.FromPayload(req.ComputeConfig.Config, &config); err != nil {
+		return temporal.NewApplicationError(err.Error(), "InvalidArgument")
+	}
+
 	timeoutCtx, cancel := context.WithTimeout(ctx, updateWorkerSetSizeTimeout)
 	defer cancel()
-	return provider.UpdateWorkerSetSize(timeoutCtx, req.ComputeConfig.Config, req.UpdatedSize)
+	if err := provider.UpdateWorkerSetSize(timeoutCtx, config, req.UpdatedSize); err != nil {
+		return temporal.NewApplicationError(err.Error(), "InvokeWorkerFailed")
+	}
+	return nil
 }
 
 func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddSignalActivityRequest) (*HandleTaskAddSignalActivityResponse, error) {
@@ -372,7 +399,10 @@ func (a *Activities) getScalingAlgorithmAndConfig(ctx context.Context, entry ifa
 	}
 	var scalingConfig iface.ScalingAlgorithmConfig
 	if entry.Scaling != nil {
-		scalingConfig = entry.Scaling.Config
+		scalingConfig = map[string]any{}
+		if err := sdk.PreferProtoDataConverter.FromPayload(entry.Scaling.Config, &scalingConfig); err != nil {
+			return nil, nil, fmt.Errorf("invalid scaling config: %v", err)
+		}
 	}
 	return scalingAlgo, scalingConfig, nil
 }

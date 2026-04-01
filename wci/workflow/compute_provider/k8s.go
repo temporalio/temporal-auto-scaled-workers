@@ -36,7 +36,7 @@ func (p *k8sComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyWorkerSet
 }
 
-func (p *k8sComputeProvider) ValidateConfig(ctx context.Context, config iface.ComputeProviderConfig) error {
+func (p *k8sComputeProvider) ValidateConfig(ctx context.Context, config ComputeProviderConfig) error {
 	client, namespace, deployment, err := p.buildClientAndParams(config)
 	if err != nil {
 		return err
@@ -48,11 +48,11 @@ func (p *k8sComputeProvider) ValidateConfig(ctx context.Context, config iface.Co
 	return nil
 }
 
-func (p *k8sComputeProvider) InvokeWorker(ctx context.Context, config iface.ComputeProviderConfig) error {
+func (p *k8sComputeProvider) InvokeWorker(ctx context.Context, config ComputeProviderConfig) error {
 	return errors.ErrUnsupported
 }
 
-func (p *k8sComputeProvider) UpdateWorkerSetSize(ctx context.Context, config iface.ComputeProviderConfig, count int32) error {
+func (p *k8sComputeProvider) UpdateWorkerSetSize(ctx context.Context, config ComputeProviderConfig, count int32) error {
 	client, namespace, deployment, err := p.buildClientAndParams(config)
 	if err != nil {
 		return err
@@ -72,7 +72,7 @@ func (p *k8sComputeProvider) UpdateWorkerSetSize(ctx context.Context, config ifa
 }
 
 // buildClientAndParams builds a Kubernetes client and extracts/validates namespace and deployment from config.
-func (p *k8sComputeProvider) buildClientAndParams(config iface.ComputeProviderConfig) (kubernetes.Interface, string, string, error) {
+func (p *k8sComputeProvider) buildClientAndParams(config ComputeProviderConfig) (kubernetes.Interface, string, string, error) {
 	namespace, ok := config[configK8sNamespace].(string)
 	if !ok || namespace == "" {
 		return nil, "", "", fmt.Errorf("namespace not found in config")
@@ -95,7 +95,7 @@ func (p *k8sComputeProvider) buildClientAndParams(config iface.ComputeProviderCo
 }
 
 // buildRestConfig returns a REST config using kubeconfig content (with optional context) or in-cluster config.
-func (p *k8sComputeProvider) buildRestConfig(config iface.ComputeProviderConfig) (*rest.Config, error) {
+func (p *k8sComputeProvider) buildRestConfig(config ComputeProviderConfig) (*rest.Config, error) {
 	kubeconfigContent, _ := config[configK8sKubeconfig].(string)
 
 	if kubeconfigContent == "" {

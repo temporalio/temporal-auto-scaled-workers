@@ -2,12 +2,13 @@ package computeprovider
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
+	computepb "go.temporal.io/api/compute/v1"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
+	"go.temporal.io/server/common/sdk"
 )
 
 const (
@@ -28,7 +29,7 @@ func (p *testInvokeComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyInvoke
 }
 
-func (p *testInvokeComputeProvider) ValidateConfig(ctx context.Context, config iface.ComputeProviderConfig) error {
+func (p *testInvokeComputeProvider) ValidateConfig(ctx context.Context, config ComputeProviderConfig) error {
 	if _, ok := config[configTestInvokeIllegalField].(string); ok {
 		return fmt.Errorf("illegal_field found in config")
 	}
@@ -36,34 +37,34 @@ func (p *testInvokeComputeProvider) ValidateConfig(ctx context.Context, config i
 	return nil
 }
 
-func (p *testInvokeComputeProvider) InvokeWorker(ctx context.Context, config iface.ComputeProviderConfig) error {
+func (p *testInvokeComputeProvider) InvokeWorker(ctx context.Context, config ComputeProviderConfig) error {
 	return nil
 }
 
-func (p *testInvokeComputeProvider) UpdateWorkerSetSize(_ context.Context, _ iface.ComputeProviderConfig, _ int32) error {
+func (p *testInvokeComputeProvider) UpdateWorkerSetSize(_ context.Context, _ ComputeProviderConfig, _ int32) error {
 	return errors.ErrUnsupported
 }
 
 // TestInvokeComputeProviderValidProviderDetails provides an example valid config for testing code to use
-func TestInvokeComputeProviderValidProviderDetails() []byte {
+func TestInvokeComputeProviderValidComputeProvider() *computepb.ComputeProvider {
 	providerDetails := map[string]string{}
-	marshalled, err := json.Marshal(providerDetails)
-	if err != nil {
-		return nil
-	}
+	payload, _ := sdk.PreferProtoDataConverter.ToPayload(providerDetails)
 
-	return marshalled
+	return &computepb.ComputeProvider{
+		Type:    string(iface.ComputeProviderTypeTestInvoke),
+		Details: payload,
+	}
 }
 
 // TestInvokeComputeProviderInvalidProviderDetails provides an example invalid config for testing code to use
-func TestInvokeComputeProviderInvalidProviderDetails() []byte {
+func TestInvokeComputeProviderInvalidSpec() *computepb.ComputeProvider {
 	providerDetails := map[string]string{
 		configTestInvokeIllegalField: "something",
 	}
-	marshalled, err := json.Marshal(providerDetails)
-	if err != nil {
-		return nil
-	}
+	payload, _ := sdk.PreferProtoDataConverter.ToPayload(providerDetails)
 
-	return marshalled
+	return &computepb.ComputeProvider{
+		Type:    string(iface.ComputeProviderTypeTestInvoke),
+		Details: payload,
+	}
 }

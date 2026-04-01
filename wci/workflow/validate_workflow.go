@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"errors"
+	"fmt"
 
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/sdk/temporal"
@@ -9,11 +10,20 @@ import (
 )
 
 func ValidateSpecWorkflow(ctx workflow.Context, args *iface.ValidateWorkerControllerInstanceSpecWorkflowArgs, activities *Activities) error {
-	if args == nil || args.Spec == nil {
-		return temporal.NewApplicationError("spec must be provided", "InvalidArgument")
+	if args == nil || args.UpsertScalingGroups == nil {
+		return temporal.NewApplicationError("upsert scaling groups must be provided", "InvalidArgument")
 	}
 
-	if err := args.Spec.Validate(); err != nil {
+	spec := iface.WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{}}
+	for _, scalingGroupId := range workflow.DeterministicKeys(args.UpsertScalingGroups) {
+		if len(args.UpsertScalingGroups[scalingGroupId].UpdateMask) > 0 {
+			return temporal.NewApplicationError(fmt.Sprintf("Scaling group '%s' has an update mask but nothing to compare with", scalingGroupId), "InvalidArgument")
+		}
+
+		spec.ScalingGroupSpecs[scalingGroupId] = args.UpsertScalingGroups[scalingGroupId].Spec
+	}
+
+	if err := spec.Validate(); err != nil {
 		return temporal.NewApplicationError(err.Error(), "InvalidArgument")
 	}
 
@@ -23,7 +33,7 @@ func ValidateSpecWorkflow(ctx workflow.Context, args *iface.ValidateWorkerContro
 			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 		}),
 		activities.ValidateSpec,
-		&ValidateSpecRequest{Spec: args.Spec},
+		&ValidateSpecRequest{Spec: &spec},
 	).Get(ctx, nil)
 	if err != nil {
 		var appErr *temporal.ApplicationError

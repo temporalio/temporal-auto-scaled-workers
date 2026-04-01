@@ -14,6 +14,7 @@ import (
 type (
 	LaunchStrategy string
 
+	ComputeProviderConfig      = map[string]any
 	ComputeProviderConstructor func(context.Context, *dynamicconfig.Collection) (ComputeProvider, error)
 
 	ComputeProvider interface {
@@ -25,17 +26,17 @@ type (
 		// ValidateConfig checks the provided configuration for correctness. This might involved
 		// invoking cloud provider functions to check permissions as well. If any issues are found
 		// returns an error with a description
-		ValidateConfig(ctx context.Context, config iface.ComputeProviderConfig) error
+		ValidateConfig(ctx context.Context, config ComputeProviderConfig) error
 
 		// InvokeWorker starts a new worker instance when using the LaunchStrategy 'invoke'. any
 		// error is returned if the invocation failed, but not if the invoked work dies before connecting
 		// to Temporal. Returns an error for other launch strategies.
-		InvokeWorker(ctx context.Context, config iface.ComputeProviderConfig) error
+		InvokeWorker(ctx context.Context, config ComputeProviderConfig) error
 
 		// UpdateWorkerSetSize updates the size of the managed worker set to the provided 'size' when using
 		// the LaunchStrategy 'worker-set'. An error is returned when the size update fails, but might not
 		// if the triggered instance starts/stops fail. Always returns an error for other launch stratgies.
-		UpdateWorkerSetSize(ctx context.Context, config iface.ComputeProviderConfig, size int32) error
+		UpdateWorkerSetSize(ctx context.Context, config ComputeProviderConfig, size int32) error
 	}
 )
 

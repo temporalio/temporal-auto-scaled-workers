@@ -46,7 +46,7 @@ func (p *gcpCloudRunComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyWorkerSet
 }
 
-func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, config iface.ComputeProviderConfig) error {
+func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, config ComputeProviderConfig) error {
 	client, name, err := p.buildClientAndParams(ctx, config)
 	if err != nil {
 		return err
@@ -59,11 +59,11 @@ func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, config 
 	return nil
 }
 
-func (p *gcpCloudRunComputeProvider) InvokeWorker(ctx context.Context, config iface.ComputeProviderConfig) error {
+func (p *gcpCloudRunComputeProvider) InvokeWorker(ctx context.Context, config ComputeProviderConfig) error {
 	return errors.ErrUnsupported
 }
 
-func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, config iface.ComputeProviderConfig, count int32) error {
+func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, config ComputeProviderConfig, count int32) error {
 	client, name, err := p.buildClientAndParams(ctx, config)
 	if err != nil {
 		return err
@@ -87,7 +87,7 @@ func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, co
 }
 
 // buildClientAndParams creates a Cloud Run WorkerPoolsClient and constructs the fully-qualified worker pool name.
-func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, config iface.ComputeProviderConfig) (*run.WorkerPoolsClient, string, error) {
+func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, config ComputeProviderConfig) (*run.WorkerPoolsClient, string, error) {
 	project, ok := config[configGCPCloudRunProject].(string)
 	if !ok || project == "" {
 		return nil, "", fmt.Errorf("project not found in config")
