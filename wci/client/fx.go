@@ -1,6 +1,7 @@
 package client
 
 import (
+	"go.temporal.io/server/common/primitives"
 	"go.uber.org/fx"
 
 	"go.temporal.io/server/common/dynamicconfig"
@@ -35,7 +36,7 @@ func ClientProvider(
 ) fxOut {
 	client := &clientImpl{
 		logger:                       logger,
-		controllerTaskQueueName:      WorkerControllerPerNSWorkerTaskQueue,
+		controllerTaskQueueName:      primitives.PerNSWorkerTaskQueue,
 		historyClient:                historyClient,
 		visibilityManager:            visibilityManager,
 		maxIDLengthLimit:             dynamicconfig.MaxIDLengthLimit.Get(dc),
