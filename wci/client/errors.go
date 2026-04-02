@@ -3,10 +3,10 @@ package client
 import (
 	"errors"
 
-	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/service/history/api"
 	"go.temporal.io/server/service/history/consts"
 	update2 "go.temporal.io/server/service/history/workflow/update"
@@ -14,7 +14,7 @@ import (
 
 const (
 	ErrTooManyRequests                  = "too many requests issued to Worker Deployment Version '%s' '%s'. Please try again later"
-	ErrWorkerControllerInstanceNotFound = "no Worker Deployment found with name '%s' %s; does your Worker Deployment have pollers?"
+	ErrWorkerControllerInstanceNotFound = "no Worker Controller Instance found for Worker Deployment with name '%s' %s"
 )
 
 func isFailedPreconditionOrNotFound(err error) bool {
@@ -77,7 +77,7 @@ func isRetryableUpdateError(err error) bool {
 
 func convertUpdateFailure(updateRes *workflowservice.UpdateWorkflowExecutionResponse) error {
 	if updateRes == nil {
-		return serviceerror.NewInternal("failed to update deployment workflow")
+		return serviceerror.NewInternal("failed to update worker controller instance workflow")
 	}
 
 	if updateRes.Stage != enumspb.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_COMPLETED {
@@ -93,7 +93,7 @@ func convertUpdateFailure(updateRes *workflowservice.UpdateWorkflowExecutionResp
 					return errWorkflowHistoryTooLong
 				} else if afi.GetType() == iface.ErrInstanceDeleted {
 					// Non-retryable
-					return serviceerror.NewNotFoundf("Worker Deployment not found")
+					return serviceerror.NewNotFoundf("Worker Controller Instance not found")
 				} else if afi.GetType() == iface.ErrFailedPrecondition {
 					return serviceerror.NewFailedPrecondition(failure.GetMessage())
 				}
