@@ -15,9 +15,9 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v2 v2.27.7
-	go.temporal.io/api v1.62.3-0.20260318205543-abadc507cecb
+	go.temporal.io/api v1.62.3-0.20260327234204-dbc016f3811d
 	go.temporal.io/sdk v1.38.0
-	go.temporal.io/server v1.29.0-135.0.0.20260325221217-dae51b2652f8
+	go.temporal.io/server v1.29.0-135.0.0.20260402001254-0127f26d9efc
 	go.uber.org/fx v1.24.0
 	google.golang.org/api v0.256.0
 	google.golang.org/protobuf v1.36.10
@@ -115,7 +115,7 @@ require (
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/nexus-rpc/sdk-go v0.5.2-0.20260211051645-26b0b4c584e5 // indirect
+	github.com/nexus-rpc/sdk-go v0.6.0 // indirect
 	github.com/olivere/elastic/v7 v7.0.32 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
