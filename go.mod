@@ -17,7 +17,7 @@ require (
 	github.com/urfave/cli/v2 v2.27.7
 	go.temporal.io/api v1.62.3-0.20260327234204-dbc016f3811d
 	go.temporal.io/sdk v1.38.0
-	go.temporal.io/server v1.29.0-135.0.0.20260402001254-0127f26d9efc
+	go.temporal.io/server v1.30.3
 	go.uber.org/fx v1.24.0
 	google.golang.org/api v0.256.0
 	google.golang.org/protobuf v1.36.10
@@ -139,7 +139,6 @@ require (
 	github.com/temporalio/ringpop-go v0.0.0-20250130211428-b97329e994f7 // indirect
 	github.com/temporalio/sqlparser v0.0.0-20231115171017-f4060bcfa6cb // indirect
 	github.com/temporalio/tchannel-go v1.22.1-0.20240528171429-1db37fdea938 // indirect
-	github.com/tidwall/btree v1.8.1 // indirect
 	github.com/twmb/murmur3 v1.1.8 // indirect
 	github.com/uber-common/bark v1.3.0 // indirect
 	github.com/uber-go/tally/v4 v4.1.17 // indirect
