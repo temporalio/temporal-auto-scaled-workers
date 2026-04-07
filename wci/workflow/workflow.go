@@ -255,7 +255,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			d.deleteInstance = true
 			d.State.ConflictToken = args.ConflictToken
 			d.State.Spec = updatedSpec
-			return &iface.UpdateWorkerControllerInstanceResponse{}, nil
+			return &iface.UpdateWorkerControllerInstanceResponse{Spec: d.State.Spec}, nil
 		}
 
 		if err := updatedSpec.Validate(); err != nil {
@@ -297,7 +297,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		d.State.Spec = updatedSpec
 	}
 
-	return &iface.UpdateWorkerControllerInstanceResponse{}, nil
+	return &iface.UpdateWorkerControllerInstanceResponse{Spec: d.State.Spec}, nil
 }
 
 func (d *WorkflowRunner) validateDeleteInstance(args *iface.DeleteWorkerControllerInstanceRequest) error {

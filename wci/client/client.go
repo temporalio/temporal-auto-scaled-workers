@@ -68,7 +68,7 @@ type (
 			identity string,
 			upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
 			removeScalingGroups []string,
-		) error
+		) (*iface.UpdateWorkerControllerInstanceResponse, error)
 
 		ValidateWorkerControllerInstanceSpec(
 			ctx context.Context,
@@ -244,19 +244,19 @@ func (d *clientImpl) UpdateWorkerControllerInstance(
 	identity string,
 	upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
 	removeScalingGroups []string,
-) (retErr error) {
+) (_ *iface.UpdateWorkerControllerInstanceResponse, retErr error) {
 	//revive:disable-next-line:defer
 	defer d.convertAndRecordError("UpdateWorkerControllerInstance", version, &retErr, namespaceEntry.Name(), identity)()
 
 	// validating params
 	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentNameFieldName, version.DeploymentName, d.maxIDLengthLimit()); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, version.BuildId, d.maxIDLengthLimit()); err != nil {
-		return err
+		return nil, err
 	}
 	if err := d.checkInstanceCount(ctx, namespaceEntry, version); err != nil {
-		return err
+		return nil, err
 	}
 
 	requestID := uuid.NewString()
@@ -289,18 +289,23 @@ func (d *clientImpl) UpdateWorkerControllerInstance(
 		requestID,
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if failure := outcome.GetFailure(); failure != nil {
 		if appFailureInfo := failure.GetApplicationFailureInfo(); appFailureInfo != nil {
 			if appFailureInfo.Type == "InvalidArgument" {
-				return serviceerror.NewInvalidArgument(failure.Message)
+				return nil, serviceerror.NewInvalidArgument(failure.Message)
 			}
 		}
-		return serviceerror.NewInternal(failure.Message)
+		return nil, serviceerror.NewInternal(failure.Message)
 	}
-	return nil
+
+	var resp iface.UpdateWorkerControllerInstanceResponse
+	if err := sdk.PreferProtoDataConverter.FromPayloads(outcome.GetSuccess(), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (d *clientImpl) ValidateWorkerControllerInstanceSpec(
