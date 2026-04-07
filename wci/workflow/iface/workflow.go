@@ -102,7 +102,9 @@ type (
 		RemoveScalingGroups []string                          `json:"remove_scaling_groups"`
 	}
 
-	UpdateWorkerControllerInstanceResponse struct{}
+	UpdateWorkerControllerInstanceResponse struct {
+		Spec *WorkerControllerInstanceSpec `json:"spec,omitempty"`
+	}
 
 	DeleteWorkerControllerInstanceRequest struct {
 		Identity string `json:"identity,omitempty"`
