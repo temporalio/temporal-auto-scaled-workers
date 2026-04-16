@@ -15,9 +15,9 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v2 v2.27.7
-	go.temporal.io/api v1.62.3-0.20260327234204-dbc016f3811d
-	go.temporal.io/sdk v1.38.0
-	go.temporal.io/server v1.29.0-135.0.0.20260402001254-0127f26d9efc
+	go.temporal.io/api v1.62.8
+	go.temporal.io/sdk v1.41.1
+	go.temporal.io/server v1.31.0-154.1
 	go.uber.org/fx v1.24.0
 	google.golang.org/api v0.256.0
 	google.golang.org/protobuf v1.36.10
