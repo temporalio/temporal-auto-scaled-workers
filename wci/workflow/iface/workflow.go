@@ -5,6 +5,7 @@ package iface
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -42,9 +43,9 @@ const (
 	ErrLongHistory        = "errLongHistory"            // update is not accepted until CaN happens. client should retry
 	ErrFailedPrecondition = "FailedPrecondition"
 
-	// ValidationStatus values
-	ValidationStatusSuccess ValidationStatus = "success"
-	ValidationStatusFailed  ValidationStatus = "failed"
+	// ValidationResult values
+	ValidationResultSuccess ValidationResult = "success"
+	ValidationResultFailed  ValidationResult = "failed"
 )
 
 var WorkerControllerInstanceVisibilityBaseListQuery = fmt.Sprintf(
@@ -86,9 +87,8 @@ type (
 		CreateTime           *timestamppb.Timestamp `json:"create_time,omitempty"`
 		LastModifierIdentity string                 `json:"last_modifier_identity,omitempty"`
 
-		// ValidationState holds the result of the last validation attempt performed
-		// during an UpdateWorkerControllerInstance update.
-		ValidationState *ValidationState `json:"validation_state,omitempty"`
+		// ValidationStatus holds the result of the last validation.
+		ValidationStatus *ValidationStatus `json:"validation_state,omitempty"`
 	}
 
 	QueryDescribeWorkerControllerInstanceResponse struct {
@@ -101,7 +101,7 @@ type (
 		ConflictToken        []byte `json:"conflict_token,omitempty"`
 		LastModifierIdentity string `json:"last_modifier_identity,omitempty"`
 
-		ValidationState *ValidationState `json:"validation_state,omitempty"`
+		ValidationStatus *ValidationStatus `json:"validation_state,omitempty"`
 	}
 
 	UpdateWorkerControllerInstanceRequest struct {
@@ -130,14 +130,14 @@ type (
 
 	ValidateSpecResponse struct{}
 
-	ValidationStatus string
+	ValidationResult string
 
-	ValidationState struct {
-		// LastValidatedTime is the time of the last validation attempt.
-		LastValidatedTime *timestamppb.Timestamp `json:"last_validated_time,omitempty"`
+	ValidationStatus struct {
+		// LastValidationTime is the time of the last validation attempt.
+		LastValidationTime time.Time `json:"last_validation_time"`
 		// Status is the outcome of the last validation attempt.
-		Status ValidationStatus `json:"status,omitempty"`
-		// ErrMessage is a description of any encountered validation errors.
+		Status ValidationResult `json:"status"`
+		// ErrMessage is a description of any encountered validation errors. It should be empty if validation succeeded.
 		ErrMessage string `json:"err_message,omitempty"`
 	}
 
@@ -156,6 +156,21 @@ type (
 		CreateTime     *timestamppb.Timestamp `json:"create_time,omitempty"`
 	}
 )
+
+func NewValidationStatusSuccess(t time.Time) *ValidationStatus {
+	return &ValidationStatus{
+		LastValidationTime: t,
+		Status:             ValidationResultSuccess,
+	}
+}
+
+func NewValidationStatusFailed(t time.Time, msg string) *ValidationStatus {
+	return &ValidationStatus{
+		LastValidationTime: t,
+		Status:             ValidationResultFailed,
+		ErrMessage:         msg,
+	}
+}
 
 func DecodeWorkerControllerInstanceMemo(memo *commonpb.Memo) (*WorkerControllerInstanceMemo, error) {
 	if memo == nil || memo.Fields == nil {

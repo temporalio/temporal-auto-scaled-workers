@@ -321,7 +321,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 		return nil, err
 	}
 	if deploymentVersionDetails == nil {
-		return nil, fmt.Errorf("Did not receive details in the describe response")
+		return nil, fmt.Errorf("did not receive details in the describe response")
 	}
 
 	metricsSnapshot := scalingalgorithm.ScalingMetricsSnapshot{
