@@ -41,6 +41,10 @@ const (
 	ErrInstanceDeleted    = "worker deployment deleted" // returned in the race condition that the deployment is deleted but the workflow is not yet closed.
 	ErrLongHistory        = "errLongHistory"            // update is not accepted until CaN happens. client should retry
 	ErrFailedPrecondition = "FailedPrecondition"
+
+	// ValidationStatus values
+	ValidationStatusSuccess ValidationStatus = "success"
+	ValidationStatusFailed  ValidationStatus = "failed"
 )
 
 var WorkerControllerInstanceVisibilityBaseListQuery = fmt.Sprintf(
@@ -81,6 +85,10 @@ type (
 		ConflictToken        []byte                 `json:"conflict_token,omitempty"`
 		CreateTime           *timestamppb.Timestamp `json:"create_time,omitempty"`
 		LastModifierIdentity string                 `json:"last_modifier_identity,omitempty"`
+
+		// ValidationState holds the result of the last validation attempt performed
+		// during an UpdateWorkerControllerInstance update.
+		ValidationState *ValidationState `json:"validation_state,omitempty"`
 	}
 
 	QueryDescribeWorkerControllerInstanceResponse struct {
@@ -92,6 +100,8 @@ type (
 
 		ConflictToken        []byte `json:"conflict_token,omitempty"`
 		LastModifierIdentity string `json:"last_modifier_identity,omitempty"`
+
+		ValidationState *ValidationState `json:"validation_state,omitempty"`
 	}
 
 	UpdateWorkerControllerInstanceRequest struct {
@@ -119,6 +129,17 @@ type (
 	}
 
 	ValidateSpecResponse struct{}
+
+	ValidationStatus string
+
+	ValidationState struct {
+		// LastValidatedTime is the time of the last validation attempt.
+		LastValidatedTime *timestamppb.Timestamp `json:"last_validated_time,omitempty"`
+		// Status is the outcome of the last validation attempt.
+		Status ValidationStatus `json:"status,omitempty"`
+		// ErrMessage is a description of any encountered validation errors.
+		ErrMessage string `json:"err_message,omitempty"`
+	}
 
 	SignalTaskAddRequest struct {
 		TaskQueueName string                `json:"task_queue_name"`
