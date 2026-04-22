@@ -10,6 +10,7 @@ import (
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/auto-scaled-workers/wci/client"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
@@ -83,6 +84,12 @@ func NewActivities(namespace *namespace.Namespace, dc *dynamicconfig.Collection,
 		namespace:             namespace,
 		workflowserviceClient: workflowserviceClient,
 	}
+}
+
+// workerControllerEnabled checks whether the Worker Controller Instance (WCI) feature is enabled for the current
+// activity's namespace.
+func (a *Activities) workerControllerEnabled() bool {
+	return client.WorkerControllerEnabled.Get(a.dc)(a.namespace.Name().String())
 }
 
 func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest) error {
@@ -279,6 +286,14 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 		return nil, errors.Errorf("Invalid activity request")
 	}
 	logger := activity.GetLogger(ctx)
+
+	if !a.workerControllerEnabled() {
+		logger.Info("WorkerController disabled for namespace, skipping PullStats", "namespace", a.namespace.Name().String())
+		return &PullStatsActivityResponse{
+			UpdatedScalingStatus: req.ScalingStatus,
+			NextPollSeconds:      uint32(maxPollInterval.Seconds()),
+		}, nil
+	}
 
 	deploymentVersionDetails, err := a.workflowserviceClient.DescribeWorkerDeploymentVersion(ctx, &workflowservice.DescribeWorkerDeploymentVersionRequest{
 		Namespace: req.NamespaceName,
