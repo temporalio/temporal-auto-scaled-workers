@@ -46,7 +46,7 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 | `WorkerControllerGCPIntermediaryServiceAccounts` | `[]` | Service account chain for GCP |
 | `WorkerControllerAWSRequireRoleAndExternalID` | `true` | Enforce role + external ID on AWS configs |
 
-## Spec format
+## Spec Format
 
 A WCI spec is a map of named scaling groups:
 
@@ -88,7 +88,7 @@ A WCI spec is a map of named scaling groups:
 }
 ```
 
-A group with no `task_types` acts as a catch-all for any task type not claimed by another group. At most one catch-all group is allowed.
+A group with no `task_types` acts as a catch-all for any task type not claimed by another group. At most one catch-all group is allowed. The `scaling` block is optional; omitting it leaves the group with the default scaling configuration for the given compute provider.
 
 ### `no-sync` algorithm config
 
@@ -142,26 +142,24 @@ The `TaskHookFactory` returned by `ClientProvider` must be registered with the T
 
 Enable per namespace via the `WorkerControllerEnabled` dynamic config setting.
 
-## Building and running
+## Building
 
 ```bash
 # Build
 make bins
 
-# Run with SQLite (development)
-make start
-
 # Run tests
 make test
 ```
 
-The binary accepts a `--config-file` flag:
+## Run Together with a Local Temporal Server
 
-```bash
-./temporal-auto-scaled-workers --config-file config/development-sqlite.yaml start
-```
+1. Check out the [Temporal Server](https://github.com/temporalio/temporal) alongside this repository.
+2. Link the two repositories using either a [Go Workspace](https://go.dev/doc/tutorial/workspaces) or a [`replace` directive](https://go.dev/ref/mod#go-mod-file-replace) in the server's `go.mod`.
+3. Compile the Temporal Server: `make bins` (or `make all`).
+4. Start the server: `make start` — this uses the SQLite in-memory backend and runs `temporal-auto-scaled-workers` as part of the system workers.
 
-## Scaling algorithm simulators
+## Scaling Algorithm Simulators
 
 Interactive simulators for the scaling algorithms are available in [`docs/simulators/`](docs/simulators/).
 
