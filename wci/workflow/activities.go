@@ -13,6 +13,7 @@ import (
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
@@ -51,6 +52,10 @@ type (
 	}
 
 	HandleTaskAddSignalActivityRequest struct {
+		NamespaceName     string                                   `json:"namespace_name"`
+      	DeploymentName    string                                   `json:"deployment_name"`
+      	DeploymentBuildID string                                   `json:"deployment_build_id"`
+		
 		Request iface.SignalTaskAddRequest `json:"request"`
 
 		Spec          *iface.WorkerControllerInstanceSpec     `json:"spec"`
@@ -274,6 +279,15 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 			updatedActions = append(updatedActions, act)
 		}
 
+		if response.ThrottledCount > 0 {
+			metricsHandler := activity.GetMetricsHandler(ctx).WithTags(map[string]string{
+				wcimetrics.NamespaceTag:               req.NamespaceName,
+				wcimetrics.WorkerDeploymentNameTag:    req.DeploymentName,
+				wcimetrics.WorkerDeploymentBuildIDTag: req.DeploymentBuildID,
+			})
+			metricsHandler.Counter(wcimetrics.WorkerControllerInstanceScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
+		}
+
 		return &HandleTaskAddSignalActivityResponse{Actions: updatedActions, UpdatedScalingStatus: updatedScalingStatus}, nil
 	}
 
@@ -337,6 +351,14 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	}
 
 	logger.Info("Pull Stats Results", "workflow_count", metricsSnapshot.Workflow.LastBacklogCount, "activity_count", metricsSnapshot.Activity.LastBacklogCount, "nexus_count", metricsSnapshot.Nexus.LastBacklogCount)
+
+	if metricsSnapshot.Workflow.LastBacklogCount + metricsSnapshot.Activity.LastBacklogCount + metricsSnapshot.Nexus.LastBacklogCount > 0 {
+		activity.GetMetricsHandler(ctx).WithTags(map[string]string{
+			wcimetrics.NamespaceTag:               req.NamespaceName,
+			wcimetrics.WorkerDeploymentNameTag:    req.DeploymentName,
+			wcimetrics.WorkerDeploymentBuildIDTag: req.DeploymentBuildID,
+		}).Counter(wcimetrics.WorkerControllerInstanceBacklogDetectedCount.Name()).Inc(1)
+	}
 
 	actions := []scalingalgorithm.ScalingAction{}
 	updatedScalingStatus := map[string]iface.ScalingAlgorithmStatus{}

@@ -147,22 +147,23 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 		}
 	}
 
+	throttledCount := 0
 	if !event.IsSyncMatch || event.NoSyncMatchSignalsSinceLast > 0 {
 		cooloffMs := config.GetInt64Field(configNoSyncScaleUpCooloffMsKey, configNoSyncScaleUpCooloffMsDefault)
 		lastScaleUpMs := priorState.GetInt64Field(stateLastScaleUpTimestampKey, 0)
 		nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
 		elapsedMs := nowMs - lastScaleUpMs
 
-		// TODO: add metric for throttling
 		if elapsedMs >= cooloffMs {
 			actions = append(actions, ScalingAction{Action: ActionTypeInvokeWorker})
 			updatedState[stateLastScaleUpTimestampKey] = nowMs
 		} else {
 			logger.Info("Throttled worker invocation", "elapsed_ms", elapsedMs)
+			throttledCount = 1
 		}
 	}
 
-	return &TaskAddResponse{Actions: actions, Status: updatedState}, nil
+	return &TaskAddResponse{Actions: actions, Status: updatedState, ThrottledCount: throttledCount}, nil
 }
 
 func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config iface.ScalingAlgorithmConfig, priorState iface.ScalingAlgorithmStatus, metricsSnapshot ScalingMetricsSnapshot) (*MetricsPollResponse, error) {

@@ -8,6 +8,7 @@ import (
 
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
 	sdkclient "go.temporal.io/sdk/client"
 	sdklog "go.temporal.io/sdk/log"
@@ -77,7 +78,11 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 		workflowVersion:                      getWorkflowVersion(ctx, unsafeWorkflowVersionGetter),
 		a:                                    activities,
 		logger:                               sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName),
-		metrics:                              workflow.GetMetricsHandler(ctx).WithTags(map[string]string{"namespace": args.NamespaceName}),
+		metrics: workflow.GetMetricsHandler(ctx).WithTags(map[string]string{
+				wcimetrics.NamespaceTag:         		args.NamespaceName,
+				wcimetrics.WorkerDeploymentNameTag:  	args.DeploymentName,
+				wcimetrics.WorkerDeploymentBuildIDTag: 	args.BuildId,
+			}),
 		lock:                                 workflow.NewMutex(ctx),
 		unsafeMaxVersion:                     unsafeMaxVersion,
 		signalHandler: &SignalHandler{
@@ -85,7 +90,14 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 		},
 	}
 
-	return workflowRunner.run(ctx)
+	err := workflowRunner.run(ctx)
+
+	var continueAsNewErr *workflow.ContinueAsNewError
+	if err != nil && !errors.As(err, &continueAsNewErr) {
+		workflowRunner.metrics.Counter(wcimetrics.WorkerControllerInstanceWorkflowErrorCount.Name()).Inc(1)
+	}
+
+	return err
 }
 
 func (d *WorkflowRunner) run(ctx workflow.Context) error {
@@ -346,9 +358,14 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 			ScalingStatus: d.State.ScalingStatus,
 		}).Get(ctx, &resp); err != nil {
 		d.logger.Warn("PullStats activity failed", "error", err)
+
+		d.metrics.Counter(wcimetrics.WorkerControllerInstancePullStatsErrorCount.Name()).Inc(1)
+
 		return maxPollInterval
 	} else {
 		d.logger.Info("Completed PullStats", "action_count", len(resp.Actions), "next_poll_seconds", resp.NextPollSeconds)
+
+		d.metrics.Counter(wcimetrics.WorkerControllerInstancePullStatsCount.Name()).Inc(1)
 
 		d.handleActions(ctx, resp.Actions)
 		if resp.UpdatedScalingStatus != nil {
@@ -369,6 +386,10 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 		workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: HandleTaskAddSignalActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 		d.a.HandleTaskAddSignal,
 		HandleTaskAddSignalActivityRequest{
+			NamespaceName:     d.NamespaceName,
+			DeploymentName:    d.DeploymentName,
+			DeploymentBuildID: d.BuildId,
+
 			Request: *req,
 
 			Spec:          d.State.Spec,
@@ -420,6 +441,8 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				d.logger.Warn("Invalid count for action type invoke worker received", "count", count)
 			}
 
+			d.metrics.Counter(wcimetrics.WorkerControllerInstanceScaleUpCount.Name()).Inc(1)
+
 			if err := workflow.ExecuteActivity(
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: InvokeWorkerActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.InvokeWorker,
@@ -428,6 +451,9 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				},
 			).Get(ctx, nil); err != nil {
 				d.logger.Warn("Failed to execute new worker instance activity", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "error", err)
+				d.metrics.Counter(wcimetrics.WorkerControllerInstanceInvokeWorkerErrorCount.Name()).Inc(1)
+			} else {
+				d.metrics.Counter(wcimetrics.WorkerControllerInstanceInvokeWorkerCount.Name()).Inc(1)
 			}
 		case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
 			if err := workflow.ExecuteActivity(
@@ -453,6 +479,7 @@ func (d *WorkflowRunner) listenToSignals(ctx workflow.Context) {
 		defer func() { d.signalHandler.processingSignals-- }()
 		var req *iface.SignalTaskAddRequest
 		c.Receive(ctx, &req)
+		d.metrics.Counter(wcimetrics.WorkerControllerInstanceTaskAddSignalCount.Name()).Inc(1)
 		d.handleNoSyncMatchSignal(ctx, req)
 	})
 
