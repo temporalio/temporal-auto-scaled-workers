@@ -7,7 +7,7 @@ var (
 		"worker_controller_instance_backlog_count",
 		metrics.WithDescription("The total detected backlog size for a worker controller instance."))
 
-	ScaleUpCount          = metrics.NewCounterDef(
+	ScaleUpCount = metrics.NewCounterDef(
 		"worker_controller_instance_scale_up_count",
 		metrics.WithDescription("The number of times a scale up was performed for a worker controller instance."))
 	ScaleUpThrottledCount = metrics.NewCounterDef(
@@ -45,7 +45,7 @@ const (
 
 // Tag value constants
 const (
-	SignalTypeTaskAdd = "task_add"
-	OperationTypePullStats = "pull_stats"
+	SignalTypeTaskAdd         = "task_add"
+	OperationTypePullStats    = "pull_stats"
 	OperationTypeInvokeWorker = "invoke_worker"
 )

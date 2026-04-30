@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
 	sdkclient "go.temporal.io/sdk/client"
 	sdklog "go.temporal.io/sdk/log"
@@ -79,12 +79,12 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 		a:                                    activities,
 		logger:                               sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName),
 		metrics: workflow.GetMetricsHandler(ctx).WithTags(map[string]string{
-				wcimetrics.NamespaceTag:         		args.NamespaceName,
-				wcimetrics.WorkerDeploymentNameTag:  	args.DeploymentName,
-				wcimetrics.WorkerDeploymentBuildIDTag: 	args.BuildId,
-			}),
-		lock:                                 workflow.NewMutex(ctx),
-		unsafeMaxVersion:                     unsafeMaxVersion,
+			wcimetrics.NamespaceTag:               args.NamespaceName,
+			wcimetrics.WorkerDeploymentNameTag:    args.DeploymentName,
+			wcimetrics.WorkerDeploymentBuildIDTag: args.BuildId,
+		}),
+		lock:             workflow.NewMutex(ctx),
+		unsafeMaxVersion: unsafeMaxVersion,
 		signalHandler: &SignalHandler{
 			signalSelector: workflow.NewSelector(ctx),
 		},

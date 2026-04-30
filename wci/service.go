@@ -3,8 +3,8 @@ package wci
 import (
 	"context"
 
-	wciLog "go.temporal.io/auto-scaled-workers/wci/log"
 	"go.temporal.io/api/serviceerror"
+	wciLog "go.temporal.io/auto-scaled-workers/wci/log"
 	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/log/tag"
