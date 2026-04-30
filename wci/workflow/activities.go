@@ -285,7 +285,7 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 				wcimetrics.WorkerDeploymentNameTag:    req.DeploymentName,
 				wcimetrics.WorkerDeploymentBuildIDTag: req.DeploymentBuildID,
 			})
-			metricsHandler.Counter(wcimetrics.WorkerControllerInstanceScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
+			metricsHandler.Counter(wcimetrics.ScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
 		}
 
 		return &HandleTaskAddSignalActivityResponse{Actions: updatedActions, UpdatedScalingStatus: updatedScalingStatus}, nil
@@ -352,12 +352,16 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 
 	logger.Info("Pull Stats Results", "workflow_count", metricsSnapshot.Workflow.LastBacklogCount, "activity_count", metricsSnapshot.Activity.LastBacklogCount, "nexus_count", metricsSnapshot.Nexus.LastBacklogCount)
 
-	if metricsSnapshot.Workflow.LastBacklogCount + metricsSnapshot.Activity.LastBacklogCount + metricsSnapshot.Nexus.LastBacklogCount > 0 {
+	totalBacklog := metricsSnapshot.Workflow.LastBacklogCount + 
+					metricsSnapshot.Activity.LastBacklogCount +
+					metricsSnapshot.Nexus.LastBacklogCount
+
+	if totalBacklog > 0 {
 		activity.GetMetricsHandler(ctx).WithTags(map[string]string{
 			wcimetrics.NamespaceTag:               req.NamespaceName,
 			wcimetrics.WorkerDeploymentNameTag:    req.DeploymentName,
 			wcimetrics.WorkerDeploymentBuildIDTag: req.DeploymentBuildID,
-		}).Counter(wcimetrics.WorkerControllerInstanceBacklogDetectedCount.Name()).Inc(1)
+		}).Gauge(wcimetrics.BacklogCount.Name()).Update(float64(totalBacklog))
 	}
 
 	actions := []scalingalgorithm.ScalingAction{}

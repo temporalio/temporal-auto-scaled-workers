@@ -94,7 +94,7 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 
 	var continueAsNewErr *workflow.ContinueAsNewError
 	if err != nil && !errors.As(err, &continueAsNewErr) {
-		workflowRunner.metrics.Counter(wcimetrics.WorkerControllerInstanceWorkflowErrorCount.Name()).Inc(1)
+		workflowRunner.metrics.Counter(wcimetrics.WorkflowErrorCount.Name()).Inc(1)
 	}
 
 	return err
@@ -363,7 +363,7 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 			wcimetrics.OperationTagName: wcimetrics.OperationTypePullStats,
 			// TODO: add standardized error type codes
 			wcimetrics.ErrorTypeTagName: err.Error(),
-		}).Counter(wcimetrics.WorkerControllerInstanceOperations.Name()).Inc(1)
+		}).Counter(wcimetrics.Operations.Name()).Inc(1)
 
 		return maxPollInterval
 	} else {
@@ -371,7 +371,7 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 
 		d.metrics.WithTags(map[string]string{
 			wcimetrics.OperationTagName: wcimetrics.OperationTypePullStats,
-		}).Counter(wcimetrics.WorkerControllerInstanceOperations.Name()).Inc(1)
+		}).Counter(wcimetrics.Operations.Name()).Inc(1)
 
 		d.handleActions(ctx, resp.Actions)
 		if resp.UpdatedScalingStatus != nil {
@@ -447,7 +447,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				d.logger.Warn("Invalid count for action type invoke worker received", "count", count)
 			}
 
-			d.metrics.Counter(wcimetrics.WorkerControllerInstanceScaleUpCount.Name()).Inc(1)
+			d.metrics.Counter(wcimetrics.ScaleUpCount.Name()).Inc(1)
 
 			if err := workflow.ExecuteActivity(
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: InvokeWorkerActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
@@ -461,11 +461,11 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeInvokeWorker,
 					// TODO: add standardized error type codes
 					wcimetrics.ErrorTypeTagName: err.Error(),
-				}).Counter(wcimetrics.WorkerControllerInstanceOperations.Name()).Inc(1)
+				}).Counter(wcimetrics.Operations.Name()).Inc(1)
 			} else {
 				d.metrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeInvokeWorker,
-				}).Counter(wcimetrics.WorkerControllerInstanceOperations.Name()).Inc(1)
+				}).Counter(wcimetrics.Operations.Name()).Inc(1)
 			}
 		case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
 			if err := workflow.ExecuteActivity(
@@ -494,7 +494,7 @@ func (d *WorkflowRunner) listenToSignals(ctx workflow.Context) {
 
 		d.metrics.WithTags(map[string]string{
 			wcimetrics.SignalTypeTagName: wcimetrics.SignalTypeTaskAdd,
-		}).Counter(wcimetrics.WorkerControllerInstanceSignals.Name()).Inc(1)
+		}).Counter(wcimetrics.Signals.Name()).Inc(1)
 
 		d.handleNoSyncMatchSignal(ctx, req)
 	})

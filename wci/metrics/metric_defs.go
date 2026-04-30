@@ -3,26 +3,26 @@ package metrics
 import "go.temporal.io/server/common/metrics"
 
 var (
-	WorkerControllerInstanceBacklogDetectedCount = metrics.NewCounterDef(
-		"worker_controller_instance_backlog_detected_count",
-		metrics.WithDescription("The number of times a backlog was detected for a worker controller instance."))
+	BacklogCount = metrics.NewGaugeDef(
+		"worker_controller_instance_backlog_count",
+		metrics.WithDescription("The total detected backlog size for a worker controller instance."))
 
-	WorkerControllerInstanceScaleUpCount          = metrics.NewCounterDef(
+	ScaleUpCount          = metrics.NewCounterDef(
 		"worker_controller_instance_scale_up_count",
 		metrics.WithDescription("The number of times a scale up was performed for a worker controller instance."))
-	WorkerControllerInstanceScaleUpThrottledCount = metrics.NewCounterDef(
+	ScaleUpThrottledCount = metrics.NewCounterDef(
 		"worker_controller_instance_scale_up_throttled_count",
 		metrics.WithDescription("The number of times a scale up was throttled for a worker controller instance."))
 
-	WorkerControllerInstanceWorkflowErrorCount = metrics.NewCounterDef(
+	WorkflowErrorCount = metrics.NewCounterDef(
 		"worker_controller_instance_workflow_error_count",
 		metrics.WithDescription("The number of times a workflow error occurred for a worker controller instance."))
 
-	WorkerControllerInstanceSignals = metrics.NewCounterDef(
+	Signals = metrics.NewCounterDef(
 		"worker_controller_instance_signals",
 		metrics.WithDescription("The number of times a signal occurred for a worker controller instance."))
 
-	WorkerControllerInstanceOperations = metrics.NewCounterDef(
+	Operations = metrics.NewCounterDef(
 		"worker_controller_instance_operations",
 		metrics.WithDescription("The number of times an operation occurred for a worker controller instance."))
 )
