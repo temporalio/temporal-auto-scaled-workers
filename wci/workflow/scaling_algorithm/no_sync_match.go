@@ -159,7 +159,7 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 			updatedState[stateLastScaleUpTimestampKey] = nowMs
 		} else {
 			logger.Info("Throttled worker invocation", "elapsed_ms", elapsedMs)
-			throttledCount = 1
+			throttledCount = event.NoSyncMatchSignalsSinceLast
 		}
 	}
 

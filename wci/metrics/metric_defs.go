@@ -38,14 +38,14 @@ const (
 	SignalTypeTagName          = "signal_type"
 	OperationTagName           = metrics.OperationTagName
 	ErrorTypeTagName           = metrics.ErrorTypeTagName
-
-	// TriggerTag is for future usage in scale up and throttling metrics
-	// TriggerTag              = "trigger"
+	ScaleUpTriggerTagName      = "scale_up_trigger"
 )
 
 // Tag value constants
 const (
-	SignalTypeTaskAdd         = "task_add"
-	OperationTypePullStats    = "pull_stats"
-	OperationTypeInvokeWorker = "invoke_worker"
+	SignalTypeTaskAdd             = "task_add"
+	OperationTypePullStats        = "pull_stats"
+	OperationTypeInvokeWorker     = "invoke_worker"
+	ScaleUpTriggerTypeMetricsPoll = "metrics_poll"
+	ScaleUpTriggerTypeTaskAdd     = "task_add"
 )
