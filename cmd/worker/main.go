@@ -5,8 +5,8 @@ import (
 	"os"
 	_ "time/tzdata" // embed tzdata as a fallback
 
-	"go.temporal.io/auto-scaled-workers/wci"
 	"github.com/urfave/cli/v2"
+	"go.temporal.io/auto-scaled-workers/wci"
 	"go.temporal.io/server/common/build"
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/debug"

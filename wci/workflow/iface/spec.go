@@ -51,6 +51,7 @@ const (
 	ComputeProviderTypeSubprocess    ComputeProviderType = "subprocess"
 	ComputeProviderTypeK8s           ComputeProviderType = "k8s"
 	ComputeProviderTypeGCPCloudRun   ComputeProviderType = "gcp-cloud-run"
+	ComputeProviderTypeWebhook       ComputeProviderType = "webhook"
 	ComputeProviderTypeTestInvoke    ComputeProviderType = "test-invoke"
 	ComputeProviderTypeTestWorkerSet ComputeProviderType = "test-worker-set"
 
@@ -64,6 +65,7 @@ var validComputeProviderTypes = map[string]ComputeProviderType{
 	string(ComputeProviderTypeSubprocess):    ComputeProviderTypeSubprocess,
 	string(ComputeProviderTypeK8s):           ComputeProviderTypeK8s,
 	string(ComputeProviderTypeGCPCloudRun):   ComputeProviderTypeGCPCloudRun,
+	string(ComputeProviderTypeWebhook):       ComputeProviderTypeWebhook,
 	string(ComputeProviderTypeTestInvoke):    ComputeProviderTypeTestInvoke,
 	string(ComputeProviderTypeTestWorkerSet): ComputeProviderTypeTestWorkerSet,
 }
