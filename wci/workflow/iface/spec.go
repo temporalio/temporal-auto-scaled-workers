@@ -50,9 +50,10 @@ const (
 	ComputeProviderTypeAWSECS        ComputeProviderType = "aws-ecs"
 	ComputeProviderTypeSubprocess    ComputeProviderType = "subprocess"
 	ComputeProviderTypeK8s           ComputeProviderType = "k8s"
-	ComputeProviderTypeGCPCloudRun   ComputeProviderType = "gcp-cloud-run"
-	ComputeProviderTypeTestInvoke    ComputeProviderType = "test-invoke"
-	ComputeProviderTypeTestWorkerSet ComputeProviderType = "test-worker-set"
+	ComputeProviderTypeGCPCloudRun       ComputeProviderType = "gcp-cloud-run"
+	ComputeProviderTypeGCPCloudRunInvoke ComputeProviderType = "gcp-cloud-run-invoke"
+	ComputeProviderTypeTestInvoke        ComputeProviderType = "test-invoke"
+	ComputeProviderTypeTestWorkerSet     ComputeProviderType = "test-worker-set"
 
 	ScalingAlgorithmNoSync    ScalingAlgorithmType = "no-sync"
 	ScalingAlgorithmRateBased ScalingAlgorithmType = "rate-based"
@@ -63,9 +64,10 @@ var validComputeProviderTypes = map[string]ComputeProviderType{
 	string(ComputeProviderTypeAWSECS):        ComputeProviderTypeAWSECS,
 	string(ComputeProviderTypeSubprocess):    ComputeProviderTypeSubprocess,
 	string(ComputeProviderTypeK8s):           ComputeProviderTypeK8s,
-	string(ComputeProviderTypeGCPCloudRun):   ComputeProviderTypeGCPCloudRun,
-	string(ComputeProviderTypeTestInvoke):    ComputeProviderTypeTestInvoke,
-	string(ComputeProviderTypeTestWorkerSet): ComputeProviderTypeTestWorkerSet,
+	string(ComputeProviderTypeGCPCloudRun):       ComputeProviderTypeGCPCloudRun,
+	string(ComputeProviderTypeGCPCloudRunInvoke): ComputeProviderTypeGCPCloudRunInvoke,
+	string(ComputeProviderTypeTestInvoke):        ComputeProviderTypeTestInvoke,
+	string(ComputeProviderTypeTestWorkerSet):     ComputeProviderTypeTestWorkerSet,
 }
 
 var validScalingAlgorithmTypes = map[string]ScalingAlgorithmType{
