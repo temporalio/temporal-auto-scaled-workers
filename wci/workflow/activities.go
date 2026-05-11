@@ -11,6 +11,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
@@ -51,6 +52,10 @@ type (
 	}
 
 	HandleTaskAddSignalActivityRequest struct {
+		NamespaceName     string `json:"namespace_name"`
+		DeploymentName    string `json:"deployment_name"`
+		DeploymentBuildID string `json:"deployment_build_id"`
+
 		Request iface.SignalTaskAddRequest `json:"request"`
 
 		Spec          *iface.WorkerControllerInstanceSpec     `json:"spec"`
@@ -274,6 +279,15 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 			updatedActions = append(updatedActions, act)
 		}
 
+		if response.ThrottledCount > 0 {
+			metricsHandler := activity.GetMetricsHandler(ctx).WithTags(map[string]string{
+				wcimetrics.NamespaceTag:               req.NamespaceName,
+				wcimetrics.WorkerDeploymentNameTag:    req.DeploymentName,
+				wcimetrics.WorkerDeploymentBuildIDTag: req.DeploymentBuildID,
+			})
+			metricsHandler.Counter(wcimetrics.ScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
+		}
+
 		return &HandleTaskAddSignalActivityResponse{Actions: updatedActions, UpdatedScalingStatus: updatedScalingStatus}, nil
 	}
 
@@ -337,6 +351,16 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	}
 
 	logger.Info("Pull Stats Results", "workflow_count", metricsSnapshot.Workflow.LastBacklogCount, "activity_count", metricsSnapshot.Activity.LastBacklogCount, "nexus_count", metricsSnapshot.Nexus.LastBacklogCount)
+
+	totalBacklog := metricsSnapshot.Workflow.LastBacklogCount +
+		metricsSnapshot.Activity.LastBacklogCount +
+		metricsSnapshot.Nexus.LastBacklogCount
+
+	activity.GetMetricsHandler(ctx).WithTags(map[string]string{
+		wcimetrics.NamespaceTag:               req.NamespaceName,
+		wcimetrics.WorkerDeploymentNameTag:    req.DeploymentName,
+		wcimetrics.WorkerDeploymentBuildIDTag: req.DeploymentBuildID,
+	}).Gauge(wcimetrics.BacklogCount.Name()).Update(float64(totalBacklog))
 
 	actions := []scalingalgorithm.ScalingAction{}
 	updatedScalingStatus := map[string]iface.ScalingAlgorithmStatus{}

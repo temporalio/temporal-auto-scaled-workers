@@ -35,6 +35,8 @@ type (
 		Actions []ScalingAction
 		// The updated scaling status to be persisted until the next run
 		Status iface.ScalingAlgorithmStatus
+		// The number of task-add events that were throttled
+		ThrottledCount int
 	}
 
 	MetricsPollResponse struct {
