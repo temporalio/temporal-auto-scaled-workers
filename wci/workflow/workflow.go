@@ -45,8 +45,8 @@ const (
 type (
 	// SignalHandler encapsulates the signal handling logic
 	SignalHandler struct {
-		signalSelector    workflow.Selector
-		processingSignals int
+		signalSelector       workflow.Selector
+		taskAddSignalChannel workflow.ReceiveChannel
 	}
 
 	// WorkflowRunner holds the local state while running a worker controller workflow
@@ -161,22 +161,68 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		return err
 	}
 
-	// Listen to signals in a different goroutine to make business logic clearer
-	workflow.Go(ctx, d.listenToSignals)
+	// Process the signals from the prior run (pre-CaN)
+	d.processPendingTaskAddSignals(ctx)
 
-	// Wait until we can continue as new or are cancelled. The workflow will continue-as-new iff
-	// there are no pending updates/signals and the state has changed.
-	if err = workflow.Await(ctx, func() bool {
-		return d.deleteInstance || // instance is deleted -> it's ok to drop all signals and updates.
-			// There is no pending signal or update, but the state is dirty or forceCaN is requested:
-			(!d.signalHandler.signalSelector.HasPending() && d.signalHandler.processingSignals == 0 && workflow.AllHandlersFinished(ctx) &&
-				(d.forceCAN || d.stateChanged || workflow.GetInfo(ctx).GetContinueAsNewSuggested()))
-	}); err != nil {
-		return err
+	// Setup the signal handler for the two signals we are dealing with
+	d.signalHandler.taskAddSignalChannel = workflow.GetSignalChannel(ctx, iface.SignalTaskAdd)
+	d.signalHandler.signalSelector.AddReceive(d.signalHandler.taskAddSignalChannel, func(c workflow.ReceiveChannel, more bool) {
+		var req *iface.SignalTaskAddRequest
+		c.Receive(ctx, &req)
+
+		d.recordTaskAddSignalMetric()
+		d.handleNoSyncMatchSignal(ctx, req)
+	})
+
+	var addStatsPullTimer func(nextPoll time.Duration)
+	addStatsPullTimer = func(nextPoll time.Duration) {
+		timerFuture := workflow.NewTimer(ctx, nextPoll)
+		d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
+			if err = f.Get(ctx, nil); err != nil {
+				d.logger.Debug("Periodic stats timer cancelled, not re-arming", "error", err)
+
+				// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
+				return
+			}
+			nextPollDuration := d.pullStatsAndUpdate(ctx)
+
+			// for now we don't want to mark things as dirty to avoid excessive CaN
+			// d.stateChanged = true
+			addStatsPullTimer(nextPollDuration)
+		})
 	}
 
+	if d.hasMinVersion(PeriodicValidationVersion) {
+		var addPeriodicValidationTimer func()
+		addPeriodicValidationTimer = func() {
+			timerFuture := workflow.NewTimer(ctx, periodicValidationInterval)
+			d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
+				if err = f.Get(ctx, nil); err != nil {
+					d.logger.Debug("Periodic validation timer cancelled, not re-arming", "error", err)
+
+					// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
+					return
+				}
+				d.periodicValidateSpec(ctx)
+				addPeriodicValidationTimer()
+			})
+		}
+		addPeriodicValidationTimer()
+	}
+
+	// Keep waiting for signals, when it's time to CaN the main goroutine will exit.
+	for !d.deleteInstance && !d.forceCAN && !d.stateChanged && !workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
+		d.signalHandler.signalSelector.Select(ctx)
+	}
+
+	// instance is deleted -> it's ok to drop all signals and updates.
 	if d.deleteInstance {
 		return nil
+	}
+
+	// Wait for all handlers to finish before continueing.
+	if err = workflow.Await(ctx, func() bool { return workflow.AllHandlersFinished(ctx) }); err != nil {
+		return err
 	}
 
 	// We perform a continue-as-new after each update and signal is handled to ensure compatibility
@@ -184,6 +230,8 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	// we pass the current state as input to the next workflow execution, resulting in a new
 	// workflow history with just two initial events. This minimizes the risk of NDE (Non-Deterministic Execution)
 	// errors during server rollbacks.
+	d.drainPendingTaskAddSignals()
+
 	return workflow.NewContinueAsNewError(ctx, iface.WorkerControllerInstanceWorkflowType, d.WorkerControllerInstanceWorkflowArgs)
 }
 
@@ -535,62 +583,41 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 	}
 }
 
-func (d *WorkflowRunner) listenToSignals(ctx workflow.Context) {
-	noSyncMatchSignalChannel := workflow.GetSignalChannel(ctx, iface.SignalTaskAdd)
-	d.signalHandler.signalSelector.AddReceive(noSyncMatchSignalChannel, func(c workflow.ReceiveChannel, more bool) {
-		d.signalHandler.processingSignals++
-		defer func() { d.signalHandler.processingSignals-- }()
-		var req *iface.SignalTaskAddRequest
-		c.Receive(ctx, &req)
+func (d *WorkflowRunner) processPendingTaskAddSignals(ctx workflow.Context) {
+	if d.State == nil || len(d.State.PendingTaskAddSignals) == 0 {
+		return
+	}
 
-		d.metrics.WithTags(map[string]string{
-			wcimetrics.SignalTypeTagName: wcimetrics.SignalTypeTaskAdd,
-		}).Counter(wcimetrics.Signals.Name()).Inc(1)
-
+	pendingSignals := d.State.PendingTaskAddSignals
+	d.State.PendingTaskAddSignals = nil
+	for _, req := range pendingSignals {
+		d.recordTaskAddSignalMetric()
 		d.handleNoSyncMatchSignal(ctx, req)
-	})
-
-	var addStatsPullTimer func(nextPoll time.Duration)
-	addStatsPullTimer = func(nextPoll time.Duration) {
-		timerFuture := workflow.NewTimer(ctx, nextPoll)
-		d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
-			if err := f.Get(ctx, nil); err != nil {
-				d.logger.Debug("Periodic stats timer cancelled, not re-arming", "error", err)
-
-				// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
-				return
-			}
-			nextPollDuration := d.pullStatsAndUpdate(ctx)
-
-			// for now we don't want to mark things as dirty to avoid excessive CaN
-			// d.stateChanged = true
-			addStatsPullTimer(nextPollDuration)
-		})
 	}
-	addStatsPullTimer(maxPollInterval)
+}
 
-	if d.hasMinVersion(PeriodicValidationVersion) {
-		var addPeriodicValidationTimer func()
-		addPeriodicValidationTimer = func() {
-			timerFuture := workflow.NewTimer(ctx, periodicValidationInterval)
-			d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
-				if err := f.Get(ctx, nil); err != nil {
-					d.logger.Debug("Periodic validation timer cancelled, not re-arming", "error", err)
-
-					// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
-					return
-				}
-				d.periodicValidateSpec(ctx)
-				addPeriodicValidationTimer()
-			})
-		}
-		addPeriodicValidationTimer()
+func (d *WorkflowRunner) drainPendingTaskAddSignals() {
+	if d.State == nil || d.signalHandler == nil || d.signalHandler.taskAddSignalChannel == nil {
+		return
 	}
 
-	// Keep waiting for signals, when it's time to CaN the main goroutine will exit.
 	for {
-		d.signalHandler.signalSelector.Select(ctx)
+		var req *iface.SignalTaskAddRequest
+		if !d.signalHandler.taskAddSignalChannel.ReceiveAsync(&req) {
+			return
+		}
+		if req == nil {
+			continue
+		}
+		d.State.PendingTaskAddSignals = append(d.State.PendingTaskAddSignals, req)
+		d.stateChanged = true
 	}
+}
+
+func (d *WorkflowRunner) recordTaskAddSignalMetric() {
+	d.metrics.WithTags(map[string]string{
+		wcimetrics.SignalTypeTagName: wcimetrics.SignalTypeTaskAdd,
+	}).Counter(wcimetrics.Signals.Name()).Inc(1)
 }
 
 func (d *WorkflowRunner) hasMinVersion(version WorkerControllerInstanceWorkflowVersion) bool {
