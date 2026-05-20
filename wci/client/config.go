@@ -27,7 +27,7 @@ var (
 	)
 	WorkerControllerInstanceWorkflowVersion = dynamicconfig.NewNamespaceIntSetting(
 		"workercontroller.instanceWorkflowVersion",
-		0,
+		1,
 		`WorkerControllerInstanceWorkflowVersion controls what version of the logic should the manager workflows use.`,
 	)
 	WorkerControllerAWSIntermediaryRoles = dynamicconfig.NewGlobalTypedSetting(

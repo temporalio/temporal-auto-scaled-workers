@@ -5,6 +5,7 @@ package iface
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -41,6 +42,10 @@ const (
 	ErrInstanceDeleted    = "worker deployment deleted" // returned in the race condition that the deployment is deleted but the workflow is not yet closed.
 	ErrLongHistory        = "errLongHistory"            // update is not accepted until CaN happens. client should retry
 	ErrFailedPrecondition = "FailedPrecondition"
+
+	// ValidationResult values
+	ValidationResultSuccess ValidationResult = "success"
+	ValidationResultFailed  ValidationResult = "failed"
 )
 
 var WorkerControllerInstanceVisibilityBaseListQuery = fmt.Sprintf(
@@ -81,6 +86,9 @@ type (
 		ConflictToken        []byte                 `json:"conflict_token,omitempty"`
 		CreateTime           *timestamppb.Timestamp `json:"create_time,omitempty"`
 		LastModifierIdentity string                 `json:"last_modifier_identity,omitempty"`
+
+		// ValidationStatus holds the result of the last validation.
+		ValidationStatus *ValidationStatus `json:"validation_state,omitempty"`
 	}
 
 	QueryDescribeWorkerControllerInstanceResponse struct {
@@ -92,6 +100,8 @@ type (
 
 		ConflictToken        []byte `json:"conflict_token,omitempty"`
 		LastModifierIdentity string `json:"last_modifier_identity,omitempty"`
+
+		ValidationStatus *ValidationStatus `json:"validation_state,omitempty"`
 	}
 
 	UpdateWorkerControllerInstanceRequest struct {
@@ -120,6 +130,17 @@ type (
 
 	ValidateSpecResponse struct{}
 
+	ValidationResult string
+
+	ValidationStatus struct {
+		// LastValidationTime is the time of the last validation attempt.
+		LastValidationTime time.Time `json:"last_validation_time"`
+		// Status is the outcome of the last validation attempt.
+		Status ValidationResult `json:"status"`
+		// ErrMessage is a description of any encountered validation errors. It should be empty if validation succeeded.
+		ErrMessage string `json:"err_message,omitempty"`
+	}
+
 	SignalTaskAddRequest struct {
 		TaskQueueName string                `json:"task_queue_name"`
 		TaskQueueType enumspb.TaskQueueType `json:"task_queue_type"`
@@ -135,6 +156,21 @@ type (
 		CreateTime     *timestamppb.Timestamp `json:"create_time,omitempty"`
 	}
 )
+
+func NewValidationStatusSuccess(t time.Time) *ValidationStatus {
+	return &ValidationStatus{
+		LastValidationTime: t,
+		Status:             ValidationResultSuccess,
+	}
+}
+
+func NewValidationStatusFailed(t time.Time, msg string) *ValidationStatus {
+	return &ValidationStatus{
+		LastValidationTime: t,
+		Status:             ValidationResultFailed,
+		ErrMessage:         msg,
+	}
+}
 
 func DecodeWorkerControllerInstanceMemo(memo *commonpb.Memo) (*WorkerControllerInstanceMemo, error) {
 	if memo == nil || memo.Fields == nil {

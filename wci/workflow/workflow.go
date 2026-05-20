@@ -24,6 +24,8 @@ const (
 	InvokeWorkerActivityTimeout                 = 2 * time.Minute
 	UpdateWorkerSetSizeActivityTimeout          = 2 * time.Minute
 	RegisterTaskQueuesViaWorkersActivityTimeout = 30 * time.Second
+
+	periodicValidationInterval = 6 * time.Hour
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -34,6 +36,10 @@ const (
 
 	// Represents the very first version of the workflow
 	InitialVersion WorkerControllerInstanceWorkflowVersion = iota
+
+	// Adds periodic background re-validation of the spec. The timer fires every
+	// periodicValidationInterval (6h).
+	PeriodicValidationVersion
 )
 
 type (
@@ -134,6 +140,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 			ConflictToken:        d.State.ConflictToken,
 			CreateTime:           d.State.CreateTime,
 			LastModifierIdentity: d.State.LastModifierIdentity,
+			ValidationStatus:     d.State.ValidationStatus,
 		}, nil
 	}); err != nil {
 		return err
@@ -201,12 +208,12 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 		RemoveScalingGroups: args.RemoveScalingGroups,
 	})
 	if err != nil {
-		return nil, serviceerror.NewInvalidArgumentf("%w", err)
+		return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 	}
 
 	if updatedSpec != nil {
 		if err := updatedSpec.Validate(); err != nil {
-			return nil, serviceerror.NewInvalidArgumentf("%w", err)
+			return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 		}
 
 		if err := workflow.ExecuteActivity(
@@ -214,8 +221,7 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 			d.a.ValidateSpec,
 			&ValidateSpecRequest{Spec: updatedSpec},
 		).Get(ctx, nil); err != nil {
-			var appErr *temporal.ApplicationError
-			if errors.As(err, &appErr) {
+			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
 			} else {
 				return nil, err
@@ -257,7 +263,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 
 	updatedSpec, err := iface.BuildUpdatedSpec(d.State.Spec, args)
 	if err != nil {
-		return nil, serviceerror.NewInvalidArgumentf("%w", err)
+		return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 	}
 
 	if updatedSpec != nil {
@@ -270,8 +276,10 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			return &iface.UpdateWorkerControllerInstanceResponse{Spec: d.State.Spec}, nil
 		}
 
+		validationTime := workflow.Now(ctx)
+
 		if err := updatedSpec.Validate(); err != nil {
-			return nil, serviceerror.NewInvalidArgumentf("%w", err)
+			return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 		}
 
 		if err := workflow.ExecuteActivity(
@@ -279,12 +287,10 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			d.a.ValidateSpec,
 			&ValidateSpecRequest{Spec: updatedSpec},
 		).Get(ctx, nil); err != nil {
-			var appErr *temporal.ApplicationError
-			if errors.As(err, &appErr) {
+			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
-			} else {
-				return nil, err
 			}
+			return nil, err
 		}
 
 		// we need to scale up each of the groups for a moment to get them to register the task queues
@@ -293,18 +299,16 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			d.a.InvokeWorkersToRegisterTaskQueues,
 			updatedSpec,
 		).Get(ctx, nil); err != nil {
-			var appErr *temporal.ApplicationError
-			if errors.As(err, &appErr) {
+			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 				if appErr.Type() == "InvalidArgument" {
 					return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
-				} else {
-					return nil, serviceerror.NewFailedPreconditionf("%s", appErr.Message())
 				}
-			} else {
-				return nil, err
+				return nil, serviceerror.NewFailedPreconditionf("%s", appErr.Message())
 			}
+			return nil, err
 		}
 
+		d.State.ValidationStatus = iface.NewValidationStatusSuccess(validationTime)
 		d.State.ConflictToken = args.ConflictToken
 		d.State.Spec = updatedSpec
 	}
@@ -382,6 +386,35 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 	}
 }
 
+func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
+	if d.State == nil || d.State.Spec == nil || len(d.State.Spec.ScalingGroupSpecs) == 0 {
+		return
+	}
+	now := workflow.Now(ctx)
+
+	if err := workflow.ExecuteActivity(
+		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: ValidateSpecActivityTimeout,
+			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
+		}),
+		d.a.ValidateSpec,
+		&ValidateSpecRequest{Spec: d.State.Spec},
+	).Get(ctx, nil); err != nil {
+		if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+			d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
+			d.logger.Warn("Periodic spec validation failed with spec error", "error", err)
+		} else {
+			// Transient infrastructure errors (timeouts, server errors, cancellation) are not
+			// spec failures — leave ValidationStatus at its last known value.
+			d.logger.Warn("Periodic spec validation failed with transient error, leaving validation state unchanged", "error", err)
+		}
+	} else {
+		d.State.ValidationStatus = iface.NewValidationStatusSuccess(now)
+	}
+
+	// We are not setting stateChanged to true to avoid unneccessary CaNs here.
+}
+
 func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *iface.SignalTaskAddRequest) {
 	if req == nil {
 		return
@@ -449,6 +482,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 
 			d.metrics.Counter(wcimetrics.ScaleUpCount.Name()).Inc(1)
 
+			now := workflow.Now(ctx)
 			if err := workflow.ExecuteActivity(
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: InvokeWorkerActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.InvokeWorker,
@@ -457,6 +491,12 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				},
 			).Get(ctx, nil); err != nil {
 				d.logger.Warn("Failed to execute new worker instance activity", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "error", err)
+
+				// only application errors can indicate validation errors, so filtering for them first
+				if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+					// TODO: filter out further transient errors to avoid the validation state oscillating
+					d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
+				}
 				d.metrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeInvokeWorker,
 					// TODO: add standardized error type codes
@@ -466,8 +506,11 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				d.metrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeInvokeWorker,
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
+
+				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
 		case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
+			now := workflow.Now(ctx)
 			if err := workflow.ExecuteActivity(
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: UpdateWorkerSetSizeActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.UpdateWorkerSetSize,
@@ -477,6 +520,14 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				},
 			).Get(ctx, nil); err != nil {
 				d.logger.Warn("Failed to execute update worker-set size activity", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "error", err)
+
+				// only application errors can indicate validation errors, so filtering for them first
+				if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+					// TODO: filter out transient errors to avoid the validation state oscillating
+					d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
+				}
+
+				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
 		default:
 			d.logger.Warn("Unknown scaling action", "action", action.Action)
@@ -503,7 +554,12 @@ func (d *WorkflowRunner) listenToSignals(ctx workflow.Context) {
 	addStatsPullTimer = func(nextPoll time.Duration) {
 		timerFuture := workflow.NewTimer(ctx, nextPoll)
 		d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
-			_ = f.Get(ctx, nil)
+			if err := f.Get(ctx, nil); err != nil {
+				d.logger.Debug("Periodic stats timer cancelled, not re-arming", "error", err)
+
+				// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
+				return
+			}
 			nextPollDuration := d.pullStatsAndUpdate(ctx)
 
 			// for now we don't want to mark things as dirty to avoid excessive CaN
@@ -512,6 +568,24 @@ func (d *WorkflowRunner) listenToSignals(ctx workflow.Context) {
 		})
 	}
 	addStatsPullTimer(maxPollInterval)
+
+	if d.hasMinVersion(PeriodicValidationVersion) {
+		var addPeriodicValidationTimer func()
+		addPeriodicValidationTimer = func() {
+			timerFuture := workflow.NewTimer(ctx, periodicValidationInterval)
+			d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
+				if err := f.Get(ctx, nil); err != nil {
+					d.logger.Debug("Periodic validation timer cancelled, not re-arming", "error", err)
+
+					// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
+					return
+				}
+				d.periodicValidateSpec(ctx)
+				addPeriodicValidationTimer()
+			})
+		}
+		addPeriodicValidationTimer()
+	}
 
 	// Keep waiting for signals, when it's time to CaN the main goroutine will exit.
 	for {
