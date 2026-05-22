@@ -83,6 +83,8 @@ type (
 		// ScalingStatus contains the state information keyd by the ScalingGroups key
 		ScalingStatus map[string]ScalingAlgorithmStatus `json:"scaling_state"`
 
+		PendingTaskAddSignals []*SignalTaskAddRequest `json:"pending_task_add_signals,omitempty"`
+
 		ConflictToken        []byte                 `json:"conflict_token,omitempty"`
 		CreateTime           *timestamppb.Timestamp `json:"create_time,omitempty"`
 		LastModifierIdentity string                 `json:"last_modifier_identity,omitempty"`

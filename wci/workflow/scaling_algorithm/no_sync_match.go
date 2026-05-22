@@ -9,7 +9,6 @@ import (
 
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
-	"go.temporal.io/sdk/activity"
 )
 
 const (
@@ -126,7 +125,7 @@ func (a *scalingAlgorithmNoSync) ValidateConfig(ctx context.Context, config ifac
 }
 
 func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config iface.ScalingAlgorithmConfig, priorState iface.ScalingAlgorithmStatus, event iface.SignalTaskAddRequest) (*TaskAddResponse, error) {
-	logger := activity.GetLogger(ctx)
+	logger := safeActivityLogger(ctx)
 
 	updatedState := maps.Clone(priorState)
 	actions := []ScalingAction{}

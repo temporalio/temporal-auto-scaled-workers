@@ -45,7 +45,7 @@ func (p *testInvokeComputeProvider) UpdateWorkerSetSize(_ context.Context, _ Com
 	return errors.ErrUnsupported
 }
 
-// TestInvokeComputeProviderValidProviderDetails provides an example valid config for testing code to use
+// TestInvokeComputeProviderValidComputeProvider provides an example valid config for testing code to use
 func TestInvokeComputeProviderValidComputeProvider() *computepb.ComputeProvider {
 	providerDetails := map[string]string{}
 	payload, _ := sdk.PreferProtoDataConverter.ToPayload(providerDetails)

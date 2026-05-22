@@ -38,11 +38,11 @@ func buildBaseAWSConfig(ctx context.Context, region string, intermediaryRoles []
 		// At each stage of the role chaining, one of multiple roles might be chosen to proceed. This allows for load balancing
 		// requests across roles/accounts and reduces the impact of any of these accounts failing (until it is removed from the config).
 		req := step[rand.Intn(len(step))]
-		if err := validateRoleARN(req.RoleARN); err != nil {
+		if err = validateRoleARN(req.RoleARN); err != nil {
 			return aws.Config{}, err
 		}
 		if req.RoleSessionName == "" {
-			return aws.Config{}, fmt.Errorf("Empty role session name for intermediary role")
+			return aws.Config{}, fmt.Errorf("empty role session name for intermediary role")
 		}
 
 		awsConfig, err = assumeRoleWithRequest(ctx, awsConfig, &req)
