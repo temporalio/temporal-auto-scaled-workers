@@ -191,6 +191,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 			addStatsPullTimer(nextPollDuration)
 		})
 	}
+	addStatsPullTimer(maxPollInterval)
 
 	if d.hasMinVersion(PeriodicValidationVersion) {
 		var addPeriodicValidationTimer func()
