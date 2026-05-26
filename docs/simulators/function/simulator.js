@@ -3,7 +3,7 @@
 
   let queue = [];
   let consumers = [];
-  let lastConsumerCreationRealTime = 0;
+  let lastScaleUpTimeMs = 0;
   let creationHistory = [];
   let running = false;
   let simTime = 0;
@@ -13,8 +13,8 @@
   let arrivalAccumulator = 0;
   let nextWorkId = 1;
   let nextConsumerId = 1;
-  let lastScaleCheckRealTime = 0;
-  let lastScaleCheckDispatchRate = -1;
+  let lastMetricsPollRealTime = 0;
+  let lastDispatchRate = -1;
   let arrivalTimestamps = [];
   let dispatchTimestamps = [];
   let chartData = [];
@@ -32,29 +32,41 @@
       slotsPerConsumer: Math.max(1, parseInt(document.getElementById('slotsPerConsumer').value, 10) || 5),
       workDurationMinMs: (parseFloat(document.getElementById('workDurationMin').value) || 30) * 1000,
       workDurationMaxMs: (parseFloat(document.getElementById('workDurationMax').value) || 60) * 1000,
-      consumerLifespanMs: (parseFloat(document.getElementById('consumerLifespan').value) || 120) * 1000,
-      creationThrottleMs: parseInt(document.getElementById('creationThrottle').value, 10) || 500,
-      maxConsumers: Math.max(1, parseInt(document.getElementById('maxConsumers').value, 10) || 10),
+      scaleUpCooloffMs: (function () {
+        var v = parseInt(document.getElementById('scaleUpCooloff').value, 10);
+        return (isNaN(v) || v < 0) ? 100 : v;
+      })(),
+      maxWorkerLifetimeMs: (function () {
+        var v = parseInt(document.getElementById('maxWorkerLifetime').value, 10);
+        return (isNaN(v) || v < 0) ? 600000 : v;
+      })(),
+      metricsPollIntervalMs: (function () {
+        var poll = parseInt(document.getElementById('metricsPollInterval').value, 10);
+        var cooloff = parseInt(document.getElementById('scaleUpCooloff').value, 10);
+        if (isNaN(poll) || poll < 10000) poll = 60000;
+        if (!isNaN(cooloff) && cooloff > 0 && poll < cooloff) return cooloff;
+        return poll;
+      })(),
+      maxWorkers: Math.max(1, parseInt(document.getElementById('maxWorkers').value, 10) || 10),
       arrivalRate: (function () {
         var v = parseFloat(document.getElementById('arrivalRate').value);
         return (isNaN(v) || v < 0) ? 5 : v;
       })(),
       itemsPerClick: Math.max(1, parseInt(document.getElementById('itemsPerClick').value, 10) || 1),
-      scaleCheckIntervalMs: (parseFloat(document.getElementById('scaleCheckInterval').value) || 60) * 1000,
-      queueDepthThreshold: (function () {
-        var v = parseInt(document.getElementById('queueDepthThreshold').value, 10);
-        return (isNaN(v) || v < 0) ? 10 : v;
-      })(),
-      consumerCreationFailurePct: (function () {
-        var v = parseFloat(document.getElementById('consumerCreationFailurePct').value);
-        return (isNaN(v) || v < 0) ? 10 : Math.min(100, Math.max(0, v));
+      scaleUpBacklogThreshold: (function () {
+        var v = parseInt(document.getElementById('scaleUpBacklogThreshold').value, 10);
+        return (isNaN(v) || v < 0) ? 0 : v;
       })(),
       maxDispatchRate: (function () {
         var v = parseFloat(document.getElementById('maxDispatchRate').value);
         return (isNaN(v) || v < 0) ? 0 : v;
       })(),
-      dispatchRatePrecision: (function () {
-        var v = parseFloat(document.getElementById('dispatchRatePrecision').value);
+      workerExitAfterMs: (function () {
+        var v = parseFloat(document.getElementById('workerExitAfter').value);
+        return (isNaN(v) || v < 0) ? 50000 : v * 1000;
+      })(),
+      scaleUpDispatchRateEpsilon: (function () {
+        var v = parseFloat(document.getElementById('scaleUpDispatchRateEpsilon').value);
         return (isNaN(v) || v < 0) ? 0 : v;
       })()
     };
@@ -174,22 +186,15 @@
     return throttled;
   }
 
-  function tryCreateConsumer(rule) {
+  function currentDispatchRate(now) {
+    return countInWindow(dispatchTimestamps, RATE_WINDOW_MS, now) / (RATE_WINDOW_MS / 1000);
+  }
+
+  function invokeWorker(rule) {
     const config = getConfig();
-    const nowReal = Date.now();
 
-    if (consumers.length >= config.maxConsumers) {
+    if (consumers.length >= config.maxWorkers) {
       logEvent('max-reached', 'Max reached', rule);
-      return false;
-    }
-
-    if (nowReal - lastConsumerCreationRealTime < config.creationThrottleMs) {
-      logEvent('throttled', 'Throttled', rule);
-      return false;
-    }
-
-    if (config.consumerCreationFailurePct > 0 && Math.random() * 100 < config.consumerCreationFailurePct) {
-      logEvent('failed', 'Failed', rule);
       return false;
     }
 
@@ -200,10 +205,100 @@
       createdAt: simTime,
       slots: slots
     });
-    lastConsumerCreationRealTime = nowReal;
-    logEvent('created', 'Created', rule);
+    lastScaleUpTimeMs = Date.now();
+    logEvent('created', 'Invoked', rule);
     assignWorkToSlots(config);
     return true;
+  }
+
+  function expireWorkers(config) {
+    if (config.workerExitAfterMs <= 0 || consumers.length === 0) return;
+
+    const survivors = [];
+    const requeued = [];
+    let expiredCount = 0;
+
+    consumers.forEach(function (consumer) {
+      if (simTime - consumer.createdAt < config.workerExitAfterMs) {
+        survivors.push(consumer);
+        return;
+      }
+
+      expiredCount++;
+      consumer.slots.forEach(function (slot) {
+        if (slot !== null) requeued.push(slot.workItem);
+      });
+    });
+
+    if (expiredCount === 0) return;
+
+    consumers = survivors;
+    if (requeued.length > 0) queue = requeued.concat(queue);
+
+    logEvent(
+      'expired',
+      'Expired',
+      expiredCount + ' worker' + (expiredCount === 1 ? '' : 's') +
+        ' reached exit time' +
+        (requeued.length > 0 ? ', requeued ' + requeued.length + ' task' + (requeued.length === 1 ? '' : 's') : '')
+    );
+  }
+
+  function processTaskAdd(noSyncCount) {
+    if (noSyncCount <= 0) return;
+
+    const config = getConfig();
+    const now = Date.now();
+    const elapsed = now - lastScaleUpTimeMs;
+
+    if (elapsed >= config.scaleUpCooloffMs) {
+      invokeWorker('Task-add no-sync');
+    } else {
+      logEvent('throttled', 'Throttled', 'Task-add cooloff (' + noSyncCount + ' no-sync)');
+    }
+  }
+
+  function processMetricsPoll() {
+    const config = getConfig();
+    const now = Date.now();
+    const backlog = queue.length;
+    const dispatchRate = currentDispatchRate(now);
+    const elapsed = now - lastScaleUpTimeMs;
+    let candidate = false;
+    let reason = '';
+
+    if (backlog > config.scaleUpBacklogThreshold && elapsed >= config.scaleUpCooloffMs) {
+      candidate = true;
+      reason = 'Backlog > threshold';
+    } else if (backlog > config.scaleUpBacklogThreshold) {
+      reason = 'Scale-up cooloff';
+    }
+
+    if (!candidate && config.maxWorkerLifetimeMs > 0 && backlog > 0 && elapsed >= config.maxWorkerLifetimeMs) {
+      candidate = true;
+      reason = 'Worker lifetime refresh';
+    }
+
+    if (candidate && config.scaleUpDispatchRateEpsilon > 0 && lastDispatchRate >= 0 &&
+        Math.abs(dispatchRate - lastDispatchRate) <= config.scaleUpDispatchRateEpsilon) {
+      candidate = false;
+      reason = 'Dispatch rate unchanged';
+    }
+
+    lastDispatchRate = dispatchRate;
+
+    if (candidate) {
+      invokeWorker('Metrics poll: ' + reason);
+      return;
+    }
+
+    if (backlog === 0) {
+      logEvent('no-action', 'No action', 'Metrics poll: queue empty');
+    } else if (reason) {
+      logEvent('no-action', 'No action', 'Metrics poll: ' + reason);
+    } else {
+      logEvent('no-action', 'No action', 'Metrics poll: below threshold');
+    }
   }
 
   function addItems(count) {
@@ -213,36 +308,13 @@
       arrivalTimestamps.push(now);
       queue.push(Object.assign(createWorkItem(config), { enqueuedAt: now }));
     }
-    const throttled = assignWorkToSlots(config);
-    if (!throttled && queue.length > 0) {
-      tryCreateConsumer('Add items (queue non-empty)');
+    assignWorkToSlots(config);
+    if (queue.length > 0) {
+      processTaskAdd(Math.min(count, queue.length));
     }
   }
 
-  function removeDeadConsumers(config) {
-    const toRemove = [];
-    for (let i = 0; i < consumers.length; i++) {
-      if (simTime - consumers[i].createdAt >= config.consumerLifespanMs) {
-        toRemove.push(i);
-      }
-    }
-    const now = Date.now();
-    for (let i = toRemove.length - 1; i >= 0; i--) {
-      const c = consumers[toRemove[i]];
-      for (let s = 0; s < c.slots.length; s++) {
-        if (c.slots[s] !== null) {
-          queue.push(Object.assign({}, c.slots[s].workItem, { enqueuedAt: now }));
-        }
-      }
-      consumers.splice(toRemove[i], 1);
-      logEvent('stopped', 'Stopped', 'Lifespan elapsed');
-    }
-    if (toRemove.length > 0) {
-      assignWorkToSlots(config);
-    }
-  }
-
-  function freeCompletedSlots(config) {
+  function freeCompletedSlots() {
     for (let c = 0; c < consumers.length; c++) {
       for (let s = 0; s < consumers[c].slots.length; s++) {
         const slot = consumers[c].slots[s];
@@ -251,7 +323,6 @@
         }
       }
     }
-    return assignWorkToSlots(config);
   }
 
   function tick() {
@@ -262,25 +333,13 @@
     lastRealTime = nowReal;
     simTime += realDelta;
 
-    removeDeadConsumers(config);
-    const dispatchThrottled = freeCompletedSlots(config);
+    freeCompletedSlots();
+    expireWorkers(config);
+    assignWorkToSlots(config);
 
-    if (nowReal - lastScaleCheckRealTime >= config.scaleCheckIntervalMs) {
-      lastScaleCheckRealTime = nowReal;
-      const currentDispatchCount = countInWindow(dispatchTimestamps, RATE_WINDOW_MS, nowReal);
-      const currentDispatchRate = currentDispatchCount / (RATE_WINDOW_MS / 1000);
-      const dispatchRateStable = currentDispatchRate > 0 && lastScaleCheckDispatchRate >= 0 &&
-        Math.abs(currentDispatchRate - lastScaleCheckDispatchRate) <= config.dispatchRatePrecision;
-      lastScaleCheckDispatchRate = currentDispatchRate;
-      if (dispatchRateStable) {
-        logEvent('no-action', 'No action', 'Dispatch rate unchanged');
-      } else if (queue.length > config.queueDepthThreshold) {
-        tryCreateConsumer('Queue depth > threshold');
-      } else if (queue.length > 0 && (nowReal - lastConsumerCreationRealTime) >= config.consumerLifespanMs) {
-        tryCreateConsumer('Lifespan elapsed with pending queue');
-      } else {
-        logEvent('no-action', 'No action', queue.length === 0 ? 'Scale check: queue empty' : 'Scale check: queue below threshold');
-      }
+    if (nowReal - lastMetricsPollRealTime >= config.metricsPollIntervalMs) {
+      lastMetricsPollRealTime = nowReal;
+      processMetricsPoll();
     }
 
     render();
@@ -447,7 +506,7 @@
 
     const container = document.getElementById('consumersSlots');
     if (consumers.length === 0) {
-      container.innerHTML = '<p class="muted">No consumers. Start the simulation or add tasks.</p>';
+      container.innerHTML = '<p class="muted">No workers. Start the simulation or add tasks.</p>';
     } else {
       container.innerHTML = consumers.map(function (c) {
         const bar = c.slots.map(function (s) {
@@ -461,7 +520,7 @@
         }).join('');
         return (
           '<div class="consumer-row">' +
-          '<span class="consumer-id">Consumer ' + c.id + '</span>' +
+          '<span class="consumer-id">Worker ' + c.id + '</span>' +
           '<span class="slot-bar">' + bar + '</span>' +
           '</div>'
         );
@@ -512,9 +571,9 @@
     pause();
     queue = [];
     consumers = [];
-    lastConsumerCreationRealTime = 0;
-    lastScaleCheckRealTime = 0;
-    lastScaleCheckDispatchRate = -1;
+    lastScaleUpTimeMs = 0;
+    lastMetricsPollRealTime = 0;
+    lastDispatchRate = -1;
     creationHistory = [];
     simTime = 0;
     lastRealTime = 0;

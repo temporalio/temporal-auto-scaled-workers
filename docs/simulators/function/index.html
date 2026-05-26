@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Queue Consumer Scaling Simulator</title>
+  <title>No-Sync Scaling Simulator</title>
   <link rel="stylesheet" href="simulator.css">
 </head>
 <body>
   <header>
-    <h1>Queue Consumer Scaling Simulator</h1>
+    <h1>No-Sync Scaling Simulator</h1>
   </header>
 
   <section class="docs panel">
@@ -17,12 +17,12 @@
       <div>
         <h3>Scale-up</h3>
         <ol>
-          <li><strong>On item arrival</strong> — if the queue is non-empty after dispatch, a consumer creation is attempted immediately.</li>
-          <li><strong>Scale check</strong> (every <em>scale check interval</em>):
+          <li><strong>Task-add no-sync</strong> — if an arrival cannot dispatch immediately, one worker invoke is requested after <em>scale-up cooloff</em> has elapsed.</li>
+          <li><strong>Metrics poll</strong> (every <em>metrics poll interval</em>):
             <ol type="a">
-              <li>Dispatch rate non-zero and unchanged since the last check (within <em>precision</em>) → no action</li>
-              <li>Queue depth &gt; <em>threshold</em> → create consumer</li>
-              <li>Queue non-empty and no consumer created within the last <em>lifespan</em> → create consumer</li>
+              <li>Queue depth &gt; <em>backlog threshold</em> and cooloff elapsed → invoke worker</li>
+              <li>Otherwise, queue non-empty and <em>max worker lifetime</em> elapsed → invoke worker</li>
+              <li>If dispatch rate is unchanged within <em>epsilon</em> → suppress the candidate</li>
               <li>Otherwise → no action</li>
             </ol>
           </li>
@@ -30,13 +30,12 @@
       </div>
       <div>
         <h3>Scale-down</h3>
-        <p>Each consumer stops after its lifespan expires.</p>
-        <h3>Creation guards</h3>
-        <p>Applied to every creation attempt before a consumer is launched:</p>
+        <p>The no-sync algorithm does not scale down.</p>
+        <h3>Simulator guard</h3>
+        <p>Applied before a worker is added to keep the browser simulation bounded:</p>
         <ul>
-          <li>Consumer count ≥ <em>max consumers</em> → blocked</li>
-          <li>Last creation within <em>throttle</em> window → blocked</li>
-          <li>Random roll &lt; <em>failure %</em> → blocked</li>
+          <li>Worker count ≥ <em>max workers</em> → blocked</li>
+          <li>Worker age ≥ <em>worker exit after</em> → removed, active tasks requeued</li>
         </ul>
       </div>
     </div>
@@ -50,7 +49,7 @@
         <h3>Simulation Parameters</h3>
         <div class="control-grid">
           <label>
-            <span>Slots per consumer</span>
+            <span>Slots per worker</span>
             <input type="number" id="slotsPerConsumer" min="1" max="20" value="5">
           </label>
           <label>
@@ -70,12 +69,16 @@
             <input type="number" id="itemsPerClick" min="1" value="1">
           </label>
           <label>
-            <span>Consumer failure (%)</span>
-            <input type="number" id="consumerCreationFailurePct" min="0" max="100" value="10">
-          </label>
-          <label>
             <span>Max dispatch rate (items/s, 0=disabled)</span>
             <input type="number" id="maxDispatchRate" min="0" step="1" value="0">
+          </label>
+          <label>
+            <span>Worker exit after (s, 0=disabled)</span>
+            <input type="number" id="workerExitAfter" min="0" step="1" value="50">
+          </label>
+          <label>
+            <span>Max workers (sim guard)</span>
+            <input type="number" id="maxWorkers" min="1" max="50" value="10">
           </label>
         </div>
       </div>
@@ -83,28 +86,24 @@
         <h3>Scaling Parameters</h3>
         <div class="control-grid">
           <label>
-            <span>Consumer lifespan (s)</span>
-            <input type="number" id="consumerLifespan" min="1" value="120">
+            <span>Scale-up cooloff (ms)</span>
+            <input type="number" id="scaleUpCooloff" min="0" value="100">
           </label>
           <label>
-            <span>Creation throttle (ms)</span>
-            <input type="number" id="creationThrottle" min="0" value="500">
+            <span>Metrics poll interval (ms)</span>
+            <input type="number" id="metricsPollInterval" min="10000" value="60000">
           </label>
           <label>
-            <span>Max consumers</span>
-            <input type="number" id="maxConsumers" min="1" max="50" value="10">
+            <span>Backlog threshold</span>
+            <input type="number" id="scaleUpBacklogThreshold" min="0" value="0">
           </label>
           <label>
-            <span>Scale check interval (s)</span>
-            <input type="number" id="scaleCheckInterval" min="1" value="20">
+            <span>Max worker lifetime (ms, 0=disabled)</span>
+            <input type="number" id="maxWorkerLifetime" min="0" value="600000">
           </label>
           <label>
-            <span>Queue depth threshold for scale-up</span>
-            <input type="number" id="queueDepthThreshold" min="0" value="10">
-          </label>
-          <label>
-            <span>Dispatch rate precision (items/s)</span>
-            <input type="number" id="dispatchRatePrecision" min="0" step="0.1" value="0">
+            <span>Dispatch rate epsilon (items/s)</span>
+            <input type="number" id="scaleUpDispatchRateEpsilon" min="0" step="0.1" value="0">
           </label>
         </div>
       </div>
@@ -126,7 +125,7 @@
           <span id="queueDepth" class="metric-value">0</span>
         </div>
         <div class="metric-col">
-          <span class="metric-label">Consumers</span>
+          <span class="metric-label">Workers</span>
           <span id="consumerCount" class="metric-value">0</span>
         </div>
         <div class="metric-col">
@@ -150,7 +149,7 @@
         </div>
       </div>
       <div class="consumers-slots" id="consumersSlots">
-        <p class="muted">No consumers. Start the simulation or add tasks.</p>
+        <p class="muted">No workers. Start the simulation or add tasks.</p>
       </div>
     </section>
 
@@ -169,7 +168,7 @@
     </section>
 
     <section class="history panel">
-      <h2>Consumer creation events</h2>
+      <h2>Scaling events</h2>
       <div class="history-table-wrap">
         <table>
           <thead>
@@ -177,7 +176,7 @@
               <th>Time</th>
               <th>Outcome</th>
               <th>Rule</th>
-              <th>Consumers after</th>
+              <th>Workers after</th>
             </tr>
           </thead>
           <tbody id="historyBody">

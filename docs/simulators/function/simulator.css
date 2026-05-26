@@ -339,6 +339,10 @@ main.two-column {
   color: var(--error);
 }
 
+.history-outcome.expired {
+  color: var(--warn);
+}
+
 .history-outcome.failed {
   color: var(--error);
 }
