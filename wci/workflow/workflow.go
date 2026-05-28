@@ -559,6 +559,8 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
 		case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
+			d.metrics.Counter(wcimetrics.SetWorkerSetSizeCount.Name()).Inc(1)
+
 			now := workflow.Now(ctx)
 			if err := workflow.ExecuteActivity(
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: UpdateWorkerSetSizeActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),

@@ -13,6 +13,9 @@ var (
 	ScaleUpThrottledCount = metrics.NewCounterDef(
 		"worker_controller_instance_scale_up_throttled_count",
 		metrics.WithDescription("The number of times a scale up was throttled for a worker controller instance."))
+	SetWorkerSetSizeCount = metrics.NewCounterDef(
+		"worker_controller_instance_set_workerset_size_count",
+		metrics.WithDescription("The number of times the worker set size was updated for a worker controller instance."))
 
 	WorkflowErrorCount = metrics.NewCounterDef(
 		"worker_controller_instance_workflow_error_count",
