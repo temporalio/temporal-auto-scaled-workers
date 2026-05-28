@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-	"go.temporal.io/api/enums/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -51,7 +50,7 @@ var (
 )
 
 func (thf *taskHookFactoryImpl) Create(details *hooks.TaskHookFactoryCreateDetails) hooks.TaskHook {
-	if details == nil || details.Namespace == nil || details.Partition.Kind() == enums.TASK_QUEUE_KIND_STICKY {
+	if details == nil || details.Namespace == nil || details.Partition.Kind() == enumspb.TASK_QUEUE_KIND_STICKY {
 		return nil
 	}
 

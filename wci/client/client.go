@@ -131,7 +131,7 @@ var _ Client = (*clientImpl)(nil)
 
 func (d *clientImpl) UpdateTaskQueueName(ctx context.Context, newTaskQueueName string) error {
 	if len(newTaskQueueName) == 0 {
-		return fmt.Errorf("Invalid task queue name")
+		return fmt.Errorf("invalid task queue name")
 	}
 
 	d.controllerTaskQueueName = newTaskQueueName
@@ -413,8 +413,7 @@ func (d *clientImpl) DeleteWorkerControllerInstance(
 		},
 	)
 	if err != nil {
-		var notFound *serviceerror.NotFound
-		if errors.As(err, &notFound) {
+		if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 			// if the instance doesn't exist, nothing to do
 			return nil
 		}
