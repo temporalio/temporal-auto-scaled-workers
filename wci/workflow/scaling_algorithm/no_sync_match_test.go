@@ -20,6 +20,14 @@ func newNoSync() *scalingAlgorithmNoSync {
 	return algo.(*scalingAlgorithmNoSync)
 }
 
+func failScalingMetricsSnapshotGetter(t *testing.T) ScalingMetricsSnapshotGetter {
+	t.Helper()
+	return func() (*ScalingMetricsSnapshot, error) {
+		t.Fatalf("no-sync scaling algorithm should not request task-add metrics")
+		return &ScalingMetricsSnapshot{}, nil
+	}
+}
+
 func TestNoSyncValidateConfig(t *testing.T) {
 	a := newNoSync()
 	ctx := context.Background()
@@ -204,6 +212,20 @@ func TestNoSyncCompatibleLaunchStrategies(t *testing.T) {
 	strategies := a.CompatibleLaunchStrategies()
 	require.Len(t, strategies, 1)
 	assert.Equal(t, computeprovider.LaunchStrategyInvoke, strategies[0])
+}
+
+func TestNoSyncProcessDeferredScalingDecisionNoop(t *testing.T) {
+	a := newNoSync()
+	ctx := context.Background()
+	priorState := iface.ScalingAlgorithmStatus{"custom": int64(1)}
+	event := iface.SignalTaskAddRequest{IsSyncMatch: false, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
+
+	resp, err := a.ProcessDeferredScalingDecision(ctx, iface.ScalingAlgorithmConfig{}, priorState, event, failScalingMetricsSnapshotGetter(t))
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Empty(t, resp.Actions)
+	assert.Equal(t, priorState, resp.Status)
 }
 
 func TestNoSyncProcessMetricsPoll(t *testing.T) {

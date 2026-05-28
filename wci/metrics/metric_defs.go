@@ -13,6 +13,12 @@ var (
 	ScaleUpThrottledCount = metrics.NewCounterDef(
 		"worker_controller_instance_scale_up_throttled_count",
 		metrics.WithDescription("The number of times a scale up was throttled for a worker controller instance."))
+	DeferredScalingDecisionCount = metrics.NewCounterDef(
+		"worker_controller_instance_deferred_scaling_decision_count",
+		metrics.WithDescription("The number of times a deferred scaling decision was dispatched for a worker controller instance."))
+	DeferredScalingDecisionMetricsPullFailedCount = metrics.NewCounterDef(
+		"worker_controller_instance_deferred_scaling_decision_metrics_pull_failed_count",
+		metrics.WithDescription("The number of deferred scaling decision invocations whose lazy metrics-snapshot pull failed."))
 
 	WorkflowErrorCount = metrics.NewCounterDef(
 		"worker_controller_instance_workflow_error_count",
@@ -83,6 +89,9 @@ const (
 	SkippedReasonAlgorithmUnavailable SkippedReason = "algorithm_unavailable"
 	SkippedReasonAlgorithmFailed      SkippedReason = "algorithm_failed"
 	SkippedReasonNoMatchingScaler     SkippedReason = "no_matching_scaler"
+	SkippedReasonInvalidCount         SkippedReason = "invalid_count"
+	SkippedReasonNoSourceRequest      SkippedReason = "no_source_request"
+	SkippedReasonTaskTypeMismatch     SkippedReason = "task_type_mismatch"
 )
 
 const (
@@ -101,17 +110,19 @@ const (
 	ActivityTypeInvokeWorkersToRegisterTaskQueues ActivityType = "invoke_workers_to_register_task_queues"
 	ActivityTypeValidateSpec                      ActivityType = "validate_spec"
 	ActivityTypePullStats                         ActivityType = "pull_stats"
+	ActivityTypeHandleDeferredScalingDecision     ActivityType = "handle_deferred_scaling_decision"
 )
 
 const (
-	SignalTypeTaskAdd                = "task_add"
-	UpdateTypeValidateSpec           = "validate_spec"
-	UpdateTypeUpdateInstance         = "update_instance"
-	UpdateTypeDeleteInstance         = "delete_instance"
-	OperationTypePullStats           = "pull_stats"
-	OperationTypeValidateSpec        = "validate_spec"
-	OperationTypeInvokeWorker        = "invoke_worker"
-	OperationTypeUpdateWorkerSetSize = "update_worker_set_size"
-	ScaleUpTriggerTypeMetricsPoll    = "metrics_poll"
-	ScaleUpTriggerTypeTaskAdd        = "task_add"
+	SignalTypeTaskAdd                    = "task_add"
+	UpdateTypeValidateSpec               = "validate_spec"
+	UpdateTypeUpdateInstance             = "update_instance"
+	UpdateTypeDeleteInstance             = "delete_instance"
+	OperationTypePullStats               = "pull_stats"
+	OperationTypeValidateSpec            = "validate_spec"
+	OperationTypeInvokeWorker            = "invoke_worker"
+	OperationTypeUpdateWorkerSetSize     = "update_worker_set_size"
+	OperationTypeDeferredScalingDecision = "deferred_scaling_decision"
+	ScaleUpTriggerTypeMetricsPoll        = "metrics_poll"
+	ScaleUpTriggerTypeTaskAdd            = "task_add"
 )

@@ -30,6 +30,11 @@ type (
 		Nexus    *iface.QueueTypeScalingMetrics `json:"nexus,omitempty"`
 	}
 
+	// ScalingMetricsSnapshotGetter fetches a metrics snapshot lazily, memoising both the
+	// snapshot and any error for the lifetime of a single activity invocation, so callers
+	// can invoke it zero or more times without incurring extra RPCs.
+	ScalingMetricsSnapshotGetter func() (*ScalingMetricsSnapshot, error)
+
 	TaskAddResponse struct {
 		// Actions contains the list of scaling actions to take as a result of the analysis
 		Actions []ScalingAction
@@ -60,19 +65,38 @@ type (
 		// to be taken (e.g. scale-up or down) and return an adjusted status.
 		ProcessTaskAdd(ctx context.Context, config iface.ScalingAlgorithmConfig, priorStatus iface.ScalingAlgorithmStatus, event iface.SignalTaskAddRequest) (*TaskAddResponse, error)
 
+		// ProcessDeferredScalingDecision handles deferred scaling decisions requested by a prior
+		// ActionTypeDeferredScalingDecision action. event is forwarded verbatim from the original
+		// task-add signal. The snapshot returned by getMetricsSnapshot is pre-filtered to the
+		// scaling group's effective task types (fields outside that set are nil); see the
+		// ScalingMetricsSnapshotGetter type for caching and read-only semantics.
+		//
+		// Why this exists: ProcessTaskAdd runs as a local activity to keep the signal-handler
+		// path fast, but local activities cannot use the metrics API (it issues a query against
+		// the same workflow, which would deadlock). Algorithms that need a metrics snapshot — or
+		// any other higher-latency processing — emit ActionTypeDeferredScalingDecision to push
+		// that work into this normal activity, where the snapshot is available.
+		//
+		// The returned Actions MUST NOT contain ActionTypeDeferredScalingDecision: deferred
+		// actions cannot themselves chain into more deferred work.
+		ProcessDeferredScalingDecision(ctx context.Context, config iface.ScalingAlgorithmConfig, priorStatus iface.ScalingAlgorithmStatus, event iface.SignalTaskAddRequest, getMetricsSnapshot ScalingMetricsSnapshotGetter) (*TaskAddResponse, error)
+
 		// ProcessMetricsPoll handles the results of regular queue metrics polls. It only recieves data
 		// for task queue types the scaling algorithm is responsible for. Can return a set of actions to
 		// take as a result, as well as updated scaling status and when to poll again at the latest.
 		//
 		// Note: the next invocation might be earlier than the provided time, if other algorithms requested
 		// a higher frequency.
+		//
+		// The returned Actions MUST NOT contain ActionTypeDeferredScalingDecision as it is not supported.
 		ProcessMetricsPoll(ctx context.Context, config iface.ScalingAlgorithmConfig, priorStatus iface.ScalingAlgorithmStatus, metricsSnapshot ScalingMetricsSnapshot) (*MetricsPollResponse, error)
 	}
 )
 
 const (
-	ActionTypeInvokeWorker        ActionType = "invoke-worker"
-	ActionTypeUpdateWorkerSetSize ActionType = "update-worker-set-size"
+	ActionTypeInvokeWorker            ActionType = "invoke-worker"
+	ActionTypeUpdateWorkerSetSize     ActionType = "update-worker-set-size"
+	ActionTypeDeferredScalingDecision ActionType = "deferred-scaling-decision"
 )
 
 var (
