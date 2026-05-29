@@ -170,7 +170,6 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		var req *iface.SignalTaskAddRequest
 		c.Receive(ctx, &req)
 
-		d.recordTaskAddSignalMetric()
 		d.handleNoSyncMatchSignal(ctx, req)
 	})
 
@@ -257,19 +256,38 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 		RemoveScalingGroups: args.RemoveScalingGroups,
 	})
 	if err != nil {
+		d.metrics.WithTags(map[string]string{
+			wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeValidateSpec,
+			wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeBuildUpdatedSpecFailure),
+		}).Counter(wcimetrics.Updates.Name()).Inc(1)
+
 		return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 	}
 
 	if updatedSpec != nil {
 		if err := updatedSpec.Validate(); err != nil {
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeValidateSpec,
+				wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeInvalidSpec),
+			}).Counter(wcimetrics.Updates.Name()).Inc(1)
+
 			return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 		}
 
 		if err := workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.ValidateSpec,
-			&ValidateSpecRequest{Spec: updatedSpec},
+			&ValidateSpecRequest{
+				RequestContext: d.requestContext(),
+				Spec:           updatedSpec,
+			},
 		).Get(ctx, nil); err != nil {
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.UpdateTypeTagName:        wcimetrics.UpdateTypeValidateSpec,
+				wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+				wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
+			}).Counter(wcimetrics.Updates.Name()).Inc(1)
+
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
 			} else {
@@ -277,6 +295,10 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 			}
 		}
 	}
+
+	d.metrics.WithTags(map[string]string{
+		wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeValidateSpec,
+	}).Counter(wcimetrics.Updates.Name()).Inc(1)
 
 	return &iface.ValidateSpecResponse{}, nil
 }
@@ -302,6 +324,10 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 	// use lock to enforce only one update at a time
 	if err := d.lock.Lock(ctx); err != nil {
 		d.logger.Error("Could not acquire workflow lock", "error", err)
+		d.metrics.WithTags(map[string]string{
+			wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeUpdateInstance,
+			wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeLockFailure),
+		}).Counter(wcimetrics.Updates.Name()).Inc(1)
 		return nil, serviceerror.NewDeadlineExceeded("Could not acquire workflow lock")
 	}
 	defer func() {
@@ -312,6 +338,10 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 
 	updatedSpec, err := iface.BuildUpdatedSpec(d.State.Spec, args)
 	if err != nil {
+		d.metrics.WithTags(map[string]string{
+			wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeUpdateInstance,
+			wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeBuildUpdatedSpecFailure),
+		}).Counter(wcimetrics.Updates.Name()).Inc(1)
 		return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 	}
 
@@ -322,20 +352,38 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			d.deleteInstance = true
 			d.State.ConflictToken = args.ConflictToken
 			d.State.Spec = updatedSpec
+
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeUpdateInstance,
+			}).Counter(wcimetrics.Updates.Name()).Inc(1)
+
 			return &iface.UpdateWorkerControllerInstanceResponse{Spec: d.State.Spec}, nil
 		}
 
 		validationTime := workflow.Now(ctx)
 
 		if err := updatedSpec.Validate(); err != nil {
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeUpdateInstance,
+				wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeInvalidSpec),
+			}).Counter(wcimetrics.Updates.Name()).Inc(1)
 			return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 		}
 
 		if err := workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.ValidateSpec,
-			&ValidateSpecRequest{Spec: updatedSpec},
+			&ValidateSpecRequest{
+				RequestContext: d.requestContext(),
+				Spec:           updatedSpec,
+			},
 		).Get(ctx, nil); err != nil {
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.UpdateTypeTagName:        wcimetrics.UpdateTypeUpdateInstance,
+				wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+				wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
+			}).Counter(wcimetrics.Updates.Name()).Inc(1)
+
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
 			}
@@ -346,8 +394,17 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		if err := workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: RegisterTaskQueuesViaWorkersActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.InvokeWorkersToRegisterTaskQueues,
-			updatedSpec,
+			&InvokeWorkersToRegisterTaskQueuesRequest{
+				RequestContext:               d.requestContext(),
+				WorkerControllerInstanceSpec: *updatedSpec,
+			},
 		).Get(ctx, nil); err != nil {
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.UpdateTypeTagName:        wcimetrics.UpdateTypeUpdateInstance,
+				wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+				wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
+			}).Counter(wcimetrics.Updates.Name()).Inc(1)
+
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 				if appErr.Type() == "InvalidArgument" {
 					return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
@@ -361,6 +418,10 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		d.State.ConflictToken = args.ConflictToken
 		d.State.Spec = updatedSpec
 	}
+
+	d.metrics.WithTags(map[string]string{
+		wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeUpdateInstance,
+	}).Counter(wcimetrics.Updates.Name()).Inc(1)
 
 	return &iface.UpdateWorkerControllerInstanceResponse{Spec: d.State.Spec}, nil
 }
@@ -380,6 +441,11 @@ func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.
 	// use lock to enforce only one update at a time
 	if err := d.lock.Lock(ctx); err != nil {
 		d.logger.Error("Could not acquire workflow lock", "error", err)
+		d.metrics.WithTags(map[string]string{
+			wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeDeleteInstance,
+			wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeLockFailure),
+		}).Counter(wcimetrics.Updates.Name()).Inc(1)
+
 		return &iface.DeleteWorkerControllerInstanceResponse{}, serviceerror.NewDeadlineExceeded("Could not acquire workflow lock")
 	}
 	defer func() {
@@ -389,6 +455,10 @@ func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.
 	}()
 
 	d.deleteInstance = true
+
+	d.metrics.WithTags(map[string]string{
+		wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeDeleteInstance,
+	}).Counter(wcimetrics.Updates.Name()).Inc(1)
 
 	return &iface.DeleteWorkerControllerInstanceResponse{}, nil
 }
@@ -403,19 +473,16 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: PullStatsActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 		d.a.PullStats,
 		&PullStatsActivityRequest{
-			NamespaceName:     d.NamespaceName,
-			DeploymentName:    d.DeploymentName,
-			DeploymentBuildID: d.BuildId,
-
-			Spec:          d.State.Spec,
-			ScalingStatus: d.State.ScalingStatus,
+			RequestContext: d.requestContext(),
+			Spec:           d.State.Spec,
+			ScalingStatus:  d.State.ScalingStatus,
 		}).Get(ctx, &resp); err != nil {
 		d.logger.Warn("PullStats activity failed", "error", err)
 
 		d.metrics.WithTags(map[string]string{
-			wcimetrics.OperationTagName: wcimetrics.OperationTypePullStats,
-			// TODO: add standardized error type codes
-			wcimetrics.ErrorTypeTagName: err.Error(),
+			wcimetrics.OperationTagName:         wcimetrics.OperationTypePullStats,
+			wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+			wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
 		}).Counter(wcimetrics.Operations.Name()).Inc(1)
 
 		return maxPollInterval
@@ -447,8 +514,17 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 		}),
 		d.a.ValidateSpec,
-		&ValidateSpecRequest{Spec: d.State.Spec},
+		&ValidateSpecRequest{
+			RequestContext: d.requestContext(),
+			Spec:           d.State.Spec,
+		},
 	).Get(ctx, nil); err != nil {
+		d.metrics.WithTags(map[string]string{
+			wcimetrics.OperationTagName:         wcimetrics.OperationTypeValidateSpec,
+			wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+			wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
+		}).Counter(wcimetrics.Operations.Name()).Inc(1)
+
 		if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 			d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
 			d.logger.Warn("Periodic spec validation failed with spec error", "error", err)
@@ -458,6 +534,10 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 			d.logger.Warn("Periodic spec validation failed with transient error, leaving validation state unchanged", "error", err)
 		}
 	} else {
+		d.metrics.WithTags(map[string]string{
+			wcimetrics.OperationTagName: wcimetrics.OperationTypeValidateSpec,
+		}).Counter(wcimetrics.Operations.Name()).Inc(1)
+
 		d.State.ValidationStatus = iface.NewValidationStatusSuccess(now)
 	}
 
@@ -466,6 +546,11 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 
 func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *iface.SignalTaskAddRequest) {
 	if req == nil {
+		d.logger.Warn("Received nil task-add signal request; dropping")
+		d.metrics.WithTags(map[string]string{
+			wcimetrics.SignalTypeTagName: wcimetrics.SignalTypeTaskAdd,
+			wcimetrics.SkipReasonTagName: string(wcimetrics.SkippedReasonInvalidRequest),
+		}).Counter(wcimetrics.Signals.Name()).Inc(1)
 		return
 	}
 
@@ -474,9 +559,7 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 		workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: HandleTaskAddSignalActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 		d.a.HandleTaskAddSignal,
 		HandleTaskAddSignalActivityRequest{
-			NamespaceName:     d.NamespaceName,
-			DeploymentName:    d.DeploymentName,
-			DeploymentBuildID: d.BuildId,
+			RequestContext: d.requestContext(),
 
 			Request: *req,
 
@@ -485,7 +568,15 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 		},
 	).Get(ctx, &resp); err != nil {
 		d.logger.Warn("Failed to process task match signal", "error", err)
+		d.metrics.WithTags(map[string]string{
+			wcimetrics.SignalTypeTagName:        wcimetrics.SignalTypeTaskAdd,
+			wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+			wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
+		}).Counter(wcimetrics.Signals.Name()).Inc(1)
 	} else {
+		d.metrics.WithTags(map[string]string{
+			wcimetrics.SignalTypeTagName: wcimetrics.SignalTypeTaskAdd,
+		}).Counter(wcimetrics.Signals.Name()).Inc(1)
 
 		d.logger.Debug("Completed match-signal processing", "action_count", len(resp.Actions), "sync_match", req.IsSyncMatch, "no_sync_match_batch", req.NoSyncMatchSignalsSinceLast)
 
@@ -513,20 +604,10 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			continue
 		}
 
-		count := int32(1)
-		if action.Count != nil {
-			if *action.Count < 0 {
-				d.logger.Warn("Scaling action has invalid count value", "count", *action.Count)
-				continue
-
-			}
-			count = *action.Count
-		}
-
 		switch action.Action {
 		case scalingalgorithm.ActionTypeInvokeWorker:
-			if count != 1 {
-				d.logger.Warn("Invalid count for action type invoke worker received", "count", count)
+			if action.Count != nil && *action.Count != 1 {
+				d.logger.Warn("Invalid count for action type invoke worker received", "count", *action.Count)
 			}
 
 			d.metrics.Counter(wcimetrics.ScaleUpCount.Name()).Inc(1)
@@ -536,7 +617,8 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: InvokeWorkerActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.InvokeWorker,
 				InvokeWorkerActivityRequest{
-					ComputeConfig: &spec.Compute,
+					RequestContext: d.requestContext(),
+					ComputeConfig:  &spec.Compute,
 				},
 			).Get(ctx, nil); err != nil {
 				d.logger.Warn("Failed to execute new worker instance activity", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "error", err)
@@ -547,9 +629,9 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 					d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
 				}
 				d.metrics.WithTags(map[string]string{
-					wcimetrics.OperationTagName: wcimetrics.OperationTypeInvokeWorker,
-					// TODO: add standardized error type codes
-					wcimetrics.ErrorTypeTagName: err.Error(),
+					wcimetrics.OperationTagName:         wcimetrics.OperationTypeInvokeWorker,
+					wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+					wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
 			} else {
 				d.metrics.WithTags(map[string]string{
@@ -559,15 +641,27 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
 		case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
-			d.metrics.Counter(wcimetrics.SetWorkerSetSizeCount.Name()).Inc(1)
+			count := int32(1)
+			if action.Count != nil {
+				if *action.Count < 0 {
+					d.logger.Warn("Scaling action has invalid count value", "count", *action.Count)
+					d.metrics.WithTags(map[string]string{
+						wcimetrics.OperationTagName:  wcimetrics.OperationTypeUpdateWorkerSetSize,
+						wcimetrics.SkipReasonTagName: string(wcimetrics.SkippedReasonInvalidRequest),
+					}).Counter(wcimetrics.Operations.Name()).Inc(1)
+					continue
+				}
+				count = *action.Count
+			}
 
 			now := workflow.Now(ctx)
 			if err := workflow.ExecuteActivity(
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: UpdateWorkerSetSizeActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.UpdateWorkerSetSize,
 				UpdateWorkerSetSizeActivityRequest{
-					ComputeConfig: &spec.Compute,
-					UpdatedSize:   count,
+					RequestContext: d.requestContext(),
+					ComputeConfig:  &spec.Compute,
+					UpdatedSize:    count,
 				},
 			).Get(ctx, nil); err != nil {
 				d.logger.Warn("Failed to execute update worker-set size activity", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "error", err)
@@ -577,6 +671,16 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 					// TODO: filter out transient errors to avoid the validation state oscillating
 					d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
 				}
+
+				d.metrics.WithTags(map[string]string{
+					wcimetrics.OperationTagName:         wcimetrics.OperationTypeUpdateWorkerSetSize,
+					wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+					wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
+				}).Counter(wcimetrics.Operations.Name()).Inc(1)
+			} else {
+				d.metrics.WithTags(map[string]string{
+					wcimetrics.OperationTagName: wcimetrics.OperationTypeUpdateWorkerSetSize,
+				}).Counter(wcimetrics.Operations.Name()).Inc(1)
 
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
@@ -594,7 +698,6 @@ func (d *WorkflowRunner) processPendingTaskAddSignals(ctx workflow.Context) {
 	pendingSignals := d.State.PendingTaskAddSignals
 	d.State.PendingTaskAddSignals = nil
 	for _, req := range pendingSignals {
-		d.recordTaskAddSignalMetric()
 		d.handleNoSyncMatchSignal(ctx, req)
 	}
 }
@@ -617,12 +720,6 @@ func (d *WorkflowRunner) drainPendingTaskAddSignals() {
 	}
 }
 
-func (d *WorkflowRunner) recordTaskAddSignalMetric() {
-	d.metrics.WithTags(map[string]string{
-		wcimetrics.SignalTypeTagName: wcimetrics.SignalTypeTaskAdd,
-	}).Counter(wcimetrics.Signals.Name()).Inc(1)
-}
-
 func (d *WorkflowRunner) hasMinVersion(version WorkerControllerInstanceWorkflowVersion) bool {
 	return d.workflowVersion >= version
 }
@@ -639,6 +736,14 @@ func (d *WorkflowRunner) preUpdateChecks(ctx workflow.Context) error {
 		return temporal.NewApplicationError(iface.ErrLongHistory, iface.ErrLongHistory)
 	}
 	return nil
+}
+
+func (d *WorkflowRunner) requestContext() RequestContext {
+	return RequestContext{
+		NamespaceName:     d.NamespaceName,
+		DeploymentName:    d.DeploymentName,
+		DeploymentBuildID: d.BuildId,
+	}
 }
 
 func (d *WorkflowRunner) ensureNotDeleted() error {
@@ -673,4 +778,23 @@ func getWorkflowVersion(ctx workflow.Context, unsafeWorkflowVersionGetter func()
 		logger.Warn("failed to retrieve intended workflow version", "error", err)
 	}
 	return 0
+}
+
+// classifyActivityErrorType buckets an activity error returned by workflow.ExecuteActivity
+// (or its local variant) into a small fixed enumeration suitable for a metric tag.
+func classifyActivityErrorType(err error) wcimetrics.ActivityErrorType {
+	switch {
+	case temporal.IsTimeoutError(err):
+		return wcimetrics.ActivityErrorTypeTimeout
+	case temporal.IsCanceledError(err):
+		return wcimetrics.ActivityErrorTypeCanceled
+	case temporal.IsApplicationError(err):
+		return wcimetrics.ActivityErrorTypeApplication
+	case temporal.IsPanicError(err):
+		return wcimetrics.ActivityErrorTypePanic
+	case temporal.IsTerminatedError(err):
+		return wcimetrics.ActivityErrorTypeTerminated
+	default:
+		return wcimetrics.ActivityErrorTypeOther
+	}
 }

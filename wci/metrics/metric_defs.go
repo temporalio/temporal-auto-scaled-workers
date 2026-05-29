@@ -13,9 +13,6 @@ var (
 	ScaleUpThrottledCount = metrics.NewCounterDef(
 		"worker_controller_instance_scale_up_throttled_count",
 		metrics.WithDescription("The number of times a scale up was throttled for a worker controller instance."))
-	SetWorkerSetSizeCount = metrics.NewCounterDef(
-		"worker_controller_instance_set_workerset_size_count",
-		metrics.WithDescription("The number of times the worker set size was updated for a worker controller instance."))
 
 	WorkflowErrorCount = metrics.NewCounterDef(
 		"worker_controller_instance_workflow_error_count",
@@ -24,10 +21,15 @@ var (
 	Signals = metrics.NewCounterDef(
 		"worker_controller_instance_signals",
 		metrics.WithDescription("The number of times a signal occurred for a worker controller instance."))
-
+	Updates = metrics.NewCounterDef(
+		"worker_controller_instance_updates",
+		metrics.WithDescription("The number of times an update occurred for a worker controller instance."))
 	Operations = metrics.NewCounterDef(
 		"worker_controller_instance_operations",
 		metrics.WithDescription("The number of times an operation occurred for a worker controller instance."))
+	Activities = metrics.NewCounterDef(
+		"worker_controller_instance_activities",
+		metrics.WithDescription("The number of times an activity was executed as part of a worker controller instance."))
 )
 
 // Tag key constants matching go.temporal.io/server/common/metrics/tags.go.
@@ -39,16 +41,77 @@ const (
 	WorkerDeploymentNameTag    = "worker_deployment_name"
 	WorkerDeploymentBuildIDTag = "worker_build_id"
 	SignalTypeTagName          = "signal_type"
+	UpdateTypeTagName          = "update_type"
 	OperationTagName           = metrics.OperationTagName
 	ErrorTypeTagName           = metrics.ErrorTypeTagName
 	ScaleUpTriggerTagName      = "scale_up_trigger"
+	SkipReasonTagName          = "skip_reason"
+	ActivityErrorTypeTagName   = "activity_error_type"
 )
 
-// Tag value constants
+// ErrorType is the bounded set of values for the `error_type` tag.
+type ErrorType string
+
+// SkippedReason is the bounded set of values for the `skip_reason` tag.
+type SkippedReason string
+
+// ActivityErrorType is the bounded set of values for the `activity_error_type` tag.
+type ActivityErrorType string
+
+// ActivityType is the bounded set of values for the `activityType` tag.
+type ActivityType string
+
 const (
-	SignalTypeTaskAdd             = "task_add"
-	OperationTypePullStats        = "pull_stats"
-	OperationTypeInvokeWorker     = "invoke_worker"
-	ScaleUpTriggerTypeMetricsPoll = "metrics_poll"
-	ScaleUpTriggerTypeTaskAdd     = "task_add"
+	ErrorTypeDescribeWorkerDeploymentVersionFailed ErrorType = "describe_worker_deployment_version_failed"
+	ErrorTypeLockFailure                           ErrorType = "lock_failure"
+	ErrorTypeBuildUpdatedSpecFailure               ErrorType = "build_updated_spec_failure"
+	ErrorTypeInvalidSpec                           ErrorType = "invalid_spec"
+	// ErrorTypeActivityError is the coarse bucket used at workflow-side activity-execution failure sites, paired with
+	// the activity_error_type tag for sub-classification.
+	ErrorTypeActivityError              ErrorType = "activity_error"
+	ErrorTypeInvalidRequest             ErrorType = "invalid_request"
+	ErrorTypeAlgorithmUnavailable       ErrorType = "algorithm_unavailable"
+	ErrorTypeAlgorithmFailed            ErrorType = "algorithm_failed"
+	ErrorTypeComputeProviderUnavailable ErrorType = "compute_provider_unavailable"
+	ErrorTypeComputeProviderFailed      ErrorType = "compute_provider_failed"
+)
+
+const (
+	SkippedReasonSpecMissing          SkippedReason = "spec_missing"
+	SkippedReasonWciDisabled          SkippedReason = "wci_disabled"
+	SkippedReasonInvalidRequest       SkippedReason = "invalid_request"
+	SkippedReasonAlgorithmUnavailable SkippedReason = "algorithm_unavailable"
+	SkippedReasonAlgorithmFailed      SkippedReason = "algorithm_failed"
+	SkippedReasonNoMatchingScaler     SkippedReason = "no_matching_scaler"
+)
+
+const (
+	ActivityErrorTypeTimeout     ActivityErrorType = "timeout"
+	ActivityErrorTypeCanceled    ActivityErrorType = "canceled"
+	ActivityErrorTypeApplication ActivityErrorType = "application"
+	ActivityErrorTypePanic       ActivityErrorType = "panic"
+	ActivityErrorTypeTerminated  ActivityErrorType = "terminated"
+	ActivityErrorTypeOther       ActivityErrorType = "other"
+)
+
+const (
+	ActivityTypeHandleTaskAddSignal               ActivityType = "handle_task_add_signal"
+	ActivityTypeUpdateWorkerSetSize               ActivityType = "update_worker_set_size"
+	ActivityTypeInvokeWorker                      ActivityType = "invoke_worker"
+	ActivityTypeInvokeWorkersToRegisterTaskQueues ActivityType = "invoke_workers_to_register_task_queues"
+	ActivityTypeValidateSpec                      ActivityType = "validate_spec"
+	ActivityTypePullStats                         ActivityType = "pull_stats"
+)
+
+const (
+	SignalTypeTaskAdd                = "task_add"
+	UpdateTypeValidateSpec           = "validate_spec"
+	UpdateTypeUpdateInstance         = "update_instance"
+	UpdateTypeDeleteInstance         = "delete_instance"
+	OperationTypePullStats           = "pull_stats"
+	OperationTypeValidateSpec        = "validate_spec"
+	OperationTypeInvokeWorker        = "invoke_worker"
+	OperationTypeUpdateWorkerSetSize = "update_worker_set_size"
+	ScaleUpTriggerTypeMetricsPoll    = "metrics_poll"
+	ScaleUpTriggerTypeTaskAdd        = "task_add"
 )
