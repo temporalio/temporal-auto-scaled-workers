@@ -45,36 +45,11 @@ type (
 )
 
 var (
-	_ hooks.TaskHookFactory  = (*taskHookFactoryImpl)(nil)
-	_ hooks.QueryHookFactory = (*taskHookFactoryImpl)(nil)
-	_ hooks.TaskHook         = (*taskHookImpl)(nil)
-	_ hooks.QueryHook        = (*taskHookImpl)(nil)
+	_ hooks.TaskHookFactory = (*taskHookFactoryImpl)(nil)
+	_ hooks.TaskHook        = (*taskHookImpl)(nil)
 )
 
 func (thf *taskHookFactoryImpl) Create(details *hooks.TaskHookFactoryCreateDetails) hooks.TaskHook {
-	if details == nil || details.Namespace == nil || details.Partition.Kind() == enumspb.TASK_QUEUE_KIND_STICKY {
-		return nil
-	}
-
-	if !WorkerControllerEnabled.Get(thf.dc)(details.Namespace.Name().String()) {
-		return nil
-	}
-
-	return &taskHookImpl{
-		logger:         thf.logger,
-		client:         thf.client,
-		dc:             thf.dc,
-		metricsHandler: thf.metricsHandler,
-
-		namespace:     details.Namespace,
-		taskQueueName: details.Partition.TaskQueue().Name(),
-		taskQueueType: details.Partition.TaskQueue().TaskType(),
-
-		lastSignalDetails: map[string]*signalBatchDetails{},
-	}
-}
-
-func (thf *taskHookFactoryImpl) CreateQueryHook(details *hooks.TaskHookFactoryCreateDetails) hooks.QueryHook {
 	if details == nil || details.Namespace == nil || details.Partition.Kind() == enumspb.TASK_QUEUE_KIND_STICKY {
 		return nil
 	}
@@ -186,43 +161,4 @@ func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, 
 	}
 	th.lastSignalDetails[workflowID] = last
 	return last.syncMatchCount, last.noSyncMatchCount, true
-}
-
-func (th *taskHookImpl) ProcessQueryTask(ctx context.Context, event *hooks.QueryTaskHookDetails) {
-	if event == nil || event.DeploymentVersion == nil {
-		return
-	}
-	if !WorkerControllerEnabled.Get(th.dc)(th.namespace.Name().String()) {
-		return
-	}
-	workflowID := GenerateWorkerControllerInstanceWorkflowID(event.DeploymentVersion)
-
-	// Treat query dispatch as a no-sync-match event: there are no pollers currently serving the query,
-	// so we use the no-sync-match batching window for the scale-up signal.
-	_, noSyncMatchBatchCount, skip := th.batchMatchSignals(ctx, workflowID, false)
-	if skip {
-		return
-	}
-
-	exists, err := th.client.WorkerControllerInstanceExists(ctx, th.namespace, event.DeploymentVersion)
-	if err != nil {
-		th.logger.Error("Failed to check for existence of worker controller instance workflow", tag.Error(err), tag.WorkflowID(workflowID))
-		iface.WorkerControllerInstanceProcessTaskMatchErrorCount.With(th.metricsHandler).Record(1)
-		return
-	}
-	if !exists {
-		return
-	}
-
-	request := &iface.SignalTaskAddRequest{
-		TaskQueueName:               th.taskQueueName,
-		TaskQueueType:               enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-		IsSyncMatch:                 false,
-		NoSyncMatchSignalsSinceLast: noSyncMatchBatchCount,
-	}
-
-	if err := th.client.SignalTaskAddEvent(ctx, th.namespace, event.DeploymentVersion, request); err != nil {
-		th.logger.Error("Failed to signal query task event", tag.Error(err), tag.WorkflowID(workflowID))
-		iface.WorkerControllerInstanceProcessTaskMatchErrorCount.With(th.metricsHandler).Record(1)
-	}
 }
