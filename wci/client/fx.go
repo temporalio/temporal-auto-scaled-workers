@@ -21,8 +21,9 @@ type (
 	fxOut struct {
 		fx.Out
 
-		Client          Client
-		TaskHookFactory hooks.TaskHookFactory `group:"TaskHookFactories"`
+		Client           Client
+		TaskHookFactory  hooks.TaskHookFactory  `group:"TaskHookFactories"`
+		QueryHookFactory hooks.QueryHookFactory `group:"QueryHookFactories"`
 	}
 )
 
@@ -52,5 +53,5 @@ func ClientProvider(
 		metricsHandler: metricsHandler,
 	}
 
-	return fxOut{Client: client, TaskHookFactory: taskHookFactory}
+	return fxOut{Client: client, TaskHookFactory: taskHookFactory, QueryHookFactory: taskHookFactory}
 }
