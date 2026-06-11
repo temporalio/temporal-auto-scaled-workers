@@ -3,11 +3,12 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
-	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/auto-scaled-workers/wci/client"
@@ -80,6 +81,22 @@ type (
 		Actions              []scalingalgorithm.ScalingAction        `json:"actions,omitempty"`
 	}
 
+	HandleDeferredScalingDecisionActivityRequest struct {
+		RequestContext
+
+		Request         iface.SignalTaskAddRequest `json:"request"`
+		ScalingGroupKey string                     `json:"scaling_group_key"`
+
+		ScalingGroupSpec   iface.ScalingGroupSpec       `json:"scaling_group_spec"`
+		EffectiveTaskTypes []enumspb.TaskQueueType      `json:"effective_task_types"`
+		ScalingStatus      iface.ScalingAlgorithmStatus `json:"scaling_status"`
+	}
+
+	HandleDeferredScalingDecisionActivityResponse struct {
+		UpdatedScalingStatus iface.ScalingAlgorithmStatus     `json:"scaling_status"`
+		Actions              []scalingalgorithm.ScalingAction `json:"actions,omitempty"`
+	}
+
 	PullStatsActivityRequest struct {
 		RequestContext
 
@@ -140,7 +157,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 		provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.dc)
 		if err != nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderFailed)
-			return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument")
+			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
 		if provider == nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderUnavailable)
@@ -150,18 +167,18 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 		config := map[string]any{}
 		if err := sdk.PreferProtoDataConverter.FromPayload(entry.Compute.Config, &config); err != nil {
 			recordError(wcimetrics.ErrorTypeInvalidRequest)
-			return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument")
+			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
 		if err := provider.ValidateConfig(timeoutCtx, config); err != nil {
 			recordError(wcimetrics.ErrorTypeInvalidRequest)
-			return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument")
+			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
 
 		if entry.Scaling != nil {
 			scalingAlgo, err := scalingalgorithm.GetScalingAlgorithm(timeoutCtx, entry.Scaling.ScalingAlgorithm, a.dc)
 			if err != nil {
 				recordError(wcimetrics.ErrorTypeAlgorithmFailed)
-				return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument")
+				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 			}
 			if scalingAlgo == nil {
 				recordError(wcimetrics.ErrorTypeAlgorithmUnavailable)
@@ -171,11 +188,11 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 			config := map[string]any{}
 			if err := sdk.PreferProtoDataConverter.FromPayload(entry.Scaling.Config, &config); err != nil {
 				recordError(wcimetrics.ErrorTypeInvalidRequest)
-				return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument")
+				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 			}
 			if err := scalingAlgo.ValidateConfig(timeoutCtx, config); err != nil {
 				recordError(wcimetrics.ErrorTypeInvalidRequest)
-				return temporal.NewApplicationError(fmt.Sprintf("%s: %s", key, err), "InvalidArgument")
+				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err), "InvalidArgument", err)
 			}
 
 			compatibleLaunchStrategies := scalingAlgo.CompatibleLaunchStrategies()
@@ -202,7 +219,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 		provider, err := computeprovider.GetComputeProvider(ctx, v.Compute.ProviderType, a.dc)
 		if err != nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderFailed)
-			return temporal.NewApplicationError(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument")
+			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
 		}
 		if provider == nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderUnavailable)
@@ -213,12 +230,12 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 			config := map[string]any{}
 			if err := sdk.PreferProtoDataConverter.FromPayload(v.Compute.Config, &config); err != nil {
 				recordError(wcimetrics.ErrorTypeInvalidRequest)
-				return temporal.NewApplicationError(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument")
+				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
 			}
 
 			if err := provider.InvokeWorker(ctx, config); err != nil {
 				recordError(wcimetrics.ErrorTypeComputeProviderFailed)
-				return temporal.NewApplicationError(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed")
+				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed", err)
 			}
 		}
 	}
@@ -251,14 +268,14 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 	config := map[string]any{}
 	if err := sdk.PreferProtoDataConverter.FromPayload(req.ComputeConfig.Config, &config); err != nil {
 		recordError(wcimetrics.ErrorTypeInvalidRequest)
-		return temporal.NewApplicationError(err.Error(), "InvalidArgument")
+		return temporal.NewApplicationErrorWithCause(err.Error(), "InvalidArgument", err)
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, startNewWorkerInstanceTimeout)
 	defer cancel()
 	if err := provider.InvokeWorker(timeoutCtx, config); err != nil {
 		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
-		return temporal.NewApplicationError(err.Error(), "InvokeWorkerFailed")
+		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
 
 	recordSuccess()
@@ -289,18 +306,84 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 	config := map[string]any{}
 	if err := sdk.PreferProtoDataConverter.FromPayload(req.ComputeConfig.Config, &config); err != nil {
 		recordError(wcimetrics.ErrorTypeInvalidRequest)
-		return temporal.NewApplicationError(err.Error(), "InvalidArgument")
+		return temporal.NewApplicationErrorWithCause(err.Error(), "InvalidArgument", err)
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, updateWorkerSetSizeTimeout)
 	defer cancel()
 	if err := provider.UpdateWorkerSetSize(timeoutCtx, config, req.UpdatedSize); err != nil {
 		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
-		return temporal.NewApplicationError(err.Error(), "InvokeWorkerFailed")
+		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
 
 	recordSuccess()
 	return nil
+}
+
+func (a *Activities) HandleDeferredScalingDecision(ctx context.Context, req HandleDeferredScalingDecisionActivityRequest) (*HandleDeferredScalingDecisionActivityResponse, error) {
+	logger := activity.GetLogger(ctx)
+	metricsHandler := req.metricsHandler(ctx, wcimetrics.ActivityTypeHandleDeferredScalingDecision)
+	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
+
+	scalingStatus := maps.Clone(req.ScalingStatus)
+
+	if !slices.Contains(req.EffectiveTaskTypes, req.Request.TaskQueueType) {
+		logger.Warn("Deferred scaling decision does not match scaling group task types", "scaling_group_key", req.ScalingGroupKey, "task_queue_type", req.Request.TaskQueueType)
+		recordSkipped(wcimetrics.SkippedReasonTaskTypeMismatch)
+		return &HandleDeferredScalingDecisionActivityResponse{UpdatedScalingStatus: scalingStatus}, nil
+	}
+
+	scalingAlgo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, req.ScalingGroupSpec)
+	if err != nil {
+		logger.Warn("failed to get scaling algorithm for deferred scaling decision", "error", err, "scaling_group_key", req.ScalingGroupKey)
+		recordSkipped(wcimetrics.SkippedReasonAlgorithmUnavailable)
+		return &HandleDeferredScalingDecisionActivityResponse{UpdatedScalingStatus: scalingStatus}, nil
+	}
+
+	getCachedMetricsSnapshot := sync.OnceValues(func() (*scalingalgorithm.ScalingMetricsSnapshot, error) {
+		metricsSnapshot, err := a.pullScalingMetricsSnapshot(ctx, req.NamespaceName, req.DeploymentName, req.DeploymentBuildID)
+		if err != nil {
+			metricsHandler.Counter(wcimetrics.DeferredScalingDecisionMetricsPullFailedCount.Name()).Inc(1)
+			logger.Error("failed to pull deferred scaling decision metrics snapshot", "error", err)
+			return nil, err
+		}
+		return metricsSnapshot, nil
+	})
+
+	getScalingMetricsSnapshot := func() (*scalingalgorithm.ScalingMetricsSnapshot, error) {
+		metricsSnapshot, err := getCachedMetricsSnapshot()
+		if err != nil {
+			return nil, err
+		}
+		return filterScalingMetricsSnapshotByTaskTypes(metricsSnapshot, req.EffectiveTaskTypes), nil
+	}
+
+	response, err := scalingAlgo.ProcessDeferredScalingDecision(ctx, scalingConfig, scalingStatus, req.Request, getScalingMetricsSnapshot)
+	if err != nil {
+		logger.Error("failed to process deferred scaling decision", "error", err, "scaling_group_key", req.ScalingGroupKey)
+		recordError(wcimetrics.ErrorTypeAlgorithmFailed)
+		return nil, temporal.NewApplicationErrorWithCause(err.Error(), "AlgorithmFailed", err)
+	}
+	if response == nil {
+		logger.Error("deferred scaling decision returned nil response", "scaling_group_key", req.ScalingGroupKey)
+		recordSkipped(wcimetrics.SkippedReasonAlgorithmFailed)
+		return &HandleDeferredScalingDecisionActivityResponse{UpdatedScalingStatus: scalingStatus}, nil
+	}
+
+	updatedActions := []scalingalgorithm.ScalingAction{}
+	for _, act := range response.Actions {
+		// Reject nested deferred actions: chaining them would grow workflow history
+		// unbounded as each deferred dispatch schedules another activity.
+		if act.Action == scalingalgorithm.ActionTypeDeferredScalingDecision {
+			logger.Error("deferred scaling decision response contained a nested deferred action; dropping", "scaling_group_key", req.ScalingGroupKey)
+			continue
+		}
+		act.ScalingGroupKey = req.ScalingGroupKey
+		updatedActions = append(updatedActions, act)
+	}
+
+	recordSuccess()
+	return &HandleDeferredScalingDecisionActivityResponse{Actions: updatedActions, UpdatedScalingStatus: response.Status}, nil
 }
 
 func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddSignalActivityRequest) (*HandleTaskAddSignalActivityResponse, error) {
@@ -386,50 +469,11 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 		}, nil
 	}
 
-	deploymentVersionDetails, err := a.workflowserviceClient.DescribeWorkerDeploymentVersion(ctx, &workflowservice.DescribeWorkerDeploymentVersionRequest{
-		Namespace: req.NamespaceName,
-		DeploymentVersion: &deploymentpb.WorkerDeploymentVersion{
-			DeploymentName: req.DeploymentName,
-			BuildId:        req.DeploymentBuildID,
-		},
-		ReportTaskQueueStats: true,
-	})
+	metricsSnapshot, err := a.pullScalingMetricsSnapshot(ctx, req.NamespaceName, req.DeploymentName, req.DeploymentBuildID)
 	if err != nil {
 		recordError(wcimetrics.ErrorTypeDescribeWorkerDeploymentVersionFailed)
-		return nil, err
+		return nil, temporal.NewApplicationErrorWithCause(err.Error(), "PullScalingMetricsSnapshotFailed", err)
 	}
-	if deploymentVersionDetails == nil {
-		recordError(wcimetrics.ErrorTypeDescribeWorkerDeploymentVersionFailed)
-		return nil, fmt.Errorf("did not receive details in the describe response")
-	}
-
-	metricsSnapshot := scalingalgorithm.ScalingMetricsSnapshot{
-		Workflow: &iface.QueueTypeScalingMetrics{},
-		Activity: &iface.QueueTypeScalingMetrics{},
-		Nexus:    &iface.QueueTypeScalingMetrics{},
-	}
-	for _, versionedTaskQueue := range deploymentVersionDetails.VersionTaskQueues {
-		if versionedTaskQueue == nil || versionedTaskQueue.Stats == nil {
-			continue
-		}
-
-		switch versionedTaskQueue.Type {
-		case enumspb.TASK_QUEUE_TYPE_WORKFLOW:
-			metricsSnapshot.Workflow.LastBacklogCount += versionedTaskQueue.Stats.ApproximateBacklogCount
-			metricsSnapshot.Workflow.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
-			metricsSnapshot.Workflow.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
-		case enumspb.TASK_QUEUE_TYPE_ACTIVITY:
-			metricsSnapshot.Activity.LastBacklogCount += versionedTaskQueue.Stats.ApproximateBacklogCount
-			metricsSnapshot.Activity.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
-			metricsSnapshot.Activity.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
-		case enumspb.TASK_QUEUE_TYPE_NEXUS:
-			metricsSnapshot.Nexus.LastBacklogCount += versionedTaskQueue.Stats.ApproximateBacklogCount
-			metricsSnapshot.Nexus.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
-			metricsSnapshot.Nexus.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
-		}
-	}
-
-	logger.Info("Pull Stats Results", "workflow_count", metricsSnapshot.Workflow.LastBacklogCount, "activity_count", metricsSnapshot.Activity.LastBacklogCount, "nexus_count", metricsSnapshot.Nexus.LastBacklogCount)
 
 	totalBacklog := metricsSnapshot.Workflow.LastBacklogCount +
 		metricsSnapshot.Activity.LastBacklogCount +
@@ -445,15 +489,9 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 		scalingStatus := req.ScalingStatus[key]
 		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key)
 
-		scalingMetricsSnapshot := metricsSnapshot
-		if !slices.Contains(scalingGroupEffectiveTaskTypes, enumspb.TASK_QUEUE_TYPE_WORKFLOW) {
-			scalingMetricsSnapshot.Workflow = nil
-		}
-		if !slices.Contains(scalingGroupEffectiveTaskTypes, enumspb.TASK_QUEUE_TYPE_ACTIVITY) {
-			scalingMetricsSnapshot.Activity = nil
-		}
-		if !slices.Contains(scalingGroupEffectiveTaskTypes, enumspb.TASK_QUEUE_TYPE_NEXUS) {
-			scalingMetricsSnapshot.Nexus = nil
+		scalingMetricsSnapshot := filterScalingMetricsSnapshotByTaskTypes(metricsSnapshot, scalingGroupEffectiveTaskTypes)
+		if scalingMetricsSnapshot == nil {
+			scalingMetricsSnapshot = &scalingalgorithm.ScalingMetricsSnapshot{}
 		}
 
 		scalingAlgo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, entry)
@@ -468,7 +506,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 
 		logger.Debug("Loaded scaling algo", "scaling_algo", scalingAlgo, "config", scalingConfig)
 
-		response, err := scalingAlgo.ProcessMetricsPoll(ctx, scalingConfig, scalingStatus, scalingMetricsSnapshot)
+		response, err := scalingAlgo.ProcessMetricsPoll(ctx, scalingConfig, scalingStatus, *scalingMetricsSnapshot)
 		if err != nil {
 			logger.Error("failed to process metrics poll", "error", err)
 
@@ -480,6 +518,11 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 
 		updatedScalingStatus[key] = response.Status
 		for _, act := range response.Actions {
+			// Reject nested deferred actions as metric polls have no reason to defer things
+			if act.Action == scalingalgorithm.ActionTypeDeferredScalingDecision {
+				logger.Error("metrics-poll response contained a deferred scaling decision; dropping", "scaling_group_key", key)
+				continue
+			}
 			act.ScalingGroupKey = key
 			actions = append(actions, act)
 		}

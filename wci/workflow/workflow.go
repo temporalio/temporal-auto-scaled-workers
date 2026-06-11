@@ -18,12 +18,13 @@ import (
 )
 
 const (
-	ValidateSpecActivityTimeout                 = 15 * time.Second
-	PullStatsActivityTimeout                    = 15 * time.Second
-	HandleTaskAddSignalActivityTimeout          = 15 * time.Second
-	InvokeWorkerActivityTimeout                 = 2 * time.Minute
-	UpdateWorkerSetSizeActivityTimeout          = 2 * time.Minute
-	RegisterTaskQueuesViaWorkersActivityTimeout = 30 * time.Second
+	ValidateSpecActivityTimeout                  = 15 * time.Second
+	PullStatsActivityTimeout                     = 15 * time.Second
+	HandleTaskAddSignalActivityTimeout           = 15 * time.Second
+	HandleDeferredScalingDecisionActivityTimeout = 15 * time.Second
+	InvokeWorkerActivityTimeout                  = 2 * time.Minute
+	UpdateWorkerSetSizeActivityTimeout           = 2 * time.Minute
+	RegisterTaskQueuesViaWorkersActivityTimeout  = 30 * time.Second
 
 	periodicValidationInterval = 6 * time.Hour
 )
@@ -493,10 +494,12 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 			wcimetrics.OperationTagName: wcimetrics.OperationTypePullStats,
 		}).Counter(wcimetrics.Operations.Name()).Inc(1)
 
-		d.handleActions(ctx, resp.Actions)
+		// Apply the updated status before handleActions for consistency between this
+		// and the no-sync-match path
 		if resp.UpdatedScalingStatus != nil {
 			d.State.ScalingStatus = resp.UpdatedScalingStatus
 		}
+		d.handleActions(ctx, resp.Actions, nil)
 
 		return time.Duration(resp.NextPollSeconds) * time.Second
 	}
@@ -580,14 +583,25 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 
 		d.logger.Debug("Completed match-signal processing", "action_count", len(resp.Actions), "sync_match", req.IsSyncMatch, "no_sync_match_batch", req.NoSyncMatchSignalsSinceLast)
 
-		d.handleActions(ctx, resp.Actions)
+		// Apply the updated status before handleActions: deferred scaling decisions read
+		// d.State.ScalingStatus when forwarding it to their follow-up activity, and must
+		// see the freshly-computed status rather than the pre-process snapshot.
 		if resp.UpdatedScalingStatus != nil {
 			d.State.ScalingStatus = resp.UpdatedScalingStatus
 		}
+		d.handleActions(ctx, resp.Actions, req)
 	}
 }
 
-func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingalgorithm.ScalingAction) {
+// handleActions dispatches scaling actions returned by the scaling algorithm.
+//
+// ScalingStatus is treated as intent, not confirmation: callers must persist
+// resp.UpdatedScalingStatus into d.State.ScalingStatus before invoking this
+// function. The deferred scaling decision case forwards d.State.ScalingStatus to its
+// follow-up activity and so must see the freshly-computed status. If a
+// dispatched action subsequently fails, the persisted status is not rolled
+// back.
+func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingalgorithm.ScalingAction, taskAddRequest *iface.SignalTaskAddRequest) {
 	if d.State == nil || d.State.Spec == nil {
 		return
 	}
@@ -600,11 +614,64 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 
 		spec, specOk := d.State.Spec.ScalingGroupSpecs[action.ScalingGroupKey]
 		if !specOk {
-			d.logger.Warn("No compute provider spec for scale up action", "scale_group_id", action.ScalingGroupKey)
+			d.logger.Warn("No compute provider spec for scale up action", "scaling_group_key", action.ScalingGroupKey)
 			continue
 		}
 
 		switch action.Action {
+		case scalingalgorithm.ActionTypeDeferredScalingDecision:
+			if action.Count != nil {
+				d.logger.Warn("Deferred scaling decision must not carry a count; dropping action", "scaling_group_key", action.ScalingGroupKey, "count", *action.Count)
+				d.metrics.WithTags(map[string]string{
+					wcimetrics.OperationTagName:  wcimetrics.OperationTypeDeferredScalingDecision,
+					wcimetrics.SkipReasonTagName: string(wcimetrics.SkippedReasonInvalidCount),
+				}).Counter(wcimetrics.Operations.Name()).Inc(1)
+				continue
+			}
+			if taskAddRequest == nil {
+				d.logger.Error("Deferred scaling decision cannot be handled without source task-add request; dropping (only ProcessTaskAdd may return ActionTypeDeferredScalingDecision)", "scaling_group_key", action.ScalingGroupKey)
+				d.metrics.WithTags(map[string]string{
+					wcimetrics.OperationTagName:  wcimetrics.OperationTypeDeferredScalingDecision,
+					wcimetrics.SkipReasonTagName: string(wcimetrics.SkippedReasonNoSourceRequest),
+				}).Counter(wcimetrics.Operations.Name()).Inc(1)
+				continue
+			}
+
+			d.metrics.Counter(wcimetrics.DeferredScalingDecisionCount.Name()).Inc(1)
+
+			var resp HandleDeferredScalingDecisionActivityResponse
+			if err := workflow.ExecuteActivity(
+				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: HandleDeferredScalingDecisionActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
+				d.a.HandleDeferredScalingDecision,
+				HandleDeferredScalingDecisionActivityRequest{
+					RequestContext: d.requestContext(),
+
+					Request:         *taskAddRequest,
+					ScalingGroupKey: action.ScalingGroupKey,
+
+					ScalingGroupSpec:   spec,
+					EffectiveTaskTypes: d.State.Spec.EffectiveTaskTypesForGroup(action.ScalingGroupKey),
+					ScalingStatus:      d.State.ScalingStatus[action.ScalingGroupKey],
+				},
+			).Get(ctx, &resp); err != nil {
+				d.logger.Error("Failed to process deferred scaling decision", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "scaling_group_key", action.ScalingGroupKey, "error", err)
+				d.metrics.WithTags(map[string]string{
+					wcimetrics.OperationTagName:         wcimetrics.OperationTypeDeferredScalingDecision,
+					wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+					wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
+				}).Counter(wcimetrics.Operations.Name()).Inc(1)
+			} else {
+
+				if resp.UpdatedScalingStatus != nil {
+					d.State.ScalingStatus[action.ScalingGroupKey] = resp.UpdatedScalingStatus
+				}
+				d.handleActions(ctx, resp.Actions, nil)
+
+				d.metrics.WithTags(map[string]string{
+					wcimetrics.OperationTagName: wcimetrics.OperationTypeDeferredScalingDecision,
+				}).Counter(wcimetrics.Operations.Name()).Inc(1)
+			}
+
 		case scalingalgorithm.ActionTypeInvokeWorker:
 			if action.Count != nil && *action.Count != 1 {
 				d.logger.Warn("Invalid count for action type invoke worker received", "count", *action.Count)
