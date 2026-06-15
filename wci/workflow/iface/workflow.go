@@ -38,6 +38,10 @@ const (
 	// Signals
 	SignalTaskAdd = "task-add-signal"
 
+	// Signal sent to the version workflow when ValidationStatus changes, so the
+	// deployment workflow can maintain an aggregate validation summary in its memo.
+	SignalSyncValidationStatus = "sync-validation-status"
+
 	// Errors
 	ErrInstanceDeleted    = "worker deployment deleted" // returned in the race condition that the deployment is deleted but the workflow is not yet closed.
 	ErrLongHistory        = "errLongHistory"            // update is not accepted until CaN happens. client should retry

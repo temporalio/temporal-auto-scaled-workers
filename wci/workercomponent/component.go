@@ -1,6 +1,8 @@
 package workercomponent
 
 import (
+	"time"
+
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	instancewf "go.temporal.io/auto-scaled-workers/wci/workflow"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
@@ -45,7 +47,11 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 		maxVersionsGetter := func() int {
 			return client.WorkerControllerMaxInstances.Get(s.dynamicConfig)(ns.Name().String())
 		}
-		return instancewf.Workflow(ctx, workflowVersionGetter, maxVersionsGetter, args, activities)
+		validationIntervalGetter := func() time.Duration {
+			ms := client.WorkerControllerPeriodicValidationIntervalMilliseconds.Get(s.dynamicConfig)()
+			return time.Duration(ms) * time.Millisecond
+		}
+		return instancewf.Workflow(ctx, workflowVersionGetter, maxVersionsGetter, validationIntervalGetter, args, activities)
 	}
 	registry.RegisterWorkflowWithOptions(versionWorkflow, workflow.RegisterOptions{Name: iface.WorkerControllerInstanceWorkflowType})
 	validateWorkflow := func(ctx workflow.Context, args *iface.ValidateWorkerControllerInstanceSpecWorkflowArgs) error {

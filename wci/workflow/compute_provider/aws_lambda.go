@@ -58,17 +58,17 @@ func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, cfg Compu
 
 	lambdaClient, arn, err := p.getLambdaClientAndARN(ctx, cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("Can't connect to the compute provider: %w", err)
 	}
 
 	if _, err = lambdaClient.GetFunction(ctx, &lambda.GetFunctionInput{
 		FunctionName: aws.String(arn),
 	}); err != nil {
-		return fmt.Errorf("lambda GetFunction failed: %w", err)
+		return fmt.Errorf("Can't access the compute resource: %w", err)
 	}
 
 	if err := p.checkExternalID(ctx, cfg, arn); err != nil {
-		return err
+		return fmt.Errorf("Trust credential not enforced on the role: %w", err)
 	}
 
 	return nil
