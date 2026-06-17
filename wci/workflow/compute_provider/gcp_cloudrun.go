@@ -70,18 +70,14 @@ func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, co
 	}
 	defer client.Close()
 
-	op, err := client.UpdateWorkerPool(ctx, &runpb.UpdateWorkerPoolRequest{
+	if _, err = client.UpdateWorkerPool(ctx, &runpb.UpdateWorkerPoolRequest{
 		WorkerPool: &runpb.WorkerPool{
 			Name:    name,
 			Scaling: &runpb.WorkerPoolScaling{ManualInstanceCount: &count},
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"scaling"}},
-	})
-	if err != nil {
+	}); err != nil {
 		return fmt.Errorf("failed to update worker pool %q: %w", name, err)
-	}
-	if _, err = op.Wait(ctx); err != nil {
-		return fmt.Errorf("failed to wait for worker pool %q update: %w", name, err)
 	}
 	return nil
 }
