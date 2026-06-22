@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EWMA queue consumer autoscaling simulator</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>EWMA queue consumer autoscaling simulator</h1>
+      <p>Discrete-event model for sync matches, backlog pressure, and latency-biased scaling decisions.</p>
+    </div>
+    <div class="run-controls" aria-label="Simulation controls">
+      <button type="button" id="runPauseBtn">Start</button>
+      <button type="button" id="stepBtn" class="secondary">Step event</button>
+      <button type="button" id="resetBtn" class="secondary">Reset</button>
+    </div>
+  </header>
+
+  <details class="rules" open>
+    <summary>Scaling rules</summary>
+    <div class="rule-grid">
+      <section>
+        <h2>No-sync decision</h2>
+        <p>Every arrival first tries a sync match into a free slot. If every slot is busy, the item enters backlog and the algorithm immediately increments the planned consumer count, subject only to scale-up cooldown and max consumers. New consumers begin accepting work after the configured spin-up delay.</p>
+      </section>
+      <section>
+        <h2>Cadence decision</h2>
+        <p>Every cadence tick the algorithm computes one desired consumer count from EWMA arrivals, backlog catch-up, estimated per-consumer capacity, utilization target, and Halfin-Whitt spare capacity. When the queue and raw rate windows are empty, residual EWMA arrival and dispatch rates snap to zero before the target is computed.</p>
+      </section>
+      <section>
+        <h2>Scale down</h2>
+        <p>The planned consumer count is decremented when desired capacity is below current capacity, no no-sync match has happened recently, and scale-down cooldown has elapsed. If active capacity is stopped, in-flight work is returned to backlog.</p>
+      </section>
+    </div>
+  </details>
+
+  <div class="layout">
+    <aside class="panel config-panel">
+      <section>
+        <h2>Workload</h2>
+        <label class="control">
+          <span>Arrival rate (/s)</span>
+          <input id="arrivalRate" type="number" min="0" max="500" step="0.1" value="2" />
+        </label>
+        <label class="control">
+          <span>Arrival burst size</span>
+          <input id="burstSize" type="number" min="1" max="1000" step="1" value="25" />
+        </label>
+        <label class="control">
+          <span>Run speed (x)</span>
+          <input id="runSpeed" type="number" min="0.1" max="500" step="1" value="10" />
+        </label>
+        <div class="button-row">
+          <button type="button" id="addOneBtn" class="secondary">Add one</button>
+          <button type="button" id="burstBtn" class="secondary">Burst</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Task Duration</h2>
+        <label class="control">
+          <span>Normal mean (s)</span>
+          <input id="durationMeanSec" type="number" min="0.1" max="600" step="0.1" value="7.5" />
+        </label>
+        <label class="control">
+          <span>Std dev (s)</span>
+          <input id="durationStdDevSec" type="number" min="0" max="300" step="0.1" value="1.25" />
+        </label>
+        <label class="control">
+          <span>Clamp min (s)</span>
+          <input id="durationMinSec" type="number" min="0.1" max="600" step="0.1" value="5" />
+        </label>
+        <label class="control">
+          <span>Clamp max (s)</span>
+          <input id="durationMaxSec" type="number" min="0.1" max="600" step="0.1" value="10" />
+        </label>
+      </section>
+
+      <section>
+        <h2>Simulator Capacity</h2>
+        <label class="control">
+          <span>Initial consumer count</span>
+          <input id="initialConsumers" type="number" min="0" max="500" step="1" value="1" />
+        </label>
+        <label class="control">
+          <span>Slots per consumer</span>
+          <input id="slotsPerConsumer" type="number" min="1" max="100" step="1" value="5" />
+        </label>
+        <label class="control">
+          <span>Consumer spin-up (s)</span>
+          <input id="consumerSpinUpSec" type="number" min="0" max="600" step="0.5" value="2" />
+        </label>
+      </section>
+
+      <section>
+        <h2>Measurement</h2>
+        <label class="control">
+          <span>Rate window (s)</span>
+          <input id="rateWindowSec" type="number" min="1" max="600" step="1" value="30" />
+        </label>
+      </section>
+
+      <section>
+        <h2>Scaler</h2>
+        <label class="control">
+          <span>Min consumers</span>
+          <input id="minConsumers" type="number" min="0" max="500" step="1" value="0" />
+        </label>
+        <label class="control">
+          <span>Max consumers</span>
+          <input id="maxConsumers" type="number" min="1" max="500" step="1" value="30" />
+        </label>
+        <label class="control">
+          <span>Cadence (s)</span>
+          <input id="cadenceSec" type="number" min="1" max="600" step="1" value="30" />
+        </label>
+        <label class="control">
+          <span>EWMA alpha (%)</span>
+          <input id="ewmaAlphaPct" type="number" min="1" max="100" step="1" value="45" />
+        </label>
+        <label class="control">
+          <span>Initial per-consumer capacity (/s)</span>
+          <input id="initialPerConsumerCapacity" type="number" min="0.01" max="100" step="0.1" value="2.0" />
+        </label>
+        <label class="control">
+          <span>Target backlog drain rate (/s)</span>
+          <input id="targetBacklogDrainRate" type="number" min="0" max="100" step="0.1" value="2.0" />
+        </label>
+        <label class="control">
+          <span>Material backlog threshold</span>
+          <input id="materialBacklogThreshold" type="number" min="1" max="10000" step="1" value="1" />
+        </label>
+        <label class="control">
+          <span>Utilization target (%)</span>
+          <input id="utilizationTargetPct" type="number" min="1" max="100" step="1" value="80" />
+        </label>
+        <label class="control">
+          <span>Halfin-Whitt beta</span>
+          <input id="halfinWhittBeta" type="number" min="0" max="10" step="0.1" value="0.5" />
+        </label>
+        <label class="control">
+          <span>Max scale-up step</span>
+          <input id="maxScaleUpStep" type="number" min="1" max="500" step="1" value="4" />
+        </label>
+        <label class="control">
+          <span>Scale-up cooldown (s)</span>
+          <input id="scaleUpCooldownSec" type="number" min="0" max="600" step="0.5" value="2" />
+        </label>
+        <label class="control">
+          <span>Scale-down cooldown (s)</span>
+          <input id="scaleDownCooldownSec" type="number" min="0" max="3600" step="1" value="60" />
+        </label>
+        <label class="control">
+          <span>No-sync quiet (s)</span>
+          <input id="scaleDownQuietSec" type="number" min="0" max="3600" step="1" value="90" />
+        </label>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="panel">
+        <h2>Current Scale State</h2>
+        <div class="metrics">
+          <div class="metric"><span>Sim time</span><strong id="metricTime">0.0s</strong></div>
+          <div class="metric"><span>Planned consumers</span><strong id="metricPlannedConsumers">0</strong></div>
+          <div class="metric"><span>Consumers</span><strong id="metricConsumers">0</strong></div>
+          <div class="metric"><span>Starting</span><strong id="metricStartingConsumers">0</strong></div>
+          <div class="metric"><span>Backlog</span><strong id="metricBacklog">0</strong></div>
+          <div class="metric"><span>Busy slots</span><strong id="metricBusySlots">0/0</strong></div>
+          <div class="metric"><span>Utilization</span><strong id="metricUtilization">0%</strong></div>
+          <div class="metric"><span>Oldest backlog</span><strong id="metricOldestBacklog">0.0s</strong></div>
+          <div class="metric"><span>Arrivals</span><strong id="metricArrivalRate">0.00/s</strong></div>
+          <div class="metric"><span>Dispatches</span><strong id="metricDispatchRate">0.00/s</strong></div>
+          <div class="metric"><span>EWMA arrivals</span><strong id="metricEwmaArrivalRate">0.00/s</strong></div>
+          <div class="metric"><span>EWMA dispatches</span><strong id="metricEwmaDispatchRate">0.00/s</strong></div>
+          <div class="metric"><span>Sync matches</span><strong id="metricSyncMatches">0</strong></div>
+          <div class="metric"><span>No-sync matches</span><strong id="metricNoSyncMatches">0</strong></div>
+          <div class="metric"><span>Completed</span><strong id="metricCompleted">0</strong></div>
+          <div class="metric"><span>Mean wait</span><strong id="metricMeanWait">0.0s</strong></div>
+        </div>
+      </section>
+
+      <section class="charts">
+        <div class="panel chart-panel">
+          <div class="panel-heading">
+            <h2>Consumers, Backlog, Slots</h2>
+            <span id="capacityChartLegend"></span>
+          </div>
+          <div class="chart-frame">
+            <canvas id="capacityChart"></canvas>
+          </div>
+        </div>
+        <div class="panel chart-panel">
+          <div class="panel-heading">
+            <h2>Flow Rates</h2>
+            <span id="rateChartLegend"></span>
+          </div>
+          <div class="chart-frame">
+            <canvas id="rateChart"></canvas>
+          </div>
+        </div>
+        <div class="panel chart-panel">
+          <div class="panel-heading">
+            <h2>Slot Utilization</h2>
+            <span id="utilizationChartLegend"></span>
+          </div>
+          <div class="chart-frame">
+            <canvas id="utilizationChart"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Consumer Processes</h2>
+          <span id="slotSummary">0 slots</span>
+        </div>
+        <div class="consumers" id="consumersList"></div>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="panel-heading">
+          <h2>Event History</h2>
+          <label class="log-toggle">
+            <input id="showMatchEvents" type="checkbox" />
+            <span>show match events</span>
+          </label>
+        </div>
+        <div class="history" id="history"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="app.js"></script>
+</body>
+</html>
