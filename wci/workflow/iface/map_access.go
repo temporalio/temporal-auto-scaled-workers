@@ -1,6 +1,7 @@
 package iface
 
 import (
+	"math"
 	"strconv"
 
 	"go.temporal.io/api/serviceerror"
@@ -114,6 +115,9 @@ func validateFloat64InMap(m map[string]any, key string, minValidValue float64) e
 	case float64:
 		if val < minValidValue {
 			return serviceerror.NewInvalidArgumentf("%s must be at least %v", key, minValidValue)
+		}
+		if math.IsInf(val, 0) || math.IsNaN(val) {
+			return serviceerror.NewInvalidArgumentf("%s must be a real float", key)
 		}
 	case string:
 		i, err := strconv.ParseFloat(val, 64)
