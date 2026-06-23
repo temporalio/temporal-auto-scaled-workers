@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go.temporal.io/api/serviceerror"
+	wciclient "go.temporal.io/auto-scaled-workers/wci/client"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
@@ -201,7 +202,10 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	addStatsPullTimer(maxPollInterval)
 
 	if d.hasMinVersion(PeriodicValidationVersion) {
-		validationInterval := getPeriodicValidationInterval(ctx, d.unsafePeriodicValidationIntervalGetter)
+		// Read once at run start. Dynamic config changes take effect at the next
+		// ContinueAsNew. The interval defaults to 6h and is
+		// unlikely to change frequently, so waiting for a CaN boundary is acceptable.q
+		validationInterval := d.unsafePeriodicValidationIntervalGetter()
 		if validationInterval < time.Minute {
 			validationInterval = time.Minute
 		}
@@ -852,25 +856,6 @@ func (d *WorkflowRunner) updateMemo(ctx workflow.Context) error {
 	})
 }
 
-// getPeriodicValidationInterval reads the validation interval from dynamic config via a
-// MutableSideEffect so replays always use the value that was recorded in history, not the
-// current config value. Gated behind GetVersion so existing runs without this marker in
-// history fall back to the original 6h default without an NDE.
-func getPeriodicValidationInterval(ctx workflow.Context, getter func() time.Duration) time.Duration {
-	if workflow.GetVersion(ctx, "periodicValidationIntervalAdded", workflow.DefaultVersion, 0) >= 0 {
-		var ms int64
-		err := workflow.MutableSideEffect(ctx, "periodicValidationInterval",
-			func(_ workflow.Context) any { return getter().Milliseconds() },
-			func(a, b any) bool { return a == b }).
-			Get(&ms)
-		if err == nil {
-			return time.Duration(ms) * time.Millisecond
-		}
-		workflow.GetLogger(ctx).Warn("failed to retrieve periodic validation interval from side effect", "error", err)
-	}
-	return periodicValidationInterval
-}
-
 func getWorkflowVersion(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion) WorkerControllerInstanceWorkflowVersion {
 	if workflow.GetVersion(ctx, "workflowVersionAdded", workflow.DefaultVersion, 0) >= 0 {
 		var ver WorkerControllerInstanceWorkflowVersion
@@ -902,7 +887,7 @@ func (d *WorkflowRunner) signalVersionWorkflow(ctx workflow.Context) {
 		d.DeploymentName +
 		worker_versioning.WorkerDeploymentVersionDelimiter +
 		d.BuildId
-	err := workflow.SignalExternalWorkflow(ctx, versionWfID, "", iface.SignalSyncValidationStatus, d.State.ValidationStatus).Get(ctx, nil)
+	err := workflow.SignalExternalWorkflow(ctx, versionWfID, "", wciclient.SignalSyncValidationStatus, d.State.ValidationStatus).Get(ctx, nil)
 	if err != nil {
 		var notFound *serviceerror.NotFound
 		if !errors.As(err, &notFound) {
