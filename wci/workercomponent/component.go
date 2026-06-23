@@ -48,8 +48,8 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 			return client.WorkerControllerMaxInstances.Get(s.dynamicConfig)(ns.Name().String())
 		}
 		validationIntervalGetter := func() time.Duration {
-			ms := client.WorkerControllerPeriodicValidationIntervalMilliseconds.Get(s.dynamicConfig)()
-			return time.Duration(ms) * time.Millisecond
+			sec := client.WorkerControllerPeriodicValidationIntervalSeconds.Get(s.dynamicConfig)()
+			return time.Duration(sec) * time.Second
 		}
 		return instancewf.Workflow(ctx, workflowVersionGetter, maxVersionsGetter, validationIntervalGetter, args, activities)
 	}

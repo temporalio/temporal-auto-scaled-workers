@@ -69,9 +69,9 @@ var (
 		60_000, // 1 minute
 		`WorkerControllerMinSignalIntervalSyncMatchMilliseconds controls the batching interval of sync matches grouped by WCI in milliseconds (per namespace). Each batch triggers a signal.`,
 	)
-	WorkerControllerPeriodicValidationIntervalMilliseconds = dynamicconfig.NewGlobalIntSetting(
-		"workercontroller.periodic_validation_interval_ms",
-		int((6 * time.Hour).Milliseconds()), // 21600000
-		`WorkerControllerPeriodicValidationIntervalMilliseconds controls the interval between periodic spec validation checks in milliseconds.`,
+	WorkerControllerPeriodicValidationIntervalSeconds = dynamicconfig.NewGlobalIntSetting(
+		"workercontroller.periodic_validation_interval_s",
+		int((6 * time.Hour).Seconds()), // 21600
+		`WorkerControllerPeriodicValidationIntervalSeconds controls the interval between periodic spec validation checks in seconds.`,
 	)
 )

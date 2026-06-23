@@ -66,7 +66,7 @@ type (
 
 		deleteInstance                         bool
 		unsafeMaxVersion                       func() int
-		unsafePeriodicValidationIntervalGetter func() time.Duration
+		unsafePeriodicValidationInterval func() time.Duration
 
 		// stateChanged is used to track if the state of the workflow has undergone a local state change since the last signal/update.
 		// This prevents a workflow from continuing-as-new if the state has not changed.
@@ -86,7 +86,7 @@ type (
 // history clean so that we have less concern about backwards and forwards compatibility.
 // In steady state (i.e. absence of ongoing updates or signals) the wf should only have
 // a single wft in the history.
-func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion, unsafeMaxVersion func() int, unsafePeriodicValidationIntervalGetter func() time.Duration, args *iface.WorkerControllerInstanceWorkflowArgs, activities *Activities) error {
+func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion, unsafeMaxVersion func() int, unsafePeriodicValidationInterval func() time.Duration, args *iface.WorkerControllerInstanceWorkflowArgs, activities *Activities) error {
 	workflowRunner := &WorkflowRunner{
 		WorkerControllerInstanceWorkflowArgs: args,
 		workflowVersion:                      getWorkflowVersion(ctx, unsafeWorkflowVersionGetter),
@@ -99,7 +99,7 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 		}),
 		lock:                                   workflow.NewMutex(ctx),
 		unsafeMaxVersion:                       unsafeMaxVersion,
-		unsafePeriodicValidationIntervalGetter: unsafePeriodicValidationIntervalGetter,
+		unsafePeriodicValidationInterval: unsafePeriodicValidationInterval,
 		signalHandler: &SignalHandler{
 			signalSelector: workflow.NewSelector(ctx),
 		},
@@ -204,8 +204,8 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	if d.hasMinVersion(PeriodicValidationVersion) {
 		// Read once at run start. Dynamic config changes take effect at the next
 		// ContinueAsNew. The interval defaults to 6h and is
-		// unlikely to change frequently, so waiting for a CaN boundary is acceptable.q
-		validationInterval := d.unsafePeriodicValidationIntervalGetter()
+		// unlikely to change frequently, so waiting for a CaN boundary is acceptable.
+		validationInterval := d.unsafePeriodicValidationInterval()
 		if validationInterval < time.Minute {
 			validationInterval = time.Minute
 		}
