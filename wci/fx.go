@@ -4,6 +4,7 @@ package wci
 import (
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workercomponent"
+	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/config"
@@ -53,6 +54,15 @@ var Module = fx.Options(
 	fx.Provide(ServiceResolverProvider),
 	fx.Provide(NewService),
 	fx.Provide(PerNamespaceWorkerManagerProvider),
+	fx.Provide(func() computeprovider.ImpersonationChainProvider {
+		return computeprovider.NoopImpersonationChainProvider{}
+	}),
+	// Install the (possibly fx.Decorate-replaced) chain provider into the
+	// compute_provider package singleton, where the GCP Cloud Run provider
+	// reads it. fx resolves the decorated value before this Invoke fires.
+	fx.Invoke(func(p computeprovider.ImpersonationChainProvider) {
+		computeprovider.SetImpersonationChainProvider(p)
+	}),
 	fx.Invoke(ServiceLifetimeHooks),
 )
 

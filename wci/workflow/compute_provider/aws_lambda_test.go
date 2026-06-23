@@ -95,7 +95,7 @@ func TestAWSLambdaValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 		// no role
 	}
 
-	if err := p.ValidateConfig(context.Background(), cfg); err == nil {
+	if err := p.ValidateConfig(context.Background(), InvocationContext{}, cfg); err == nil {
 		t.Fatal("expected error when role is missing, got nil")
 	}
 }
@@ -108,7 +108,7 @@ func TestAWSLambdaValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
 		// no role_external_id
 	}
 
-	if err := p.ValidateConfig(context.Background(), cfg); err == nil {
+	if err := p.ValidateConfig(context.Background(), InvocationContext{}, cfg); err == nil {
 		t.Fatal("expected error when external ID is missing, got nil")
 	}
 }
@@ -122,7 +122,7 @@ func TestAWSLambdaValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(t *test
 		// no role or external ID
 	}
 
-	err := p.ValidateConfig(context.Background(), cfg)
+	err := p.ValidateConfig(context.Background(), InvocationContext{}, cfg)
 	// We expect a non-mandatory error (e.g. AWS call failure), not the mandatory check error.
 	if err != nil && (err.Error() == `AWS Lambda compute provider requires "role" to be configured` ||
 		err.Error() == `AWS Lambda compute provider requires "role_external_id" to be configured`) {

@@ -27,7 +27,7 @@ func (p *testWorkerSetComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyWorkerSet
 }
 
-func (p *testWorkerSetComputeProvider) ValidateConfig(ctx context.Context, config ComputeProviderConfig) error {
+func (p *testWorkerSetComputeProvider) ValidateConfig(_ context.Context, _ InvocationContext, config ComputeProviderConfig) error {
 	if _, ok := config[configTestWorkerSetIllegalField].(string); ok {
 		return fmt.Errorf("illegal_field found in config")
 	}
@@ -35,10 +35,10 @@ func (p *testWorkerSetComputeProvider) ValidateConfig(ctx context.Context, confi
 	return nil
 }
 
-func (p *testWorkerSetComputeProvider) InvokeWorker(ctx context.Context, config ComputeProviderConfig) error {
+func (p *testWorkerSetComputeProvider) InvokeWorker(_ context.Context, _ InvocationContext, _ ComputeProviderConfig) error {
 	return errors.ErrUnsupported
 }
 
-func (p *testWorkerSetComputeProvider) UpdateWorkerSetSize(_ context.Context, _ ComputeProviderConfig, _ int32) error {
+func (p *testWorkerSetComputeProvider) UpdateWorkerSetSize(_ context.Context, _ InvocationContext, _ ComputeProviderConfig, _ int32) error {
 	return nil
 }

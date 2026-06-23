@@ -116,6 +116,16 @@ type (
 	}
 )
 
+// invocationContext projects the request's identity into the form the compute
+// providers consume.
+func (r RequestContext) invocationContext() computeprovider.InvocationContext {
+	return computeprovider.InvocationContext{
+		Namespace:      r.NamespaceName,
+		DeploymentName: r.DeploymentName,
+		BuildID:        r.DeploymentBuildID,
+	}
+}
+
 // metricsHandler returns the activity-side MetricsHandler pre-tagged with the
 // namespace/deployment identity and the supplied activity type.
 func (r RequestContext) metricsHandler(ctx context.Context, activityType wcimetrics.ActivityType) sdkclient.MetricsHandler {
@@ -127,7 +137,11 @@ func (r RequestContext) metricsHandler(ctx context.Context, activityType wcimetr
 	})
 }
 
-func NewActivities(namespace *namespace.Namespace, dc *dynamicconfig.Collection, workflowserviceClient workflowservice.WorkflowServiceClient) *Activities {
+func NewActivities(
+	namespace *namespace.Namespace,
+	dc *dynamicconfig.Collection,
+	workflowserviceClient workflowservice.WorkflowServiceClient,
+) *Activities {
 	return &Activities{
 		dc:                    dc,
 		namespace:             namespace,
@@ -169,7 +183,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 			recordError(wcimetrics.ErrorTypeInvalidRequest)
 			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
-		if err := provider.ValidateConfig(timeoutCtx, config); err != nil {
+		if err := provider.ValidateConfig(timeoutCtx, req.invocationContext(), config); err != nil {
 			recordError(wcimetrics.ErrorTypeInvalidRequest)
 			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
@@ -233,7 +247,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
 			}
 
-			if err := provider.InvokeWorker(ctx, config); err != nil {
+			if err := provider.InvokeWorker(ctx, req.invocationContext(), config); err != nil {
 				recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed", err)
 			}
@@ -273,7 +287,7 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, startNewWorkerInstanceTimeout)
 	defer cancel()
-	if err := provider.InvokeWorker(timeoutCtx, config); err != nil {
+	if err := provider.InvokeWorker(timeoutCtx, req.invocationContext(), config); err != nil {
 		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
@@ -311,7 +325,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, updateWorkerSetSizeTimeout)
 	defer cancel()
-	if err := provider.UpdateWorkerSetSize(timeoutCtx, config, req.UpdatedSize); err != nil {
+	if err := provider.UpdateWorkerSetSize(timeoutCtx, req.invocationContext(), config, req.UpdatedSize); err != nil {
 		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}

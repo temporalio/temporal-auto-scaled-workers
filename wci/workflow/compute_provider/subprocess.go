@@ -35,7 +35,7 @@ func (p *subprocessComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyInvoke
 }
 
-func (p *subprocessComputeProvider) ValidateConfig(ctx context.Context, config ComputeProviderConfig) error {
+func (p *subprocessComputeProvider) ValidateConfig(_ context.Context, _ InvocationContext, config ComputeProviderConfig) error {
 	command, ok := config[configSubprocessCommand].(string)
 	if !ok || strings.TrimSpace(command) == "" {
 		return fmt.Errorf("command not found in config")
@@ -52,7 +52,7 @@ func (p *subprocessComputeProvider) ValidateConfig(ctx context.Context, config C
 	return nil
 }
 
-func (p *subprocessComputeProvider) InvokeWorker(ctx context.Context, config ComputeProviderConfig) error {
+func (p *subprocessComputeProvider) InvokeWorker(_ context.Context, _ InvocationContext, config ComputeProviderConfig) error {
 	command, ok := config[configSubprocessCommand].(string)
 	if !ok || strings.TrimSpace(command) == "" {
 		return fmt.Errorf("command not found in config")
@@ -82,7 +82,7 @@ func (p *subprocessComputeProvider) InvokeWorker(ctx context.Context, config Com
 	return nil
 }
 
-func (p *subprocessComputeProvider) UpdateWorkerSetSize(_ context.Context, _ ComputeProviderConfig, _ int32) error {
+func (p *subprocessComputeProvider) UpdateWorkerSetSize(_ context.Context, _ InvocationContext, _ ComputeProviderConfig, _ int32) error {
 	return errors.ErrUnsupported
 }
 

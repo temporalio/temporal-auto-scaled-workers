@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sync"
 
 	run "cloud.google.com/go/run/apiv2"
 	runpb "cloud.google.com/go/run/apiv2/runpb"
@@ -46,8 +47,8 @@ func (p *gcpCloudRunComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyWorkerSet
 }
 
-func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, config ComputeProviderConfig) error {
-	client, name, err := p.buildClientAndParams(ctx, config)
+func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, ic InvocationContext, config ComputeProviderConfig) error {
+	client, name, err := p.buildClientAndParams(ctx, ic, config)
 	if err != nil {
 		return err
 	}
@@ -59,12 +60,12 @@ func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, config 
 	return nil
 }
 
-func (p *gcpCloudRunComputeProvider) InvokeWorker(ctx context.Context, config ComputeProviderConfig) error {
+func (p *gcpCloudRunComputeProvider) InvokeWorker(_ context.Context, _ InvocationContext, _ ComputeProviderConfig) error {
 	return errors.ErrUnsupported
 }
 
-func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, config ComputeProviderConfig, count int32) error {
-	client, name, err := p.buildClientAndParams(ctx, config)
+func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, ic InvocationContext, config ComputeProviderConfig, count int32) error {
+	client, name, err := p.buildClientAndParams(ctx, ic, config)
 	if err != nil {
 		return err
 	}
@@ -83,35 +84,29 @@ func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, co
 }
 
 // buildClientAndParams creates a Cloud Run WorkerPoolsClient and constructs the fully-qualified worker pool name.
-func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, config ComputeProviderConfig) (*run.WorkerPoolsClient, string, error) {
-	project, ok := config[configGCPCloudRunProject].(string)
-	if !ok || project == "" {
-		return nil, "", fmt.Errorf("project not found in config")
+func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, ic InvocationContext, config ComputeProviderConfig) (*run.WorkerPoolsClient, string, error) {
+	name, err := getNameFromConfig(config)
+	if err != nil {
+		return nil, "", err
 	}
-	region, ok := config[configGCPCloudRunRegion].(string)
-	if !ok || region == "" {
-		return nil, "", fmt.Errorf("region not found in config")
-	}
-	workerPool, ok := config[configGCPCloudRunWorkerPool].(string)
-	if !ok || workerPool == "" {
-		return nil, "", fmt.Errorf("worker_pool not found in config")
-	}
-	name := fmt.Sprintf("projects/%s/locations/%s/workerPools/%s", project, region, workerPool)
 
 	var opts []option.ClientOption
 	if serviceAccount, ok := config[configGCPCloudRunServiceAccount].(string); ok && serviceAccount != "" {
-		delegates := []string{}
+		candidates := make([][]string, 0, len(p.intermediaryServiceAccounts))
 		for _, step := range p.intermediaryServiceAccounts {
-			if len(step) == 0 {
-				continue
+			emails := make([]string, 0, len(step))
+			for _, req := range step {
+				emails = append(emails, req.ServiceAccountEmail)
 			}
+			candidates = append(candidates, emails)
+		}
 
-			req := step[rand.Intn(len(step))]
-			if req.ServiceAccountEmail == "" {
-				return nil, "", fmt.Errorf("invalid empty intermediary service account email")
-			}
-
-			delegates = append(delegates, req.ServiceAccountEmail)
+		delegates, err := getImpersonationChainProvider().ResolveChain(ctx, ResolveChainInput{
+			Namespace:          ic.Namespace,
+			GlobalSACandidates: candidates,
+		})
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to resolve impersonation chain: %w", err)
 		}
 
 		ts, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
@@ -130,4 +125,74 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, c
 		return nil, "", fmt.Errorf("failed to create Cloud Run client: %w", err)
 	}
 	return client, name, nil
+}
+
+func getNameFromConfig(config ComputeProviderConfig) (string, error) {
+	project, ok := config[configGCPCloudRunProject].(string)
+	if !ok || project == "" {
+		return "", fmt.Errorf("project not found in config")
+	}
+	region, ok := config[configGCPCloudRunRegion].(string)
+	if !ok || region == "" {
+		return "", fmt.Errorf("region not found in config")
+	}
+	workerPool, ok := config[configGCPCloudRunWorkerPool].(string)
+	if !ok || workerPool == "" {
+		return "", fmt.Errorf("worker_pool not found in config")
+	}
+	return fmt.Sprintf("projects/%s/locations/%s/workerPools/%s", project, region, workerPool), nil
+}
+
+type (
+	ImpersonationChainProvider interface {
+		// ResolveChain returns the ordered impersonation delegates for the
+		// given namespace. An empty/nil result means direct impersonation
+		// (cell SA → customer SA, no intermediaries).
+		ResolveChain(ctx context.Context, input ResolveChainInput) ([]string, error)
+	}
+
+	ResolveChainInput struct {
+		Namespace          string
+		GlobalSACandidates [][]string
+	}
+
+	NoopImpersonationChainProvider struct{}
+)
+
+var (
+	chainProviderMu sync.RWMutex
+	chainProvider   ImpersonationChainProvider = NoopImpersonationChainProvider{}
+)
+
+// SetImpersonationChainProvider installs the process-wide chain provider used by
+// the GCP Cloud Run compute provider. Called once at startup; defaults to the
+// no-op impl. A nil provider is ignored so the default is preserved.
+func SetImpersonationChainProvider(p ImpersonationChainProvider) {
+	chainProviderMu.Lock()
+	defer chainProviderMu.Unlock()
+	if p != nil {
+		chainProvider = p
+	}
+}
+
+// getImpersonationChainProvider returns the process-wide chain provider.
+func getImpersonationChainProvider() ImpersonationChainProvider {
+	chainProviderMu.RLock()
+	defer chainProviderMu.RUnlock()
+	return chainProvider
+}
+
+func (NoopImpersonationChainProvider) ResolveChain(_ context.Context, input ResolveChainInput) ([]string, error) {
+	delegates := make([]string, 0, len(input.GlobalSACandidates))
+	for _, step := range input.GlobalSACandidates {
+		if len(step) == 0 {
+			continue
+		}
+		picked := step[rand.Intn(len(step))]
+		if picked == "" {
+			return nil, fmt.Errorf("invalid empty intermediary service account email")
+		}
+		delegates = append(delegates, picked)
+	}
+	return delegates, nil
 }
