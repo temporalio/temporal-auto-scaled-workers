@@ -40,7 +40,7 @@ const (
 	InitialVersion WorkerControllerInstanceWorkflowVersion = iota
 
 	// Adds periodic background re-validation of the spec. The timer fires every
-	// periodicValidationInterval (6h).
+	// periodic validation interval (default 6h; configurable via dynamic config).
 	PeriodicValidationVersion
 
 	// Signals the version workflow after each ValidationStatus change so the
@@ -201,11 +201,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	addStatsPullTimer(maxPollInterval)
 
 	if d.hasMinVersion(PeriodicValidationVersion) {
-		// Read the interval once at run start (in the same unsafe zone as getWorkflowVersion).
-		// Capturing it as a local variable keeps the timer duration consistent for the
-		// lifetime of this run without adding any new history events. Each continue-as-new
-		// starts a fresh run and picks up any config change at that point.
-		validationInterval := d.unsafePeriodicValidationIntervalGetter()
+		validationInterval := getPeriodicValidationInterval(ctx, d.unsafePeriodicValidationIntervalGetter)
 		if validationInterval < time.Minute {
 			validationInterval = time.Minute
 		}
@@ -854,6 +850,25 @@ func (d *WorkflowRunner) updateMemo(ctx workflow.Context) error {
 			CreateTime:     d.State.CreateTime,
 		},
 	})
+}
+
+// getPeriodicValidationInterval reads the validation interval from dynamic config via a
+// MutableSideEffect so replays always use the value that was recorded in history, not the
+// current config value. Gated behind GetVersion so existing runs without this marker in
+// history fall back to the original 6h default without an NDE.
+func getPeriodicValidationInterval(ctx workflow.Context, getter func() time.Duration) time.Duration {
+	if workflow.GetVersion(ctx, "periodicValidationIntervalAdded", workflow.DefaultVersion, 0) >= 0 {
+		var ms int64
+		err := workflow.MutableSideEffect(ctx, "periodicValidationInterval",
+			func(_ workflow.Context) any { return getter().Milliseconds() },
+			func(a, b any) bool { return a == b }).
+			Get(&ms)
+		if err == nil {
+			return time.Duration(ms) * time.Millisecond
+		}
+		workflow.GetLogger(ctx).Warn("failed to retrieve periodic validation interval from side effect", "error", err)
+	}
+	return periodicValidationInterval
 }
 
 func getWorkflowVersion(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion) WorkerControllerInstanceWorkflowVersion {
