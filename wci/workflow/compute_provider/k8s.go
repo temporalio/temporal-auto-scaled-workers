@@ -36,7 +36,7 @@ func (p *k8sComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyWorkerSet
 }
 
-func (p *k8sComputeProvider) ValidateConfig(ctx context.Context, config ComputeProviderConfig) error {
+func (p *k8sComputeProvider) ValidateConfig(ctx context.Context, _ RequestContext, config ComputeProviderConfig) error {
 	client, namespace, deployment, err := p.buildClientAndParams(config)
 	if err != nil {
 		return err
@@ -48,11 +48,11 @@ func (p *k8sComputeProvider) ValidateConfig(ctx context.Context, config ComputeP
 	return nil
 }
 
-func (p *k8sComputeProvider) InvokeWorker(ctx context.Context, config ComputeProviderConfig) error {
+func (p *k8sComputeProvider) InvokeWorker(ctx context.Context, _ RequestContext, config ComputeProviderConfig) error {
 	return errors.ErrUnsupported
 }
 
-func (p *k8sComputeProvider) UpdateWorkerSetSize(ctx context.Context, config ComputeProviderConfig, count int32) error {
+func (p *k8sComputeProvider) UpdateWorkerSetSize(ctx context.Context, _ RequestContext, config ComputeProviderConfig, count int32) error {
 	client, namespace, deployment, err := p.buildClientAndParams(config)
 	if err != nil {
 		return err

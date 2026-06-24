@@ -33,7 +33,10 @@ func ValidateSpecWorkflow(ctx workflow.Context, args *iface.ValidateWorkerContro
 			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 		}),
 		activities.ValidateSpec,
-		&ValidateSpecRequest{Spec: &spec},
+		&ValidateSpecRequest{
+			RequestContext: RequestContext{NamespaceName: workflow.GetInfo(ctx).Namespace},
+			Spec:           &spec,
+		},
 	).Get(ctx, nil)
 	if err != nil {
 		var appErr *temporal.ApplicationError

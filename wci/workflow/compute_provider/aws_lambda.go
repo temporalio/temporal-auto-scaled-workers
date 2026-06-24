@@ -46,7 +46,7 @@ func (p *awsLambdaComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyInvoke
 }
 
-func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, cfg ComputeProviderConfig) error {
+func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, _ RequestContext, cfg ComputeProviderConfig) error {
 	if p.requireRoleAndExternalID {
 		if roleARN, _ := cfg[configAWSLambdaRole].(string); roleARN == "" {
 			return fmt.Errorf("AWS Lambda compute provider requires %q to be configured", configAWSLambdaRole)
@@ -74,7 +74,7 @@ func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, cfg Compu
 	return nil
 }
 
-func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, cfg ComputeProviderConfig) error {
+func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, _ RequestContext, cfg ComputeProviderConfig) error {
 	lambdaClient, arn, err := p.getLambdaClientAndARN(ctx, cfg)
 	if err != nil {
 		return err
@@ -95,7 +95,7 @@ func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, cfg Compute
 	return nil
 }
 
-func (p *awsLambdaComputeProvider) UpdateWorkerSetSize(_ context.Context, _ ComputeProviderConfig, _ int32) error {
+func (p *awsLambdaComputeProvider) UpdateWorkerSetSize(_ context.Context, _ RequestContext, _ ComputeProviderConfig, _ int32) error {
 	return errors.ErrUnsupported
 }
 
