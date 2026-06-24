@@ -1,0 +1,67 @@
+version: "2"
+output:
+  sort-order:
+    - linter
+    - severity
+    - file
+run:
+  allow-parallel-runners: true
+severity:
+  default: error
+linters:
+  default: standard
+  enable:
+    # - depguard
+    - errcheck
+    - exhaustive
+    # - forbidigo
+    - gocheckcompilerdirectives
+    - godox
+    # - gomodguard
+    - govet
+    - iotamixing
+    - testifylint
+    - usetesting
+  settings:
+    usetesting:
+      context-background: true
+      context-todo: true
+    testifylint:
+      enable-all: true
+      disable:
+        - require-error
+    exhaustive:
+      default-signals-exhaustive: true
+    forbidgo:
+      forbid:
+        - pattern: time.Sleep
+          msg: Please use require.Eventually or assert.Eventually instead unless you've no other option
+        - pattern: log.NewTestLogger
+          msg: Please use testx.NewTestLogger(*testing.T) to keep our logs in CI clean
+    godox:
+      keywords:
+        - FIXME
+formatters:
+  enable:
+    - gci
+    - gofmt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(go.temporal.io,github.com/temporalio)
+        # Explicit prefix (not localmodule): all github.com/temporalio/saas-temporal
+        # packages share one section regardless of which module the formatter/linter runs
+        # from. localmodule resolves differently at the repo root (module
+        # github.com/temporalio/saas-temporal) vs. inside the walker module
+        # (github.com/temporalio/saas-temporal/walker), which made the root formatter and
+        # the per-module walker linter disagree. gci uses longest-prefix-wins, so saas-temporal
+        # imports land here while go.temporal.io / non-saas github.com/temporalio stay above.
+        - prefix(github.com/temporalio/saas-temporal)
+      # Emit sections in the order listed above. Without this, gci sorts overlapping custom
+      # prefixes by specificity, placing the more-specific saas-temporal section before the
+      # broader go.temporal.io/github.com/temporalio section.
+      custom-order: true
+    gofmt:
+      simplify: true
