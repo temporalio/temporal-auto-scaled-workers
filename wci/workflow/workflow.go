@@ -84,7 +84,7 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 		WorkerControllerInstanceWorkflowArgs: args,
 		workflowVersion:                      getWorkflowVersion(ctx, unsafeWorkflowVersionGetter),
 		a:                                    activities,
-		logger:                               sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName),
+		logger:                               sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName, "wf-deployment-name", args.DeploymentName, "wf-build-id", args.BuildId),
 		metrics: workflow.GetMetricsHandler(ctx).WithTags(map[string]string{
 			wcimetrics.NamespaceTag:               args.NamespaceName,
 			wcimetrics.WorkerDeploymentNameTag:    args.DeploymentName,
