@@ -25,10 +25,10 @@ func (c *captureChainProvider) ResolveChain(_ context.Context, input ResolveChai
 
 // setChainProviderForTest installs cp as the process-wide chain provider for the
 // duration of the test, restoring the no-op default on cleanup.
-func setChainProviderForTest(t *testing.T, cp ImpersonationChainProvider) {
+func setChainProviderForTest(t *testing.T, cp GCPImpersonationChainProvider) {
 	t.Helper()
-	SetImpersonationChainProvider(cp)
-	t.Cleanup(func() { SetImpersonationChainProvider(NoopImpersonationChainProvider{}) })
+	SetGCPImpersonationChainProvider(cp)
+	t.Cleanup(func() { SetGCPImpersonationChainProvider(NoopGCPImpersonationChainProvider{}) })
 }
 
 func TestGCPCloudRun_ChainProviderReceivesNamespaceAndFlattenedCandidates(t *testing.T) {
@@ -43,7 +43,7 @@ func TestGCPCloudRun_ChainProviderReceivesNamespaceAndFlattenedCandidates(t *tes
 	// Discard the final return — we only care the chain provider was invoked with
 	// the expected input. The downstream Cloud Run client construction may or may
 	// not succeed depending on the test env's GCP auth state.
-	_, _, _ = p.buildClientAndParams(context.Background(), InvocationContext{Namespace: "my-ns"}, ComputeProviderConfig{
+	_, _, _ = p.buildClientAndParams(context.Background(), RequestContext{NamespaceName: "my-ns"}, ComputeProviderConfig{
 		configGCPCloudRunProject:        "p",
 		configGCPCloudRunRegion:         "r",
 		configGCPCloudRunWorkerPool:     "wp",
@@ -61,7 +61,7 @@ func TestGCPCloudRun_ChainProviderReceivesNamespaceAndFlattenedCandidates(t *tes
 func TestGCPCloudRun_ChainProviderErrorWrapped(t *testing.T) {
 	setChainProviderForTest(t, &captureChainProvider{err: errors.New("boom")})
 	p := &gcpCloudRunComputeProvider{}
-	_, _, err := p.buildClientAndParams(context.Background(), InvocationContext{Namespace: "my-ns"}, ComputeProviderConfig{
+	_, _, err := p.buildClientAndParams(context.Background(), RequestContext{NamespaceName: "my-ns"}, ComputeProviderConfig{
 		configGCPCloudRunProject:        "p",
 		configGCPCloudRunRegion:         "r",
 		configGCPCloudRunWorkerPool:     "wp",
@@ -85,7 +85,7 @@ func TestGCPCloudRun_ChainProviderNotCalledWithoutCustomerSA(t *testing.T) {
 		return nil, nil
 	}))
 	p := &gcpCloudRunComputeProvider{}
-	_, _, _ = p.buildClientAndParams(context.Background(), InvocationContext{Namespace: "my-ns"}, ComputeProviderConfig{
+	_, _, _ = p.buildClientAndParams(context.Background(), RequestContext{NamespaceName: "my-ns"}, ComputeProviderConfig{
 		configGCPCloudRunProject:    "p",
 		configGCPCloudRunRegion:     "r",
 		configGCPCloudRunWorkerPool: "wp",
@@ -102,8 +102,8 @@ func (f chainProviderFunc) ResolveChain(ctx context.Context, input ResolveChainI
 	return f(ctx, input)
 }
 
-func TestNoopImpersonationChainProvider_Empty(t *testing.T) {
-	delegates, err := (NoopImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{})
+func TestNoopGCPImpersonationChainProvider_Empty(t *testing.T) {
+	delegates, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -112,8 +112,8 @@ func TestNoopImpersonationChainProvider_Empty(t *testing.T) {
 	}
 }
 
-func TestNoopImpersonationChainProvider_SingleHopSingleCandidate(t *testing.T) {
-	delegates, err := (NoopImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
+func TestNoopGCPImpersonationChainProvider_SingleHopSingleCandidate(t *testing.T) {
+	delegates, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
 		GlobalSACandidates: [][]string{{"sa-a"}},
 	})
 	if err != nil {
@@ -124,8 +124,8 @@ func TestNoopImpersonationChainProvider_SingleHopSingleCandidate(t *testing.T) {
 	}
 }
 
-func TestNoopImpersonationChainProvider_MultiHopOrderPreserved(t *testing.T) {
-	delegates, err := (NoopImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
+func TestNoopGCPImpersonationChainProvider_MultiHopOrderPreserved(t *testing.T) {
+	delegates, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
 		GlobalSACandidates: [][]string{{"hop-1"}, {"hop-2"}, {"hop-3"}},
 	})
 	if err != nil {
@@ -136,8 +136,8 @@ func TestNoopImpersonationChainProvider_MultiHopOrderPreserved(t *testing.T) {
 	}
 }
 
-func TestNoopImpersonationChainProvider_EmptyStepSkipped(t *testing.T) {
-	delegates, err := (NoopImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
+func TestNoopGCPImpersonationChainProvider_EmptyStepSkipped(t *testing.T) {
+	delegates, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
 		GlobalSACandidates: [][]string{{"a"}, {}, {"b"}},
 	})
 	if err != nil {
@@ -148,8 +148,8 @@ func TestNoopImpersonationChainProvider_EmptyStepSkipped(t *testing.T) {
 	}
 }
 
-func TestNoopImpersonationChainProvider_EmptyEntryErrors(t *testing.T) {
-	_, err := (NoopImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
+func TestNoopGCPImpersonationChainProvider_EmptyEntryErrors(t *testing.T) {
+	_, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
 		GlobalSACandidates: [][]string{{""}},
 	})
 	if err == nil {
@@ -160,11 +160,11 @@ func TestNoopImpersonationChainProvider_EmptyEntryErrors(t *testing.T) {
 	}
 }
 
-func TestNoopImpersonationChainProvider_MultiCandidatePickFromSet(t *testing.T) {
+func TestNoopGCPImpersonationChainProvider_MultiCandidatePickFromSet(t *testing.T) {
 	candidates := []string{"a", "b", "c"}
 	valid := map[string]bool{"a": true, "b": true, "c": true}
 	for i := 0; i < 10; i++ {
-		delegates, err := (NoopImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
+		delegates, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
 			GlobalSACandidates: [][]string{candidates},
 		})
 		if err != nil {

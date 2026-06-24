@@ -54,14 +54,14 @@ var Module = fx.Options(
 	fx.Provide(ServiceResolverProvider),
 	fx.Provide(NewService),
 	fx.Provide(PerNamespaceWorkerManagerProvider),
-	fx.Provide(func() computeprovider.ImpersonationChainProvider {
-		return computeprovider.NoopImpersonationChainProvider{}
+	fx.Provide(func() computeprovider.GCPImpersonationChainProvider {
+		return computeprovider.NoopGCPImpersonationChainProvider{}
 	}),
 	// Install the (possibly fx.Decorate-replaced) chain provider into the
 	// compute_provider package singleton, where the GCP Cloud Run provider
 	// reads it. fx resolves the decorated value before this Invoke fires.
-	fx.Invoke(func(p computeprovider.ImpersonationChainProvider) {
-		computeprovider.SetImpersonationChainProvider(p)
+	fx.Invoke(func(p computeprovider.GCPImpersonationChainProvider) {
+		computeprovider.SetGCPImpersonationChainProvider(p)
 	}),
 	fx.Invoke(ServiceLifetimeHooks),
 )

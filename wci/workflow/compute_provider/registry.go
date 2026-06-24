@@ -17,14 +17,13 @@ type (
 	ComputeProviderConfig      = map[string]any
 	ComputeProviderConstructor func(context.Context, *dynamicconfig.Collection) (ComputeProvider, error)
 
-	// InvocationContext carries the WCI identity a compute provider may need to
-	// act on behalf of a specific namespace/deployment (e.g. resolving the GCP
-	// impersonation chain). It is populated by the activity layer from the
-	// request's RequestContext.
-	InvocationContext struct {
-		Namespace      string
-		DeploymentName string
-		BuildID        string
+	// RequestContext carries the namespace/deployment identity tags shared by every
+	// activity request type. Compute providers receive it to act on behalf of a
+	// specific namespace/deployment (e.g. resolving the GCP impersonation chain).
+	RequestContext struct {
+		NamespaceName     string `json:"namespace_name"`
+		DeploymentName    string `json:"deployment_name"`
+		DeploymentBuildID string `json:"deployment_build_id"`
 	}
 
 	ComputeProvider interface {
@@ -36,17 +35,17 @@ type (
 		// ValidateConfig checks the provided configuration for correctness. This might involved
 		// invoking cloud provider functions to check permissions as well. If any issues are found
 		// returns an error with a description
-		ValidateConfig(ctx context.Context, ic InvocationContext, config ComputeProviderConfig) error
+		ValidateConfig(ctx context.Context, rc RequestContext, config ComputeProviderConfig) error
 
 		// InvokeWorker starts a new worker instance when using the LaunchStrategy 'invoke'. any
 		// error is returned if the invocation failed, but not if the invoked work dies before connecting
 		// to Temporal. Returns an error for other launch strategies.
-		InvokeWorker(ctx context.Context, ic InvocationContext, config ComputeProviderConfig) error
+		InvokeWorker(ctx context.Context, rc RequestContext, config ComputeProviderConfig) error
 
 		// UpdateWorkerSetSize updates the size of the managed worker set to the provided 'size' when using
 		// the LaunchStrategy 'worker-set'. An error is returned when the size update fails, but might not
 		// if the triggered instance starts/stops fail. Always returns an error for other launch stratgies.
-		UpdateWorkerSetSize(ctx context.Context, ic InvocationContext, config ComputeProviderConfig, size int32) error
+		UpdateWorkerSetSize(ctx context.Context, rc RequestContext, config ComputeProviderConfig, size int32) error
 	}
 )
 

@@ -40,13 +40,11 @@ type (
 		workflowserviceClient workflowservice.WorkflowServiceClient
 	}
 
-	// RequestContext carries the namespace/deployment identity tags shared by every
-	// activity request type.
-	RequestContext struct {
-		NamespaceName     string `json:"namespace_name"`
-		DeploymentName    string `json:"deployment_name"`
-		DeploymentBuildID string `json:"deployment_build_id"`
-	}
+	// RequestContext aliases the compute-provider request context so activity
+	// request types can embed it while compute providers consume the same type
+	// directly. The alias keeps it defined in compute_provider (which the
+	// ComputeProvider interface depends on) without an import cycle.
+	RequestContext = computeprovider.RequestContext
 
 	ValidateSpecRequest struct {
 		RequestContext
@@ -116,23 +114,15 @@ type (
 	}
 )
 
-// invocationContext projects the request's identity into the form the compute
-// providers consume.
-func (r RequestContext) invocationContext() computeprovider.InvocationContext {
-	return computeprovider.InvocationContext{
-		Namespace:      r.NamespaceName,
-		DeploymentName: r.DeploymentName,
-		BuildID:        r.DeploymentBuildID,
-	}
-}
-
 // metricsHandler returns the activity-side MetricsHandler pre-tagged with the
-// namespace/deployment identity and the supplied activity type.
-func (r RequestContext) metricsHandler(ctx context.Context, activityType wcimetrics.ActivityType) sdkclient.MetricsHandler {
+// namespace/deployment identity and the supplied activity type. It is a free
+// function because RequestContext is an alias of a compute_provider type, so
+// methods can't be declared on it from this package.
+func metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetrics.ActivityType) sdkclient.MetricsHandler {
 	return activity.GetMetricsHandler(ctx).WithTags(map[string]string{
-		wcimetrics.NamespaceTag:               r.NamespaceName,
-		wcimetrics.WorkerDeploymentNameTag:    r.DeploymentName,
-		wcimetrics.WorkerDeploymentBuildIDTag: r.DeploymentBuildID,
+		wcimetrics.NamespaceTag:               rc.NamespaceName,
+		wcimetrics.WorkerDeploymentNameTag:    rc.DeploymentName,
+		wcimetrics.WorkerDeploymentBuildIDTag: rc.DeploymentBuildID,
 		wcimetrics.ActivityTypeTag:            string(activityType),
 	})
 }
@@ -161,7 +151,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := req.metricsHandler(ctx, wcimetrics.ActivityTypeValidateSpec)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeValidateSpec)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, validateSpecTimeout)
@@ -183,7 +173,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 			recordError(wcimetrics.ErrorTypeInvalidRequest)
 			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
-		if err := provider.ValidateConfig(timeoutCtx, req.invocationContext(), config); err != nil {
+		if err := provider.ValidateConfig(timeoutCtx, req.RequestContext, config); err != nil {
 			recordError(wcimetrics.ErrorTypeInvalidRequest)
 			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
@@ -226,7 +216,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 		return temporal.NewApplicationError("Invalid activity request", "InternalError")
 	}
 
-	metricsHandler := req.metricsHandler(ctx, wcimetrics.ActivityTypeInvokeWorkersToRegisterTaskQueues)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorkersToRegisterTaskQueues)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	for k, v := range req.ScalingGroupSpecs {
@@ -247,7 +237,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
 			}
 
-			if err := provider.InvokeWorker(ctx, req.invocationContext(), config); err != nil {
+			if err := provider.InvokeWorker(ctx, req.RequestContext, config); err != nil {
 				recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed", err)
 			}
@@ -264,7 +254,7 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := req.metricsHandler(ctx, wcimetrics.ActivityTypeInvokeWorker)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorker)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.dc)
@@ -287,7 +277,7 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, startNewWorkerInstanceTimeout)
 	defer cancel()
-	if err := provider.InvokeWorker(timeoutCtx, req.invocationContext(), config); err != nil {
+	if err := provider.InvokeWorker(timeoutCtx, req.RequestContext, config); err != nil {
 		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
@@ -302,7 +292,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := req.metricsHandler(ctx, wcimetrics.ActivityTypeUpdateWorkerSetSize)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeUpdateWorkerSetSize)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.dc)
@@ -325,7 +315,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, updateWorkerSetSizeTimeout)
 	defer cancel()
-	if err := provider.UpdateWorkerSetSize(timeoutCtx, req.invocationContext(), config, req.UpdatedSize); err != nil {
+	if err := provider.UpdateWorkerSetSize(timeoutCtx, req.RequestContext, config, req.UpdatedSize); err != nil {
 		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
@@ -336,7 +326,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 
 func (a *Activities) HandleDeferredScalingDecision(ctx context.Context, req HandleDeferredScalingDecisionActivityRequest) (*HandleDeferredScalingDecisionActivityResponse, error) {
 	logger := activity.GetLogger(ctx)
-	metricsHandler := req.metricsHandler(ctx, wcimetrics.ActivityTypeHandleDeferredScalingDecision)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleDeferredScalingDecision)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
 	scalingStatus := maps.Clone(req.ScalingStatus)
@@ -407,7 +397,7 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		updatedScalingStatus = map[string]iface.ScalingAlgorithmStatus{}
 	}
 
-	metricsHandler := req.metricsHandler(ctx, wcimetrics.ActivityTypeHandleTaskAddSignal)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleTaskAddSignal)
 	_, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
 	if req.Spec == nil {
@@ -471,7 +461,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := req.metricsHandler(ctx, wcimetrics.ActivityTypePullStats)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypePullStats)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
 	if !a.workerControllerEnabled() {

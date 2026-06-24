@@ -47,8 +47,8 @@ func (p *gcpCloudRunComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyWorkerSet
 }
 
-func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, ic InvocationContext, config ComputeProviderConfig) error {
-	client, name, err := p.buildClientAndParams(ctx, ic, config)
+func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, rc RequestContext, config ComputeProviderConfig) error {
+	client, name, err := p.buildClientAndParams(ctx, rc, config)
 	if err != nil {
 		return err
 	}
@@ -60,12 +60,12 @@ func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, ic Invo
 	return nil
 }
 
-func (p *gcpCloudRunComputeProvider) InvokeWorker(_ context.Context, _ InvocationContext, _ ComputeProviderConfig) error {
+func (p *gcpCloudRunComputeProvider) InvokeWorker(_ context.Context, _ RequestContext, _ ComputeProviderConfig) error {
 	return errors.ErrUnsupported
 }
 
-func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, ic InvocationContext, config ComputeProviderConfig, count int32) error {
-	client, name, err := p.buildClientAndParams(ctx, ic, config)
+func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, rc RequestContext, config ComputeProviderConfig, count int32) error {
+	client, name, err := p.buildClientAndParams(ctx, rc, config)
 	if err != nil {
 		return err
 	}
@@ -84,7 +84,7 @@ func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, ic
 }
 
 // buildClientAndParams creates a Cloud Run WorkerPoolsClient and constructs the fully-qualified worker pool name.
-func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, ic InvocationContext, config ComputeProviderConfig) (*run.WorkerPoolsClient, string, error) {
+func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, rc RequestContext, config ComputeProviderConfig) (*run.WorkerPoolsClient, string, error) {
 	name, err := getNameFromConfig(config)
 	if err != nil {
 		return nil, "", err
@@ -101,8 +101,8 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, i
 			candidates = append(candidates, emails)
 		}
 
-		delegates, err := getImpersonationChainProvider().ResolveChain(ctx, ResolveChainInput{
-			Namespace:          ic.Namespace,
+		delegates, err := getGCPImpersonationChainProvider().ResolveChain(ctx, ResolveChainInput{
+			Namespace:          rc.NamespaceName,
 			GlobalSACandidates: candidates,
 		})
 		if err != nil {
@@ -144,7 +144,7 @@ func getNameFromConfig(config ComputeProviderConfig) (string, error) {
 }
 
 type (
-	ImpersonationChainProvider interface {
+	GCPImpersonationChainProvider interface {
 		// ResolveChain returns the ordered impersonation delegates for the
 		// given namespace. An empty/nil result means direct impersonation
 		// (cell SA → customer SA, no intermediaries).
@@ -156,18 +156,18 @@ type (
 		GlobalSACandidates [][]string
 	}
 
-	NoopImpersonationChainProvider struct{}
+	NoopGCPImpersonationChainProvider struct{}
 )
 
 var (
 	chainProviderMu sync.RWMutex
-	chainProvider   ImpersonationChainProvider = NoopImpersonationChainProvider{}
+	chainProvider   GCPImpersonationChainProvider = NoopGCPImpersonationChainProvider{}
 )
 
-// SetImpersonationChainProvider installs the process-wide chain provider used by
+// SetGCPImpersonationChainProvider installs the process-wide chain provider used by
 // the GCP Cloud Run compute provider. Called once at startup; defaults to the
 // no-op impl. A nil provider is ignored so the default is preserved.
-func SetImpersonationChainProvider(p ImpersonationChainProvider) {
+func SetGCPImpersonationChainProvider(p GCPImpersonationChainProvider) {
 	chainProviderMu.Lock()
 	defer chainProviderMu.Unlock()
 	if p != nil {
@@ -175,14 +175,14 @@ func SetImpersonationChainProvider(p ImpersonationChainProvider) {
 	}
 }
 
-// getImpersonationChainProvider returns the process-wide chain provider.
-func getImpersonationChainProvider() ImpersonationChainProvider {
+// getGCPImpersonationChainProvider returns the process-wide chain provider.
+func getGCPImpersonationChainProvider() GCPImpersonationChainProvider {
 	chainProviderMu.RLock()
 	defer chainProviderMu.RUnlock()
 	return chainProvider
 }
 
-func (NoopImpersonationChainProvider) ResolveChain(_ context.Context, input ResolveChainInput) ([]string, error) {
+func (NoopGCPImpersonationChainProvider) ResolveChain(_ context.Context, input ResolveChainInput) ([]string, error) {
 	delegates := make([]string, 0, len(input.GlobalSACandidates))
 	for _, step := range input.GlobalSACandidates {
 		if len(step) == 0 {

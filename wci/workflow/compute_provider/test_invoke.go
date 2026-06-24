@@ -29,7 +29,7 @@ func (p *testInvokeComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyInvoke
 }
 
-func (p *testInvokeComputeProvider) ValidateConfig(_ context.Context, _ InvocationContext, config ComputeProviderConfig) error {
+func (p *testInvokeComputeProvider) ValidateConfig(_ context.Context, _ RequestContext, config ComputeProviderConfig) error {
 	if _, ok := config[configTestInvokeIllegalField].(string); ok {
 		return fmt.Errorf("illegal_field found in config")
 	}
@@ -37,11 +37,11 @@ func (p *testInvokeComputeProvider) ValidateConfig(_ context.Context, _ Invocati
 	return nil
 }
 
-func (p *testInvokeComputeProvider) InvokeWorker(_ context.Context, _ InvocationContext, _ ComputeProviderConfig) error {
+func (p *testInvokeComputeProvider) InvokeWorker(_ context.Context, _ RequestContext, _ ComputeProviderConfig) error {
 	return nil
 }
 
-func (p *testInvokeComputeProvider) UpdateWorkerSetSize(_ context.Context, _ InvocationContext, _ ComputeProviderConfig, _ int32) error {
+func (p *testInvokeComputeProvider) UpdateWorkerSetSize(_ context.Context, _ RequestContext, _ ComputeProviderConfig, _ int32) error {
 	return errors.ErrUnsupported
 }
 

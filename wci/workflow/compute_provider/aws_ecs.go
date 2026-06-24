@@ -48,7 +48,7 @@ func (p *awsECSComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyWorkerSet
 }
 
-func (p *awsECSComputeProvider) ValidateConfig(ctx context.Context, _ InvocationContext, cfg ComputeProviderConfig) error {
+func (p *awsECSComputeProvider) ValidateConfig(ctx context.Context, _ RequestContext, cfg ComputeProviderConfig) error {
 	if p.requireRoleAndExternalID {
 		if roleARN, _ := cfg[configAWSECSRole].(string); roleARN == "" {
 			return fmt.Errorf("ECS compute provider requires %q to be configured", configAWSECSRole)
@@ -88,11 +88,11 @@ func (p *awsECSComputeProvider) ValidateConfig(ctx context.Context, _ Invocation
 	return nil
 }
 
-func (p *awsECSComputeProvider) InvokeWorker(_ context.Context, _ InvocationContext, _ ComputeProviderConfig) error {
+func (p *awsECSComputeProvider) InvokeWorker(_ context.Context, _ RequestContext, _ ComputeProviderConfig) error {
 	return errors.ErrUnsupported
 }
 
-func (p *awsECSComputeProvider) UpdateWorkerSetSize(ctx context.Context, _ InvocationContext, cfg ComputeProviderConfig, size int32) error {
+func (p *awsECSComputeProvider) UpdateWorkerSetSize(ctx context.Context, _ RequestContext, cfg ComputeProviderConfig, size int32) error {
 	ecsClient, cluster, service, err := p.getECSClientAndParams(ctx, cfg)
 	if err != nil {
 		return err
