@@ -32,12 +32,12 @@ linters:
         - require-error
     exhaustive:
       default-signifies-exhaustive: true
-      forbidigo:
-        forbid:
-          - pattern: time.Sleep
-            msg: Please use require.Eventually or assert.Eventually instead unless you've no other option
-          - pattern: log.NewTestLogger
-            msg: Please use testx.NewTestLogger(*testing.T) to keep our logs in CI clean
+    forbidigo:
+      forbid:
+        - pattern: time.Sleep
+          msg: Please use require.Eventually or assert.Eventually instead unless you've no other option
+        - pattern: log.NewTestLogger
+          msg: Please use testx.NewTestLogger(*testing.T) to keep our logs in CI clean
     godox:
       keywords:
         - FIXME
