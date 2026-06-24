@@ -24,10 +24,16 @@ const (
 type subprocessComputeProvider struct{}
 
 func init() {
-	RegisterComputeProvider(iface.ComputeProviderTypeSubprocess, NewSubprocessComputeProvider)
+	RegisterComputeProvider(
+		iface.ComputeProviderTypeSubprocess,
+		NewSubprocessComputeProvider,
+	)
 }
 
-func NewSubprocessComputeProvider(_ context.Context, _ *dynamicconfig.Collection) (ComputeProvider, error) {
+func NewSubprocessComputeProvider(
+	_ context.Context,
+	_ *dynamicconfig.Collection,
+) (ComputeProvider, error) {
 	return &subprocessComputeProvider{}, nil
 }
 
@@ -35,14 +41,20 @@ func (p *subprocessComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyInvoke
 }
 
-func (p *subprocessComputeProvider) ValidateConfig(ctx context.Context, config ComputeProviderConfig) error {
+func (p *subprocessComputeProvider) ValidateConfig(
+	ctx context.Context,
+	config ComputeProviderConfig,
+) error {
 	command, ok := config[configSubprocessCommand].(string)
 	if !ok || strings.TrimSpace(command) == "" {
 		return fmt.Errorf("command not found in config")
 	}
 
 	if _, err := exec.LookPath("timeout"); err != nil {
-		return fmt.Errorf("required GNU coreutils 'timeout' binary not found: %w", err)
+		return fmt.Errorf(
+			"required GNU coreutils 'timeout' binary not found: %w",
+			err,
+		)
 	}
 
 	command = strings.TrimSpace(command)
@@ -52,7 +64,10 @@ func (p *subprocessComputeProvider) ValidateConfig(ctx context.Context, config C
 	return nil
 }
 
-func (p *subprocessComputeProvider) InvokeWorker(ctx context.Context, config ComputeProviderConfig) error {
+func (p *subprocessComputeProvider) InvokeWorker(
+	ctx context.Context,
+	config ComputeProviderConfig,
+) error {
 	command, ok := config[configSubprocessCommand].(string)
 	if !ok || strings.TrimSpace(command) == "" {
 		return fmt.Errorf("command not found in config")
@@ -76,13 +91,22 @@ func (p *subprocessComputeProvider) InvokeWorker(ctx context.Context, config Com
 		if err := cmd.Wait(); err != nil {
 			// using plain printf as the activity logger might no longer be valid
 			// at this point, and this provider is meant for local-dev only anyhow
-			fmt.Printf("subprocess worker '%s' exited with error: %v\n", command, err)
+			//nolint:forbidigo
+			fmt.Printf(
+				"subprocess worker '%s' exited with error: %v\n",
+				command,
+				err,
+			)
 		}
 	}()
 	return nil
 }
 
-func (p *subprocessComputeProvider) UpdateWorkerSetSize(_ context.Context, _ ComputeProviderConfig, _ int32) error {
+func (p *subprocessComputeProvider) UpdateWorkerSetSize(
+	_ context.Context,
+	_ ComputeProviderConfig,
+	_ int32,
+) error {
 	return errors.ErrUnsupported
 }
 

@@ -14,7 +14,7 @@ linters:
     # - depguard
     - errcheck
     - exhaustive
-    # - forbidigo
+    - forbidigo
     - gocheckcompilerdirectives
     - godox
     # - gomodguard
@@ -31,13 +31,13 @@ linters:
       disable:
         - require-error
     exhaustive:
-      default-signals-exhaustive: true
-    forbidgo:
-      forbid:
-        - pattern: time.Sleep
-          msg: Please use require.Eventually or assert.Eventually instead unless you've no other option
-        - pattern: log.NewTestLogger
-          msg: Please use testx.NewTestLogger(*testing.T) to keep our logs in CI clean
+      default-signifies-exhaustive: true
+      forbidigo:
+        forbid:
+          - pattern: time.Sleep
+            msg: Please use require.Eventually or assert.Eventually instead unless you've no other option
+          - pattern: log.NewTestLogger
+            msg: Please use testx.NewTestLogger(*testing.T) to keep our logs in CI clean
     godox:
       keywords:
         - FIXME
@@ -58,7 +58,7 @@ formatters:
         # (github.com/temporalio/saas-temporal/walker), which made the root formatter and
         # the per-module walker linter disagree. gci uses longest-prefix-wins, so saas-temporal
         # imports land here while go.temporal.io / non-saas github.com/temporalio stay above.
-        - prefix(github.com/temporalio/saas-temporal)
+        - prefix(github.com/temporalio/temporal-auto-scaled-workers)
       # Emit sections in the order listed above. Without this, gci sorts overlapping custom
       # prefixes by specificity, placing the more-specific saas-temporal section before the
       # broader go.temporal.io/github.com/temporalio section.
