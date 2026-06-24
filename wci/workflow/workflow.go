@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"go.temporal.io/api/serviceerror"
-	wciclient "go.temporal.io/auto-scaled-workers/wci/client"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
@@ -64,8 +63,8 @@ type (
 		metrics sdkclient.MetricsHandler
 		lock    workflow.Mutex
 
-		deleteInstance                         bool
-		unsafeMaxVersion                       func() int
+		deleteInstance                   bool
+		unsafeMaxVersion                 func() int
 		unsafePeriodicValidationInterval func() time.Duration
 
 		// stateChanged is used to track if the state of the workflow has undergone a local state change since the last signal/update.
@@ -97,8 +96,8 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 			wcimetrics.WorkerDeploymentNameTag:    args.DeploymentName,
 			wcimetrics.WorkerDeploymentBuildIDTag: args.BuildId,
 		}),
-		lock:                                   workflow.NewMutex(ctx),
-		unsafeMaxVersion:                       unsafeMaxVersion,
+		lock:                             workflow.NewMutex(ctx),
+		unsafeMaxVersion:                 unsafeMaxVersion,
 		unsafePeriodicValidationInterval: unsafePeriodicValidationInterval,
 		signalHandler: &SignalHandler{
 			signalSelector: workflow.NewSelector(ctx),
@@ -291,7 +290,6 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 			return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 		}
 
-		validationTime := workflow.Now(ctx)
 		if err := workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.ValidateSpec,
@@ -307,15 +305,11 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 			}).Counter(wcimetrics.Updates.Name()).Inc(1)
 
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
-				d.State.ValidationStatus = iface.NewValidationStatusFailed(validationTime, appErr.Message())
-				d.signalVersionWorkflow(ctx)
 				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
 			} else {
 				return nil, err
 			}
 		}
-		d.State.ValidationStatus = iface.NewValidationStatusSuccess(validationTime)
-		d.signalVersionWorkflow(ctx)
 	}
 
 	d.metrics.WithTags(map[string]string{
@@ -887,7 +881,7 @@ func (d *WorkflowRunner) signalVersionWorkflow(ctx workflow.Context) {
 		d.DeploymentName +
 		worker_versioning.WorkerDeploymentVersionDelimiter +
 		d.BuildId
-	err := workflow.SignalExternalWorkflow(ctx, versionWfID, "", wciclient.SignalSyncValidationStatus, d.State.ValidationStatus).Get(ctx, nil)
+	err := workflow.SignalExternalWorkflow(ctx, versionWfID, "", worker_versioning.SignalSyncValidationStatus, d.State.ValidationStatus).Get(ctx, nil)
 	if err != nil {
 		var notFound *serviceerror.NotFound
 		if !errors.As(err, &notFound) {
