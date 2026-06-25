@@ -20,6 +20,7 @@ linters:
     # - gomodguard
     - govet
     - iotamixing
+    - staticcheck
     - testifylint
     - usetesting
   settings:
