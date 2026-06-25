@@ -130,7 +130,7 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 	})
 
 	t.Run("no-sync match nil state first call", func(t *testing.T) {
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
 		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, nil, event)
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 1)
@@ -142,7 +142,7 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 		nowMs := time.Now().UnixMilli()
 		state := iface.ScalingAlgorithmStatus{stateLastScaleUpTimestampKey: nowMs}
 		cfg := iface.ScalingAlgorithmConfig{configNoSyncScaleUpCooloffMsKey: int64(30000)}
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
 		resp, err := a.ProcessTaskAdd(ctx, cfg, state, event)
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 0)
@@ -150,7 +150,7 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 
 	t.Run("no-sync match outside cooloff", func(t *testing.T) {
 		state := iface.ScalingAlgorithmStatus{stateLastScaleUpTimestampKey: int64(0)}
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
 		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, state, event)
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 1)
@@ -166,7 +166,7 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 	})
 
 	t.Run("activity queue type writes shared state key", func(t *testing.T) {
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false, TaskQueueType: enumspb.TASK_QUEUE_TYPE_ACTIVITY}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1, TaskQueueType: enumspb.TASK_QUEUE_TYPE_ACTIVITY}
 		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, nil, event)
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 1)
@@ -174,7 +174,7 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 	})
 
 	t.Run("nexus queue type writes shared state key", func(t *testing.T) {
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false, TaskQueueType: enumspb.TASK_QUEUE_TYPE_NEXUS}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1, TaskQueueType: enumspb.TASK_QUEUE_TYPE_NEXUS}
 		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, nil, event)
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 1)
@@ -183,7 +183,7 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 
 	t.Run("state threads correctly across two calls", func(t *testing.T) {
 		// First call: fires and stores timestamp in state.
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
 		cfg := iface.ScalingAlgorithmConfig{configNoSyncScaleUpCooloffMsKey: int64(30_000)}
 		resp1, err := a.ProcessTaskAdd(ctx, cfg, nil, event)
 		require.NoError(t, err)
@@ -199,11 +199,72 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 		nowMs := time.Now().UnixMilli()
 		state := iface.ScalingAlgorithmStatus{stateLastScaleUpTimestampKey: nowMs}
 		cfg := iface.ScalingAlgorithmConfig{configNoSyncScaleUpCooloffMsKey: int64(0)}
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
 		resp, err := a.ProcessTaskAdd(ctx, cfg, state, event)
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 1)
 		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
+	})
+
+	t.Run("rate-limited only does not invoke worker", func(t *testing.T) {
+		event := iface.SignalTaskAddRequest{RateLimitedSignalsSinceLast: 3, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
+		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, nil, event)
+		require.NoError(t, err)
+		assert.Len(t, resp.Actions, 0)
+		assert.Equal(t, 0, resp.ThrottledCount)
+		assert.Equal(t, 3, resp.RateLimitedCount)
+		assert.NotContains(t, resp.Status, stateLastScaleUpTimestampKey, "rate-limited events must not update the scale-up timestamp")
+		assert.Contains(t, resp.Status, stateLastRateLimitedTimestampKey, "rate-limited events must write the rate-limited timestamp")
+	})
+
+	t.Run("rate-limited only does not invoke worker even with cooloff elapsed", func(t *testing.T) {
+		state := iface.ScalingAlgorithmStatus{stateLastScaleUpTimestampKey: int64(0)}
+		event := iface.SignalTaskAddRequest{RateLimitedSignalsSinceLast: 2, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
+		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, state, event)
+		require.NoError(t, err)
+		assert.Len(t, resp.Actions, 0)
+		assert.Equal(t, 0, resp.ThrottledCount)
+		assert.Equal(t, 2, resp.RateLimitedCount)
+		assert.Equal(t, int64(0), resp.Status.GetInt64Field(stateLastScaleUpTimestampKey, 0), "scale-up timestamp must not change")
+	})
+
+	t.Run("mixed no-sync and rate-limited cooloff elapsed invokes worker", func(t *testing.T) {
+		event := iface.SignalTaskAddRequest{
+			NoSyncMatchSignalsSinceLast: 2,
+			RateLimitedSignalsSinceLast: 1,
+			TaskQueueType:               enumspb.TASK_QUEUE_TYPE_WORKFLOW,
+		}
+		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, nil, event)
+		require.NoError(t, err)
+		assert.Len(t, resp.Actions, 1)
+		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
+		assert.Equal(t, 0, resp.ThrottledCount)
+		assert.Equal(t, 1, resp.RateLimitedCount)
+		assert.Contains(t, resp.Status, stateLastRateLimitedTimestampKey)
+	})
+
+	t.Run("mixed no-sync and rate-limited cooloff not elapsed throttles and reports both counts", func(t *testing.T) {
+		nowMs := time.Now().UnixMilli()
+		state := iface.ScalingAlgorithmStatus{stateLastScaleUpTimestampKey: nowMs}
+		cfg := iface.ScalingAlgorithmConfig{configNoSyncScaleUpCooloffMsKey: int64(30_000)}
+		event := iface.SignalTaskAddRequest{
+			NoSyncMatchSignalsSinceLast: 1,
+			RateLimitedSignalsSinceLast: 2,
+			TaskQueueType:               enumspb.TASK_QUEUE_TYPE_WORKFLOW,
+		}
+		resp, err := a.ProcessTaskAdd(ctx, cfg, state, event)
+		require.NoError(t, err)
+		assert.Len(t, resp.Actions, 0)
+		assert.Equal(t, 1, resp.ThrottledCount)
+		assert.Equal(t, 2, resp.RateLimitedCount)
+	})
+
+	t.Run("sync-match-only does not write rate-limited timestamp", func(t *testing.T) {
+		event := iface.SignalTaskAddRequest{SyncMatchSignalsSinceLast: 5}
+		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, nil, event)
+		require.NoError(t, err)
+		assert.Len(t, resp.Actions, 0)
+		assert.NotContains(t, resp.Status, stateLastRateLimitedTimestampKey)
 	})
 }
 
@@ -686,7 +747,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		// Both methods share the same last_scale_up_time_ms key, so a scale-up via ProcessTaskAdd
 		// must suppress a subsequent ProcessMetricsPoll within the cooloff window.
 		cfg := iface.ScalingAlgorithmConfig{configNoSyncScaleUpCooloffMsKey: int64(30_000)}
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
 		taskAddResp, err := a.ProcessTaskAdd(ctx, cfg, nil, event)
 		require.NoError(t, err)
 		assert.Len(t, taskAddResp.Actions, 1)
@@ -697,5 +758,65 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		pollResp, err := a.ProcessMetricsPoll(ctx, cfg, taskAddResp.Status, snapshot)
 		require.NoError(t, err)
 		assert.Len(t, pollResp.Actions, 0)
+	})
+}
+
+func TestNoSyncProcessMetricsPollRateLimitedSuppression(t *testing.T) {
+	a := newNoSync()
+	ctx := context.Background()
+
+	snapshot := ScalingMetricsSnapshot{
+		Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5},
+	}
+
+	t.Run("recent rate-limited timestamp suppresses scale-up", func(t *testing.T) {
+		nowMs := time.Now().UnixMilli()
+		state := iface.ScalingAlgorithmStatus{stateLastRateLimitedTimestampKey: nowMs}
+		cfg := iface.ScalingAlgorithmConfig{configNoSyncRateLimitedSuppressQuietMsKey: int64(30_000)}
+		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
+		require.NoError(t, err)
+		assert.Len(t, resp.Actions, 0, "scale-up must be suppressed while rate limiting is recent")
+	})
+
+	t.Run("stale rate-limited timestamp does not suppress scale-up", func(t *testing.T) {
+		oldRateLimitedMs := time.Now().Add(-time.Hour).UnixMilli()
+		state := iface.ScalingAlgorithmStatus{stateLastRateLimitedTimestampKey: oldRateLimitedMs}
+		cfg := iface.ScalingAlgorithmConfig{
+			configNoSyncRateLimitedSuppressQuietMsKey: int64(30_000),
+			configNoSyncScaleUpCooloffMsKey:           int64(0),
+		}
+		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
+		require.NoError(t, err)
+		assert.Len(t, resp.Actions, 1, "scale-up must fire once TTL has elapsed")
+		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
+	})
+
+	t.Run("suppress_quiet_ms=0 disables suppression", func(t *testing.T) {
+		nowMs := time.Now().UnixMilli()
+		state := iface.ScalingAlgorithmStatus{stateLastRateLimitedTimestampKey: nowMs}
+		cfg := iface.ScalingAlgorithmConfig{
+			configNoSyncRateLimitedSuppressQuietMsKey: int64(0),
+			configNoSyncScaleUpCooloffMsKey:           int64(0),
+		}
+		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
+		require.NoError(t, err)
+		assert.Len(t, resp.Actions, 1, "suppression disabled via TTL=0 must allow scale-up")
+	})
+
+	t.Run("ProcessTaskAdd state threads into ProcessMetricsPoll suppression", func(t *testing.T) {
+		cfg := iface.ScalingAlgorithmConfig{
+			configNoSyncRateLimitedSuppressQuietMsKey: int64(30_000),
+			configNoSyncScaleUpCooloffMsKey:           int64(0),
+		}
+		// First: a rate-limited signal writes the state key.
+		event := iface.SignalTaskAddRequest{RateLimitedSignalsSinceLast: 2}
+		taskAddResp, err := a.ProcessTaskAdd(ctx, cfg, nil, event)
+		require.NoError(t, err)
+		assert.Contains(t, taskAddResp.Status, stateLastRateLimitedTimestampKey)
+
+		// Second: ProcessMetricsPoll reads that state and suppresses.
+		pollResp, err := a.ProcessMetricsPoll(ctx, cfg, taskAddResp.Status, snapshot)
+		require.NoError(t, err)
+		assert.Len(t, pollResp.Actions, 0, "ProcessMetricsPoll must be suppressed by rate-limited state from ProcessTaskAdd")
 	})
 }

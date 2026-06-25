@@ -27,6 +27,7 @@ type (
 		timestamp        time.Time
 		syncMatchCount   int
 		noSyncMatchCount int
+		rateLimitedCount int
 	}
 
 	taskHookImpl struct {
@@ -88,7 +89,7 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	workflowID := GenerateWorkerControllerInstanceWorkflowID(event.DeploymentVersion)
 
 	// batch signals per WCI in minSignalInterval* time buckets
-	syncMatchBatchCount, noSyncMatchBatchCount, skip := th.batchMatchSignals(ctx, workflowID, event.IsSyncMatch)
+	syncMatchBatchCount, noSyncMatchBatchCount, rateLimitedBatchCount, skip := th.batchMatchSignals(ctx, workflowID, event.SyncMatchOutcome, event.IsSyncMatch)
 	if skip {
 		return
 	}
@@ -106,9 +107,10 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	request := &iface.SignalTaskAddRequest{
 		TaskQueueName:               th.taskQueueName,
 		TaskQueueType:               th.taskQueueType,
-		IsSyncMatch:                 event.IsSyncMatch,
+		IsSyncMatch:                 noSyncMatchBatchCount == 0, // backward compatibility: true when no genuine not-matched events so old WCI workers don't scale up
 		NoSyncMatchSignalsSinceLast: noSyncMatchBatchCount,
 		SyncMatchSignalsSinceLast:   syncMatchBatchCount,
+		RateLimitedSignalsSinceLast: rateLimitedBatchCount,
 	}
 
 	if err := th.client.SignalTaskAddEvent(ctx, th.namespace, event.DeploymentVersion, request); err != nil {
@@ -117,7 +119,12 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	}
 }
 
-func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, isSyncMatch bool) (int, int, bool) {
+func (th *taskHookImpl) batchMatchSignals(
+	_ context.Context,
+	workflowID string,
+	outcome hooks.SyncMatchOutcome,
+	isSyncMatchFallback bool,
+) (syncCount int, noSyncCount int, rateLimitedCount int, skip bool) {
 	now := time.Now()
 
 	th.lastSignalMu.Lock()
@@ -129,13 +136,27 @@ func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, 
 			timestamp:        time.Unix(0, 0),
 			syncMatchCount:   0,
 			noSyncMatchCount: 0,
+			rateLimitedCount: 0,
 		}
 	}
 
-	if isSyncMatch {
+	// In older or existing workflows, handle scenario when SyncMatchOutcome
+	// is not available in the hooks API
+	if outcome == hooks.SyncMatchOutcomeUnspecified {
+		if isSyncMatchFallback {
+			outcome = hooks.SyncMatchOutcomeSuccess
+		} else {
+			outcome = hooks.SyncMatchOutcomeNotMatched
+		}
+	}
+
+	switch outcome {
+	case hooks.SyncMatchOutcomeSuccess:
 		last.syncMatchCount++
-	} else {
+	case hooks.SyncMatchOutcomeNotMatched:
 		last.noSyncMatchCount++
+	case hooks.SyncMatchOutcomeRateLimited:
+		last.rateLimitedCount++ // does NOT increment noSyncMatchCount
 	}
 
 	minSignalIntervalSyncMatch := WorkerControllerMinSignalIntervalSyncMatchMilliseconds.Get(th.dc)(th.namespace.Name().String())
@@ -144,6 +165,8 @@ func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, 
 	}
 	sendBy := last.timestamp.Add(time.Duration(minSignalIntervalSyncMatch) * time.Millisecond)
 	if last.noSyncMatchCount > 0 {
+		// Only genuine not-matched events pull the send-by forward to the fast interval.
+		// Rate-limited events only increment rateLimitedCount and never accelerate the batch.
 		minSignalIntervalNoSyncMatch := WorkerControllerMinSignalIntervalNoSyncMatchMilliseconds.Get(th.dc)(th.namespace.Name().String())
 		if minSignalIntervalNoSyncMatch <= 0 {
 			minSignalIntervalNoSyncMatch = 500
@@ -156,9 +179,10 @@ func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, 
 			timestamp:        now,
 			syncMatchCount:   0,
 			noSyncMatchCount: 0,
+			rateLimitedCount: 0,
 		}
-		return last.syncMatchCount, last.noSyncMatchCount, false
+		return last.syncMatchCount, last.noSyncMatchCount, last.rateLimitedCount, false
 	}
 	th.lastSignalDetails[workflowID] = last
-	return last.syncMatchCount, last.noSyncMatchCount, true
+	return last.syncMatchCount, last.noSyncMatchCount, last.rateLimitedCount, true
 }

@@ -45,6 +45,14 @@ const (
 	configNoSyncMetricsPollIntervalMsKey     = "metrics_poll_interval_ms"
 	configNoSyncMetricsPollIntervalMsDefault = int64(60_000) // 60s
 
+	// configNoSyncRateLimitedSuppressQuietMsKey: in ProcessMetricsPoll, suppress scale-up for this many ms
+	// after the last observed rate-limited signal. 0 = disabled.
+	// Default is 2× the poll interval.
+	configNoSyncRateLimitedSuppressQuietMsKey     = "rate_limited_suppress_quiet_ms"
+	configNoSyncRateLimitedSuppressQuietMsDefault = 2 * configNoSyncMetricsPollIntervalMsDefault
+
+	stateLastRateLimitedTimestampKey = "last_rate_limited_time_ms"
+
 	stateLastScaleUpTimestampKey = "last_scale_up_time_ms"
 	// stateLastDispatchRateKeyFmt is a format string for per-queue dispatch rate state keys.
 	// The %s placeholder is replaced by the queue type name ("workflow", "activity", "nexus"),
@@ -60,10 +68,12 @@ var noSyncValidConfigKeys = map[string]struct{}{
 	configNoSyncMaxWorkerLifetimeMsKey:        {},
 	configNoSyncScaleUpDispatchRateEpsilonKey: {},
 	configNoSyncMetricsPollIntervalMsKey:      {},
+	configNoSyncRateLimitedSuppressQuietMsKey: {},
 }
 
 var noSyncValidStateKeys = map[string]struct{}{
 	stateLastScaleUpTimestampKey:                         {},
+	stateLastRateLimitedTimestampKey:                     {},
 	fmt.Sprintf(stateLastDispatchRateKeyFmt, "workflow"): {},
 	fmt.Sprintf(stateLastDispatchRateKeyFmt, "activity"): {},
 	fmt.Sprintf(stateLastDispatchRateKeyFmt, "nexus"):    {},
@@ -111,6 +121,9 @@ func (a *scalingAlgorithmNoSync) ValidateConfig(ctx context.Context, config ifac
 	if err := config.ValidateInt64Field(configNoSyncMetricsPollIntervalMsKey, 10000); err != nil {
 		return err
 	}
+	if err := config.ValidateInt64Field(configNoSyncRateLimitedSuppressQuietMsKey, 0); err != nil {
+		return err
+	}
 
 	// Cross-field: if poll interval < cooloff, metric-driven scale-ups can never fire.
 	// The guard `cooloff > 0` reflects the "0 means disabled" semantics: when cooloff is
@@ -146,11 +159,12 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 		}
 	}
 
+	nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
+
 	throttledCount := 0
-	if !event.IsSyncMatch || event.NoSyncMatchSignalsSinceLast > 0 {
+	if event.NoSyncMatchSignalsSinceLast > 0 {
 		cooloffMs := config.GetInt64Field(configNoSyncScaleUpCooloffMsKey, configNoSyncScaleUpCooloffMsDefault)
 		lastScaleUpMs := priorState.GetInt64Field(stateLastScaleUpTimestampKey, 0)
-		nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
 		elapsedMs := nowMs - lastScaleUpMs
 
 		if elapsedMs >= cooloffMs {
@@ -162,7 +176,15 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 		}
 	}
 
-	return &TaskAddResponse{Actions: actions, Status: updatedState, ThrottledCount: throttledCount}, nil
+	rateLimitedCount := 0
+	if event.RateLimitedSignalsSinceLast > 0 {
+		logger.Info("Task queue dispatch rate limiting observed, suppressing scale-up",
+			"rate_limited_count", event.RateLimitedSignalsSinceLast)
+		rateLimitedCount = event.RateLimitedSignalsSinceLast
+		updatedState[stateLastRateLimitedTimestampKey] = nowMs
+	}
+
+	return &TaskAddResponse{Actions: actions, Status: updatedState, ThrottledCount: throttledCount, RateLimitedCount: rateLimitedCount}, nil
 }
 
 func (a *scalingAlgorithmNoSync) ProcessDeferredScalingDecision(_ context.Context, _ iface.ScalingAlgorithmConfig, priorState iface.ScalingAlgorithmStatus, _ iface.SignalTaskAddRequest, _ ScalingMetricsSnapshotGetter) (*TaskAddResponse, error) {
@@ -198,6 +220,28 @@ func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config 
 	lastScaleUpMs := priorState.GetInt64Field(stateLastScaleUpTimestampKey, 0)
 	nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
 	elapsedSinceScaleUp := nowMs - lastScaleUpMs
+
+	suppressQuietMs := config.GetInt64Field(configNoSyncRateLimitedSuppressQuietMsKey, configNoSyncRateLimitedSuppressQuietMsDefault)
+	lastRateLimitedMs := priorState.GetInt64Field(stateLastRateLimitedTimestampKey, 0)
+	if suppressQuietMs > 0 && nowMs-lastRateLimitedMs < suppressQuietMs {
+		// Rate limiting recently observed. Suppress backlog-driven scale-up — adding workers
+		// that hit the rate cap does not help and repeats the cycle.
+		// Still update per-queue dispatch-rate state so the epsilon de-bounce baseline
+		// stays current and the first post-suppression poll compares against a fresh reference.
+		for _, q := range []struct {
+			qName   string
+			metrics *iface.QueueTypeScalingMetrics
+		}{
+			{"workflow", metricsSnapshot.Workflow},
+			{"activity", metricsSnapshot.Activity},
+			{"nexus", metricsSnapshot.Nexus},
+		} {
+			if q.metrics != nil {
+				updatedState[fmt.Sprintf(stateLastDispatchRateKeyFmt, q.qName)] = float64(q.metrics.LastProcessingRate)
+			}
+		}
+		return &MetricsPollResponse{Actions: actions, Status: updatedState, NextPoll: &nextPoll}, nil
+	}
 
 	scaleUp := false
 	for _, q := range []struct {

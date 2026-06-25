@@ -147,9 +147,17 @@ type (
 		TaskQueueName string                `json:"task_queue_name"`
 		TaskQueueType enumspb.TaskQueueType `json:"task_queue_type"`
 
-		IsSyncMatch                 bool `json:"is_sync_match"`
-		SyncMatchSignalsSinceLast   int  `json:"sync_match_signals_batched,omitempty"`
-		NoSyncMatchSignalsSinceLast int  `json:"no_sync_match_signals_batched,omitempty"`
+		// Deprecated: use NoSyncMatchSignalsSinceLast / RateLimitedSignalsSinceLast instead.
+		// Kept for backward compat with older WCI workflow instances still running during
+		// rolling deploys. Set to true only when noSyncMatchBatchCount == 0.
+		// Neither scaling algorithm reads this field for decisions after this change.
+		IsSyncMatch bool `json:"is_sync_match"`
+
+		// SyncMatchSignalsSinceLast is the count of SyncMatchOutcomeSuccess events in this batch.
+		// Does NOT include rate-limited events — those are counted in RateLimitedSignalsSinceLast.
+		SyncMatchSignalsSinceLast   int `json:"sync_match_signals_batched,omitempty"`
+		NoSyncMatchSignalsSinceLast int `json:"no_sync_match_signals_batched,omitempty"`
+		RateLimitedSignalsSinceLast int `json:"rate_limited_signals_batched,omitempty"`
 	}
 
 	WorkerControllerInstanceMemo struct {

@@ -13,6 +13,9 @@ var (
 	ScaleUpThrottledCount = metrics.NewCounterDef(
 		"worker_controller_instance_scale_up_throttled_count",
 		metrics.WithDescription("The number of times a scale up was throttled for a worker controller instance."))
+	RateLimitedTaskCount = metrics.NewCounterDef(
+		"worker_controller_instance_rate_limited_task_count",
+		metrics.WithDescription("The number of rate-limited task-add events observed by a worker controller instance where scale-up was suppressed."))
 	DeferredScalingDecisionCount = metrics.NewCounterDef(
 		"worker_controller_instance_deferred_scaling_decision_count",
 		metrics.WithDescription("The number of times a deferred scaling decision was dispatched for a worker controller instance."))

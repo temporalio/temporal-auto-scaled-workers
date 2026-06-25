@@ -444,6 +444,9 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		if response.ThrottledCount > 0 {
 			metricsHandler.Counter(wcimetrics.ScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
 		}
+		if response.RateLimitedCount > 0 {
+			metricsHandler.Counter(wcimetrics.RateLimitedTaskCount.Name()).Inc(int64(response.RateLimitedCount))
+		}
 
 		recordSuccess()
 
