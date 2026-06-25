@@ -14,6 +14,7 @@ import (
 	sdklog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
+	worker_versioning "go.temporal.io/server/common/worker_versioning"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -39,8 +40,12 @@ const (
 	InitialVersion WorkerControllerInstanceWorkflowVersion = iota
 
 	// Adds periodic background re-validation of the spec. The timer fires every
-	// periodicValidationInterval (6h).
+	// periodic validation interval (default 6h; configurable via dynamic config).
 	PeriodicValidationVersion
+
+	// Signals the version workflow after each ValidationStatus change so the
+	// deployment workflow can maintain an aggregate connectivity summary in its memo.
+	SignalVersionWorkflowVersion
 )
 
 type (
@@ -58,8 +63,9 @@ type (
 		metrics sdkclient.MetricsHandler
 		lock    workflow.Mutex
 
-		deleteInstance   bool
-		unsafeMaxVersion func() int
+		deleteInstance                   bool
+		unsafeMaxVersion                 func() int
+		unsafePeriodicValidationInterval func() time.Duration
 
 		// stateChanged is used to track if the state of the workflow has undergone a local state change since the last signal/update.
 		// This prevents a workflow from continuing-as-new if the state has not changed.
@@ -79,7 +85,7 @@ type (
 // history clean so that we have less concern about backwards and forwards compatibility.
 // In steady state (i.e. absence of ongoing updates or signals) the wf should only have
 // a single wft in the history.
-func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion, unsafeMaxVersion func() int, args *iface.WorkerControllerInstanceWorkflowArgs, activities *Activities) error {
+func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion, unsafeMaxVersion func() int, unsafePeriodicValidationInterval func() time.Duration, args *iface.WorkerControllerInstanceWorkflowArgs, activities *Activities) error {
 	workflowRunner := &WorkflowRunner{
 		WorkerControllerInstanceWorkflowArgs: args,
 		workflowVersion:                      getWorkflowVersion(ctx, unsafeWorkflowVersionGetter),
@@ -90,8 +96,9 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 			wcimetrics.WorkerDeploymentNameTag:    args.DeploymentName,
 			wcimetrics.WorkerDeploymentBuildIDTag: args.BuildId,
 		}),
-		lock:             workflow.NewMutex(ctx),
-		unsafeMaxVersion: unsafeMaxVersion,
+		lock:                             workflow.NewMutex(ctx),
+		unsafeMaxVersion:                 unsafeMaxVersion,
+		unsafePeriodicValidationInterval: unsafePeriodicValidationInterval,
 		signalHandler: &SignalHandler{
 			signalSelector: workflow.NewSelector(ctx),
 		},
@@ -194,9 +201,17 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	addStatsPullTimer(maxPollInterval)
 
 	if d.hasMinVersion(PeriodicValidationVersion) {
+		// Read once at run start. Dynamic config changes take effect at the next
+		// ContinueAsNew. The interval defaults to 6h and is
+		// unlikely to change frequently, so waiting for a CaN boundary is acceptable.
+		validationInterval := d.unsafePeriodicValidationInterval()
+		if validationInterval < time.Minute {
+			validationInterval = time.Minute
+		}
+
 		var addPeriodicValidationTimer func()
 		addPeriodicValidationTimer = func() {
-			timerFuture := workflow.NewTimer(ctx, periodicValidationInterval)
+			timerFuture := workflow.NewTimer(ctx, validationInterval)
 			d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
 				if err = f.Get(ctx, nil); err != nil {
 					d.logger.Debug("Periodic validation timer cancelled, not re-arming", "error", err)
@@ -416,6 +431,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		}
 
 		d.State.ValidationStatus = iface.NewValidationStatusSuccess(validationTime)
+		d.signalVersionWorkflow(ctx)
 		d.State.ConflictToken = args.ConflictToken
 		d.State.Spec = updatedSpec
 	}
@@ -530,6 +546,7 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 
 		if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 			d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
+			d.signalVersionWorkflow(ctx)
 			d.logger.Warn("Periodic spec validation failed with spec error", "error", err)
 		} else {
 			// Transient infrastructure errors (timeouts, server errors, cancellation) are not
@@ -542,6 +559,7 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 		}).Counter(wcimetrics.Operations.Name()).Inc(1)
 
 		d.State.ValidationStatus = iface.NewValidationStatusSuccess(now)
+		d.signalVersionWorkflow(ctx)
 	}
 
 	// We are not setting stateChanged to true to avoid unneccessary CaNs here.
@@ -694,6 +712,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 					// TODO: filter out further transient errors to avoid the validation state oscillating
 					d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
+					d.signalVersionWorkflow(ctx)
 				}
 				d.metrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName:         wcimetrics.OperationTypeInvokeWorker,
@@ -737,6 +756,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 					// TODO: filter out transient errors to avoid the validation state oscillating
 					d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
+					d.signalVersionWorkflow(ctx)
 				}
 
 				d.metrics.WithTags(map[string]string{
@@ -845,6 +865,29 @@ func getWorkflowVersion(ctx workflow.Context, unsafeWorkflowVersionGetter func()
 		logger.Warn("failed to retrieve intended workflow version", "error", err)
 	}
 	return 0
+}
+
+// signalVersionWorkflow sends the current ValidationStatus to the version workflow
+// so the deployment workflow can maintain an aggregate validation summary in its memo.
+func (d *WorkflowRunner) signalVersionWorkflow(ctx workflow.Context) {
+	if !d.hasMinVersion(SignalVersionWorkflowVersion) {
+		return
+	}
+	if d.State.ValidationStatus == nil {
+		return
+	}
+	versionWfID := worker_versioning.WorkerDeploymentVersionWorkflowIDPrefix +
+		worker_versioning.WorkerDeploymentVersionDelimiter +
+		d.DeploymentName +
+		worker_versioning.WorkerDeploymentVersionDelimiter +
+		d.BuildId
+	err := workflow.SignalExternalWorkflow(ctx, versionWfID, "", worker_versioning.SignalSyncValidationStatus, d.State.ValidationStatus).Get(ctx, nil)
+	if err != nil {
+		var notFound *serviceerror.NotFound
+		if !errors.As(err, &notFound) {
+			d.logger.Warn("failed to signal version workflow with validation status", "error", err, "version_wf_id", versionWfID)
+		}
+	}
 }
 
 // classifyActivityErrorType buckets an activity error returned by workflow.ExecuteActivity

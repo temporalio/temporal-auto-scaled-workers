@@ -1,6 +1,10 @@
 package client
 
-import "go.temporal.io/server/common/dynamicconfig"
+import (
+	"time"
+
+	"go.temporal.io/server/common/dynamicconfig"
+)
 
 type (
 	AWSIAMRoleRequest struct {
@@ -27,7 +31,7 @@ var (
 	)
 	WorkerControllerInstanceWorkflowVersion = dynamicconfig.NewNamespaceIntSetting(
 		"workercontroller.instanceWorkflowVersion",
-		1,
+		2,
 		`WorkerControllerInstanceWorkflowVersion controls what version of the logic should the manager workflows use.`,
 	)
 	WorkerControllerAWSIntermediaryRoles = dynamicconfig.NewGlobalTypedSetting(
@@ -64,5 +68,10 @@ var (
 		"workercontroller.hook.min_signal_interval_sync_match",
 		60_000, // 1 minute
 		`WorkerControllerMinSignalIntervalSyncMatchMilliseconds controls the batching interval of sync matches grouped by WCI in milliseconds (per namespace). Each batch triggers a signal.`,
+	)
+	WorkerControllerPeriodicValidationIntervalSeconds = dynamicconfig.NewGlobalIntSetting(
+		"workercontroller.periodic_validation_interval_s",
+		int((6 * time.Hour).Seconds()), // 21600
+		`WorkerControllerPeriodicValidationIntervalSeconds controls the interval between periodic spec validation checks in seconds.`,
 	)
 )
