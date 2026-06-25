@@ -192,6 +192,7 @@ func (a *scalingAlgorithmNoSync) ProcessDeferredScalingDecision(_ context.Contex
 }
 
 func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config iface.ScalingAlgorithmConfig, priorState iface.ScalingAlgorithmStatus, metricsSnapshot ScalingMetricsSnapshot) (*MetricsPollResponse, error) {
+	logger := safeActivityLogger(ctx)
 	updatedState := maps.Clone(priorState)
 	actions := []ScalingAction{}
 
@@ -228,6 +229,10 @@ func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config 
 		// that hit the rate cap does not help and repeats the cycle.
 		// Still update per-queue dispatch-rate state so the epsilon de-bounce baseline
 		// stays current and the first post-suppression poll compares against a fresh reference.
+		logger.Debug("no_sync_match: ProcessMetricsPoll scale-up suppressed due to recent rate limiting",
+			"elapsed_since_rate_limited_ms", nowMs-lastRateLimitedMs,
+			"suppress_quiet_ms", suppressQuietMs,
+		)
 		for _, q := range []struct {
 			qName   string
 			metrics *iface.QueueTypeScalingMetrics
