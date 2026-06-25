@@ -22,6 +22,6 @@ jobs:
           go-version: stable
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
+        continue-on-error: true
         with:
           version: v2.12
-          args: --issues-exit-code 0
