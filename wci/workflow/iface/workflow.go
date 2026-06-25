@@ -153,8 +153,9 @@ type (
 		// Neither scaling algorithm reads this field for decisions after this change.
 		IsSyncMatch bool `json:"is_sync_match"`
 
-		// SyncMatchSignalsSinceLast is the count of SyncMatchOutcomeSuccess events in this batch.
-		// Does NOT include rate-limited events — those are counted in RateLimitedSignalsSinceLast.
+		// SyncMatchSignalsSinceLast is the count of tasks successfully dispatched to a waiting worker in this batch.
+		// Rate-limited events (worker is available but there's no task handoff due to rate-limiting) are a
+		//distinct outcome tracked separately in RateLimitedSignalsSinceLast.
 		SyncMatchSignalsSinceLast   int `json:"sync_match_signals_batched,omitempty"`
 		NoSyncMatchSignalsSinceLast int `json:"no_sync_match_signals_batched,omitempty"`
 		RateLimitedSignalsSinceLast int `json:"rate_limited_signals_batched,omitempty"`

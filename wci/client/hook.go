@@ -165,8 +165,8 @@ func (th *taskHookImpl) batchMatchSignals(
 	}
 	sendBy := last.timestamp.Add(time.Duration(minSignalIntervalSyncMatch) * time.Millisecond)
 	if last.noSyncMatchCount > 0 {
-		// Only genuine not-matched events pull the send-by forward to the fast interval.
-		// Rate-limited events only increment rateLimitedCount and never accelerate the batch.
+		// Not-matched events (no worker was available) send the batch urgently at 500ms.
+		// Rate-limited events stay in the slow 60-second window alongside sync-matched events.
 		minSignalIntervalNoSyncMatch := WorkerControllerMinSignalIntervalNoSyncMatchMilliseconds.Get(th.dc)(th.namespace.Name().String())
 		if minSignalIntervalNoSyncMatch <= 0 {
 			minSignalIntervalNoSyncMatch = 500
