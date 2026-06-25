@@ -42,7 +42,8 @@ func (p *subprocessComputeProvider) LaunchStrategy() LaunchStrategy {
 }
 
 func (p *subprocessComputeProvider) ValidateConfig(
-	ctx context.Context,
+	_ context.Context,
+	_ RequestContext,
 	config ComputeProviderConfig,
 ) error {
 	command, ok := config[configSubprocessCommand].(string)
@@ -65,7 +66,8 @@ func (p *subprocessComputeProvider) ValidateConfig(
 }
 
 func (p *subprocessComputeProvider) InvokeWorker(
-	ctx context.Context,
+	_ context.Context,
+	_ RequestContext,
 	config ComputeProviderConfig,
 ) error {
 	command, ok := config[configSubprocessCommand].(string)
@@ -104,6 +106,7 @@ func (p *subprocessComputeProvider) InvokeWorker(
 
 func (p *subprocessComputeProvider) UpdateWorkerSetSize(
 	_ context.Context,
+	_ RequestContext,
 	_ ComputeProviderConfig,
 	_ int32,
 ) error {
