@@ -14,6 +14,42 @@ concurrency: # Auto-cancel existing runs in the PR when a new commit is pushed
   cancel-in-progress: true
 
 jobs:
+  check-go-mod-sync:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check go.mod consistency between root and tests/
+        run: |
+          fail=0
+
+          check() {
+            local name="$1" root="$2" tests="$3"
+            if [ "$root" != "$tests" ]; then
+              echo "MISMATCH: $name"
+              echo "  go.mod:       $root"
+              echo "  tests/go.mod: $tests"
+              fail=1
+            else
+              echo "OK: $name ($root)"
+            fi
+          }
+
+          check "go version" \
+            "$(grep '^go ' go.mod | awk '{print $2}')" \
+            "$(grep '^go ' tests/go.mod | awk '{print $2}')"
+
+          check "go.temporal.io/api" \
+            "$(grep 'go\.temporal\.io/api ' go.mod | awk '{print $2}')" \
+            "$(grep 'go\.temporal\.io/api ' tests/go.mod | awk '{print $2}')"
+
+          check "go.temporal.io/server" \
+            "$(grep 'go\.temporal\.io/server ' go.mod | awk '{print $2}')" \
+            "$(grep 'go\.temporal\.io/server ' tests/go.mod | awk '{print $2}')"
+
+          exit $fail
+
   unit-test:
     permissions:
       contents: read
