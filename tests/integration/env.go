@@ -1,4 +1,4 @@
-// Package integration contains integratin tests for WCI workflow logic.
+// Package integration contains integration tests for WCI workflow logic.
 package integration
 
 import (
