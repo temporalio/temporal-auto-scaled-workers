@@ -31,10 +31,7 @@ func newTestSignalTaskAddEvent() iface.SignalTaskAddRequest {
 	}
 }
 
-func newTestScalingGroupSpec(
-	taskType enumspb.TaskQueueType,
-	scalingConfig, computeConfig *commonpb.Payload,
-) iface.ScalingGroupSpec {
+func newTestScalingGroupSpec(taskType enumspb.TaskQueueType, scalingConfig, computeConfig *commonpb.Payload) iface.ScalingGroupSpec {
 	return iface.ScalingGroupSpec{
 		TaskTypes: []enumspb.TaskQueueType{taskType},
 		Compute: iface.ComputeProviderSpec{
@@ -53,12 +50,9 @@ const testDeferredScalingDecisionScalingAlgorithm iface.ScalingAlgorithmType = "
 var currentDeferredScalingDecisionTestAlgorithm *deferredScalingDecisionTestAlgorithm
 
 func init() {
-	scalingalgorithm.RegisterScalingAlgorithm(
-		testDeferredScalingDecisionScalingAlgorithm,
-		func(context.Context) (scalingalgorithm.ScalingAlgorithm, error) {
-			return currentDeferredScalingDecisionTestAlgorithm, nil
-		},
-	)
+	scalingalgorithm.RegisterScalingAlgorithm(testDeferredScalingDecisionScalingAlgorithm, func(context.Context) (scalingalgorithm.ScalingAlgorithm, error) {
+		return currentDeferredScalingDecisionTestAlgorithm, nil
+	})
 }
 
 type deferredScalingDecisionTestAlgorithm struct {
@@ -77,15 +71,10 @@ type deferredScalingDecisionTestAlgorithm struct {
 }
 
 func (a *deferredScalingDecisionTestAlgorithm) CompatibleLaunchStrategies() []computeprovider.LaunchStrategy {
-	return []computeprovider.LaunchStrategy{
-		computeprovider.LaunchStrategyWorkerSet,
-	}
+	return []computeprovider.LaunchStrategy{computeprovider.LaunchStrategyWorkerSet}
 }
 
-func (a *deferredScalingDecisionTestAlgorithm) ValidateConfig(
-	context.Context,
-	iface.ScalingAlgorithmConfig,
-) error {
+func (a *deferredScalingDecisionTestAlgorithm) ValidateConfig(context.Context, iface.ScalingAlgorithmConfig) error {
 	return nil
 }
 
@@ -131,10 +120,7 @@ func (a *deferredScalingDecisionTestAlgorithm) ProcessDeferredScalingDecision(
 			// drop all of them, since deferred actions cannot themselves chain into more
 			// deferred work.
 			{Action: scalingalgorithm.ActionTypeDeferredScalingDecision},
-			{
-				Action: scalingalgorithm.ActionTypeUpdateWorkerSetSize,
-				Count:  &count,
-			},
+			{Action: scalingalgorithm.ActionTypeUpdateWorkerSetSize, Count: &count},
 			{Action: scalingalgorithm.ActionTypeDeferredScalingDecision},
 			{Action: scalingalgorithm.ActionTypeDeferredScalingDecision},
 		},
@@ -142,12 +128,7 @@ func (a *deferredScalingDecisionTestAlgorithm) ProcessDeferredScalingDecision(
 	}, nil
 }
 
-func (a *deferredScalingDecisionTestAlgorithm) ProcessMetricsPoll(
-	context.Context,
-	iface.ScalingAlgorithmConfig,
-	iface.ScalingAlgorithmStatus,
-	scalingalgorithm.ScalingMetricsSnapshot,
-) (*scalingalgorithm.MetricsPollResponse, error) {
+func (a *deferredScalingDecisionTestAlgorithm) ProcessMetricsPoll(context.Context, iface.ScalingAlgorithmConfig, iface.ScalingAlgorithmStatus, scalingalgorithm.ScalingMetricsSnapshot) (*scalingalgorithm.MetricsPollResponse, error) {
 	return &scalingalgorithm.MetricsPollResponse{}, nil
 }
 
@@ -162,19 +143,13 @@ func TestFilterScalingMetricsSnapshotByTaskTypes(t *testing.T) {
 		Nexus: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5},
 	}
 
-	activitySnapshot := filterScalingMetricsSnapshotByTaskTypes(
-		snapshot,
-		[]enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_ACTIVITY},
-	)
+	activitySnapshot := filterScalingMetricsSnapshotByTaskTypes(snapshot, []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_ACTIVITY})
 	assert.Nil(t, activitySnapshot.Workflow)
 	require.NotNil(t, activitySnapshot.Activity)
 	assert.Equal(t, int64(2), activitySnapshot.Activity.LastBacklogCount)
 	assert.Nil(t, activitySnapshot.Nexus)
 
-	workflowSnapshot := filterScalingMetricsSnapshotByTaskTypes(
-		snapshot,
-		[]enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW},
-	)
+	workflowSnapshot := filterScalingMetricsSnapshotByTaskTypes(snapshot, []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW})
 	require.NotNil(t, workflowSnapshot.Workflow)
 	assert.Equal(t, int64(1), workflowSnapshot.Workflow.LastBacklogCount)
 	assert.Nil(t, workflowSnapshot.Activity)
@@ -187,27 +162,11 @@ func TestFilterScalingMetricsSnapshotByTaskTypes(t *testing.T) {
 
 	// Surviving inner pointers must be independently owned: mutating the filtered view
 	// must not affect the source snapshot.
-	assert.NotSame(
-		t,
-		snapshot.Activity,
-		activitySnapshot.Activity,
-		"filter must deep-copy surviving inner pointers",
-	)
+	assert.NotSame(t, snapshot.Activity, activitySnapshot.Activity, "filter must deep-copy surviving inner pointers")
 	activitySnapshot.Activity.LastBacklogCount = 999
-	assert.Equal(
-		t,
-		int64(2),
-		snapshot.Activity.LastBacklogCount,
-		"mutating the filtered view must not bleed into the source",
-	)
+	assert.Equal(t, int64(2), snapshot.Activity.LastBacklogCount, "mutating the filtered view must not bleed into the source")
 
-	assert.Nil(
-		t,
-		filterScalingMetricsSnapshotByTaskTypes(
-			nil,
-			[]enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW},
-		),
-	)
+	assert.Nil(t, filterScalingMetricsSnapshotByTaskTypes(nil, []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW}))
 }
 
 func TestHandleTaskAddSignalReturnsDeferredAction(t *testing.T) {
@@ -217,9 +176,7 @@ func TestHandleTaskAddSignalReturnsDeferredAction(t *testing.T) {
 		currentDeferredScalingDecisionTestAlgorithm = nil
 	})
 
-	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(
-		iface.ScalingAlgorithmConfig{},
-	)
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
 
 	event := newTestSignalTaskAddEvent()
@@ -233,16 +190,8 @@ func TestHandleTaskAddSignalReturnsDeferredAction(t *testing.T) {
 		Request: event,
 		Spec: &iface.WorkerControllerInstanceSpec{
 			ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
-				"workflow": newTestScalingGroupSpec(
-					enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-					scalingConfigPayload,
-					nil,
-				),
-				"activity": newTestScalingGroupSpec(
-					enumspb.TASK_QUEUE_TYPE_ACTIVITY,
-					scalingConfigPayload,
-					nil,
-				),
+				"workflow": newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, nil),
+				"activity": newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_ACTIVITY, scalingConfigPayload, nil),
 			},
 		},
 		ScalingStatus: priorStatus,
@@ -259,23 +208,11 @@ func TestHandleTaskAddSignalReturnsDeferredAction(t *testing.T) {
 	assert.Equal(t, 1, algo.processCalls)
 	assert.Equal(t, 0, algo.deferredCalls)
 	assert.Equal(t, event, algo.processEvent)
-	assert.Equal(
-		t,
-		iface.ScalingAlgorithmStatus{"phase": "process"},
-		resp.UpdatedScalingStatus["workflow"],
-	)
-	assert.Equal(
-		t,
-		iface.ScalingAlgorithmStatus{"phase": "untouched"},
-		resp.UpdatedScalingStatus["activity"],
-	)
+	assert.Equal(t, iface.ScalingAlgorithmStatus{"phase": "process"}, resp.UpdatedScalingStatus["workflow"])
+	assert.Equal(t, iface.ScalingAlgorithmStatus{"phase": "untouched"}, resp.UpdatedScalingStatus["activity"])
 
 	require.Len(t, resp.Actions, 1)
-	assert.Equal(
-		t,
-		scalingalgorithm.ActionTypeDeferredScalingDecision,
-		resp.Actions[0].Action,
-	)
+	assert.Equal(t, scalingalgorithm.ActionTypeDeferredScalingDecision, resp.Actions[0].Action)
 	assert.Equal(t, "workflow", resp.Actions[0].ScalingGroupKey)
 	assert.Nil(t, resp.Actions[0].Count)
 }
@@ -287,9 +224,7 @@ func TestHandleDeferredScalingDecisionProcessesAction(t *testing.T) {
 		currentDeferredScalingDecisionTestAlgorithm = nil
 	})
 
-	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(
-		iface.ScalingAlgorithmConfig{},
-	)
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
 
 	event := newTestSignalTaskAddEvent()
@@ -297,26 +232,17 @@ func TestHandleDeferredScalingDecisionProcessesAction(t *testing.T) {
 
 	activities := NewActivities(nil, nil, nil)
 	req := HandleDeferredScalingDecisionActivityRequest{
-		Request:         event,
-		ScalingGroupKey: "workflow",
-		ScalingGroupSpec: newTestScalingGroupSpec(
-			enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-			scalingConfigPayload,
-			nil,
-		),
-		EffectiveTaskTypes: []enumspb.TaskQueueType{
-			enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-		},
-		ScalingStatus: priorStatus,
+		Request:            event,
+		ScalingGroupKey:    "workflow",
+		ScalingGroupSpec:   newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, nil),
+		EffectiveTaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW},
+		ScalingStatus:      priorStatus,
 	}
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()
 	env.RegisterActivity(activities.HandleDeferredScalingDecision)
-	encodedResp, err := env.ExecuteActivity(
-		activities.HandleDeferredScalingDecision,
-		req,
-	)
+	encodedResp, err := env.ExecuteActivity(activities.HandleDeferredScalingDecision, req)
 
 	require.NoError(t, err)
 	var resp HandleDeferredScalingDecisionActivityResponse
@@ -324,24 +250,11 @@ func TestHandleDeferredScalingDecisionProcessesAction(t *testing.T) {
 	assert.Equal(t, 0, algo.processCalls)
 	assert.Equal(t, 1, algo.deferredCalls)
 	assert.Equal(t, event, algo.deferredEvent)
-	assert.Equal(
-		t,
-		iface.ScalingAlgorithmStatus{"phase": "process"},
-		algo.deferredPriorStatus,
-	)
-	assert.Equal(
-		t,
-		iface.ScalingAlgorithmStatus{"phase": "deferred"},
-		resp.UpdatedScalingStatus,
-	)
+	assert.Equal(t, iface.ScalingAlgorithmStatus{"phase": "process"}, algo.deferredPriorStatus)
+	assert.Equal(t, iface.ScalingAlgorithmStatus{"phase": "deferred"}, resp.UpdatedScalingStatus)
 
 	for _, act := range resp.Actions {
-		assert.NotEqual(
-			t,
-			scalingalgorithm.ActionTypeDeferredScalingDecision,
-			act.Action,
-			"nested deferred actions must be dropped",
-		)
+		assert.NotEqual(t, scalingalgorithm.ActionTypeDeferredScalingDecision, act.Action, "nested deferred actions must be dropped")
 	}
 	var updateActions []scalingalgorithm.ScalingAction
 	for _, act := range resp.Actions {
@@ -362,22 +275,14 @@ func TestHandleDeferredScalingDecisionDropsOnInputErrors(t *testing.T) {
 		currentDeferredScalingDecisionTestAlgorithm = nil
 	})
 
-	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(
-		iface.ScalingAlgorithmConfig{},
-	)
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
 
 	priorStatus := iface.ScalingAlgorithmStatus{"phase": "prior"}
-	workflowGroup := newTestScalingGroupSpec(
-		enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-		scalingConfigPayload,
-		nil,
-	)
+	workflowGroup := newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, nil)
 	unknownAlgoGroup := iface.ScalingGroupSpec{
 		TaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW},
-		Compute: iface.ComputeProviderSpec{
-			ProviderType: iface.ComputeProviderTypeTestWorkerSet,
-		},
+		Compute:   iface.ComputeProviderSpec{ProviderType: iface.ComputeProviderTypeTestWorkerSet},
 		Scaling: &iface.ScalingAlgorithmSpec{
 			ScalingAlgorithm: iface.ScalingAlgorithmType("does-not-exist"),
 			Config:           scalingConfigPayload,
@@ -393,30 +298,24 @@ func TestHandleDeferredScalingDecisionDropsOnInputErrors(t *testing.T) {
 		expectAlgoCalled   bool
 	}{
 		{
-			name:             "task type mismatch",
-			scalingGroupSpec: workflowGroup,
-			effectiveTaskTypes: []enumspb.TaskQueueType{
-				enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-			},
-			taskType: enumspb.TASK_QUEUE_TYPE_ACTIVITY,
+			name:               "task type mismatch",
+			scalingGroupSpec:   workflowGroup,
+			effectiveTaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW},
+			taskType:           enumspb.TASK_QUEUE_TYPE_ACTIVITY,
 		},
 		{
-			name:             "scaling algorithm factory unknown",
-			scalingGroupSpec: unknownAlgoGroup,
-			effectiveTaskTypes: []enumspb.TaskQueueType{
-				enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-			},
-			taskType: enumspb.TASK_QUEUE_TYPE_WORKFLOW,
+			name:               "scaling algorithm factory unknown",
+			scalingGroupSpec:   unknownAlgoGroup,
+			effectiveTaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW},
+			taskType:           enumspb.TASK_QUEUE_TYPE_WORKFLOW,
 		},
 		{
-			name:             "algorithm returns nil response",
-			scalingGroupSpec: workflowGroup,
-			effectiveTaskTypes: []enumspb.TaskQueueType{
-				enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-			},
-			taskType:         enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-			algoSetup:        func(a *deferredScalingDecisionTestAlgorithm) { a.deferredNilResp = true },
-			expectAlgoCalled: false,
+			name:               "algorithm returns nil response",
+			scalingGroupSpec:   workflowGroup,
+			effectiveTaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW},
+			taskType:           enumspb.TASK_QUEUE_TYPE_WORKFLOW,
+			algoSetup:          func(a *deferredScalingDecisionTestAlgorithm) { a.deferredNilResp = true },
+			expectAlgoCalled:   true,
 		},
 	}
 
@@ -435,40 +334,23 @@ func TestHandleDeferredScalingDecisionDropsOnInputErrors(t *testing.T) {
 
 			env := suite.NewTestActivityEnvironment()
 			env.RegisterActivity(activities.HandleDeferredScalingDecision)
-			encodedResp, err := env.ExecuteActivity(
-				activities.HandleDeferredScalingDecision,
-				HandleDeferredScalingDecisionActivityRequest{
-					Request:            event,
-					ScalingGroupKey:    "workflow",
-					ScalingGroupSpec:   tc.scalingGroupSpec,
-					EffectiveTaskTypes: tc.effectiveTaskTypes,
-					ScalingStatus:      priorStatus,
-				},
-			)
-			require.NoError(
-				t,
-				err,
-				"activity must return nil error on silent-drop branches",
-			)
+			encodedResp, err := env.ExecuteActivity(activities.HandleDeferredScalingDecision, HandleDeferredScalingDecisionActivityRequest{
+				Request:            event,
+				ScalingGroupKey:    "workflow",
+				ScalingGroupSpec:   tc.scalingGroupSpec,
+				EffectiveTaskTypes: tc.effectiveTaskTypes,
+				ScalingStatus:      priorStatus,
+			})
+			require.NoError(t, err, "activity must return nil error on silent-drop branches")
 
 			var resp HandleDeferredScalingDecisionActivityResponse
 			require.NoError(t, encodedResp.Get(&resp))
 			assert.Empty(t, resp.Actions)
 			assert.Equal(t, priorStatus, resp.UpdatedScalingStatus)
 			if tc.expectAlgoCalled {
-				assert.Equal(
-					t,
-					1,
-					algo.deferredCalls,
-					"algorithm ProcessDeferredScalingDecision should have been called",
-				)
+				assert.Equal(t, 1, algo.deferredCalls, "algorithm ProcessDeferredScalingDecision should have been called")
 			} else {
-				assert.Equal(
-					t,
-					0,
-					algo.deferredCalls,
-					"algorithm ProcessDeferredScalingDecision must not be called",
-				)
+				assert.Equal(t, 0, algo.deferredCalls, "algorithm ProcessDeferredScalingDecision must not be called")
 			}
 		})
 	}
@@ -481,9 +363,7 @@ func TestHandleDeferredScalingDecisionPropagatesAlgorithmError(t *testing.T) {
 		currentDeferredScalingDecisionTestAlgorithm = nil
 	})
 
-	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(
-		iface.ScalingAlgorithmConfig{},
-	)
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
 
 	deferredErr := errors.New("simulated deferred algorithm failure")
@@ -491,17 +371,11 @@ func TestHandleDeferredScalingDecisionPropagatesAlgorithmError(t *testing.T) {
 
 	activities := NewActivities(nil, nil, nil)
 	req := HandleDeferredScalingDecisionActivityRequest{
-		Request:         newTestSignalTaskAddEvent(),
-		ScalingGroupKey: "workflow",
-		ScalingGroupSpec: newTestScalingGroupSpec(
-			enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-			scalingConfigPayload,
-			nil,
-		),
-		EffectiveTaskTypes: []enumspb.TaskQueueType{
-			enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-		},
-		ScalingStatus: iface.ScalingAlgorithmStatus{"phase": "prior"},
+		Request:            newTestSignalTaskAddEvent(),
+		ScalingGroupKey:    "workflow",
+		ScalingGroupSpec:   newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, nil),
+		EffectiveTaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW},
+		ScalingStatus:      iface.ScalingAlgorithmStatus{"phase": "prior"},
 	}
 
 	var suite testsuite.WorkflowTestSuite
@@ -509,23 +383,9 @@ func TestHandleDeferredScalingDecisionPropagatesAlgorithmError(t *testing.T) {
 	env.RegisterActivity(activities.HandleDeferredScalingDecision)
 	_, err = env.ExecuteActivity(activities.HandleDeferredScalingDecision, req)
 
-	require.Error(
-		t,
-		err,
-		"algorithm error must be propagated so the workflow-side retry policy can re-attempt",
-	)
-	assert.Contains(
-		t,
-		err.Error(),
-		deferredErr.Error(),
-		"propagated error must wrap the original algorithm error",
-	)
-	assert.Equal(
-		t,
-		1,
-		algo.deferredCalls,
-		"algorithm ProcessDeferredScalingDecision should have been called once",
-	)
+	require.Error(t, err, "algorithm error must be propagated so the workflow-side retry policy can re-attempt")
+	assert.Contains(t, err.Error(), deferredErr.Error(), "propagated error must wrap the original algorithm error")
+	assert.Equal(t, 1, algo.deferredCalls, "algorithm ProcessDeferredScalingDecision should have been called once")
 }
 
 func TestHandleActionsProcessesDeferredScalingDecision(t *testing.T) {
@@ -535,13 +395,9 @@ func TestHandleActionsProcessesDeferredScalingDecision(t *testing.T) {
 		currentDeferredScalingDecisionTestAlgorithm = nil
 	})
 
-	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(
-		iface.ScalingAlgorithmConfig{},
-	)
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
-	computeConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(
-		map[string]any{},
-	)
+	computeConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{})
 	require.NoError(t, err)
 
 	activities := NewActivities(nil, nil, nil)
@@ -553,11 +409,7 @@ func TestHandleActionsProcessesDeferredScalingDecision(t *testing.T) {
 		State: &iface.WorkerControllerInstanceLocalState{
 			Spec: &iface.WorkerControllerInstanceSpec{
 				ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
-					"workflow": newTestScalingGroupSpec(
-						enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-						scalingConfigPayload,
-						computeConfigPayload,
-					),
+					"workflow": newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, computeConfigPayload),
 				},
 			},
 			ScalingStatus: map[string]iface.ScalingAlgorithmStatus{
@@ -574,15 +426,9 @@ func TestHandleActionsProcessesDeferredScalingDecision(t *testing.T) {
 			WorkerControllerInstanceWorkflowArgs: args,
 			a:                                    activities,
 			logger:                               sdkworkflow.GetLogger(ctx),
-			metrics: sdkworkflow.GetMetricsHandler(
-				ctx,
-			),
+			metrics:                              sdkworkflow.GetMetricsHandler(ctx),
 		}
-		runner.handleActions(
-			ctx,
-			[]scalingalgorithm.ScalingAction{action},
-			&event,
-		)
+		runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, &event)
 		return runner.State.ScalingStatus, nil
 	}
 
@@ -608,36 +454,17 @@ func TestHandleActionsProcessesDeferredScalingDecision(t *testing.T) {
 	assert.Equal(t, 0, algo.processCalls)
 	assert.Equal(t, 1, algo.deferredCalls)
 	assert.Equal(t, event, algo.deferredEvent)
-	assert.Equal(
-		t,
-		iface.ScalingAlgorithmStatus{"phase": "process"},
-		algo.deferredPriorStatus,
-	)
-	assert.Equal(
-		t,
-		iface.ScalingAlgorithmStatus{"phase": "deferred"},
-		status["workflow"],
-	)
+	assert.Equal(t, iface.ScalingAlgorithmStatus{"phase": "process"}, algo.deferredPriorStatus)
+	assert.Equal(t, iface.ScalingAlgorithmStatus{"phase": "deferred"}, status["workflow"])
 
-	require.Len(
-		t,
-		updateRequests,
-		1,
-		"deferred response's UpdateWorkerSetSize action must be dispatched",
-	)
+	require.Len(t, updateRequests, 1, "deferred response's UpdateWorkerSetSize action must be dispatched")
 	assert.Equal(t, int32(4), updateRequests[0].UpdatedSize)
 	require.NotNil(t, updateRequests[0].ComputeConfig)
-	assert.Equal(
-		t,
-		iface.ComputeProviderTypeTestWorkerSet,
-		updateRequests[0].ComputeConfig.ProviderType,
-	)
+	assert.Equal(t, iface.ComputeProviderTypeTestWorkerSet, updateRequests[0].ComputeConfig.ProviderType)
 }
 
 func TestHandleActionsDropsDeferredActionGuards(t *testing.T) {
-	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(
-		iface.ScalingAlgorithmConfig{},
-	)
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
 
 	event := newTestSignalTaskAddEvent()
@@ -683,11 +510,7 @@ func TestHandleActionsDropsDeferredActionGuards(t *testing.T) {
 				State: &iface.WorkerControllerInstanceLocalState{
 					Spec: &iface.WorkerControllerInstanceSpec{
 						ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
-							"workflow": newTestScalingGroupSpec(
-								enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-								scalingConfigPayload,
-								nil,
-							),
+							"workflow": newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, nil),
 						},
 					},
 					ScalingStatus: map[string]iface.ScalingAlgorithmStatus{
@@ -699,18 +522,10 @@ func TestHandleActionsDropsDeferredActionGuards(t *testing.T) {
 				runner := &WorkflowRunner{
 					WorkerControllerInstanceWorkflowArgs: args,
 					a:                                    activities,
-					logger: sdkworkflow.GetLogger(
-						ctx,
-					),
-					metrics: sdkworkflow.GetMetricsHandler(
-						ctx,
-					),
+					logger:                               sdkworkflow.GetLogger(ctx),
+					metrics:                              sdkworkflow.GetMetricsHandler(ctx),
 				}
-				runner.handleActions(
-					ctx,
-					[]scalingalgorithm.ScalingAction{action},
-					taskAddRequest,
-				)
+				runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, taskAddRequest)
 				return nil
 			}
 
@@ -728,27 +543,12 @@ func TestHandleActionsDropsDeferredActionGuards(t *testing.T) {
 					deferredCalls++
 				})
 
-			env.ExecuteWorkflow(
-				testWorkflow,
-				args,
-				tc.action,
-				tc.taskAddRequest,
-			)
+			env.ExecuteWorkflow(testWorkflow, args, tc.action, tc.taskAddRequest)
 			require.True(t, env.IsWorkflowCompleted())
 			require.NoError(t, env.GetWorkflowError())
 
-			assert.Equal(
-				t,
-				0,
-				deferredCalls,
-				"deferred scaling decision must be dropped without scheduling HandleDeferredScalingDecision",
-			)
-			assert.Equal(
-				t,
-				0,
-				algo.deferredCalls,
-				"scaling algorithm ProcessDeferredScalingDecision must not be invoked when the action is dropped at dispatch",
-			)
+			assert.Equal(t, 0, deferredCalls, "deferred scaling decision must be dropped without scheduling HandleDeferredScalingDecision")
+			assert.Equal(t, 0, algo.deferredCalls, "scaling algorithm ProcessDeferredScalingDecision must not be invoked when the action is dropped at dispatch")
 		})
 	}
 }
@@ -758,18 +558,14 @@ func TestHandleActionsDropsDeferredActionGuards(t *testing.T) {
 // to d.State.ScalingStatus *before* invoking handleActions, so the deferred scaling decision
 // case forwards the freshly-computed status (not the pre-process snapshot). A
 // regression that reverts the ordering would silently forward stale state.
-func TestHandleNoSyncMatchSignalAppliesStatusBeforeDeferredDispatch(
-	t *testing.T,
-) {
+func TestHandleNoSyncMatchSignalAppliesStatusBeforeDeferredDispatch(t *testing.T) {
 	algo := &deferredScalingDecisionTestAlgorithm{}
 	currentDeferredScalingDecisionTestAlgorithm = algo
 	t.Cleanup(func() {
 		currentDeferredScalingDecisionTestAlgorithm = nil
 	})
 
-	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(
-		iface.ScalingAlgorithmConfig{},
-	)
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
 
 	activities := NewActivities(nil, nil, nil)
@@ -781,11 +577,7 @@ func TestHandleNoSyncMatchSignalAppliesStatusBeforeDeferredDispatch(
 		State: &iface.WorkerControllerInstanceLocalState{
 			Spec: &iface.WorkerControllerInstanceSpec{
 				ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
-					"workflow": newTestScalingGroupSpec(
-						enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-						scalingConfigPayload,
-						nil,
-					),
+					"workflow": newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, nil),
 				},
 			},
 			ScalingStatus: map[string]iface.ScalingAlgorithmStatus{
@@ -798,9 +590,7 @@ func TestHandleNoSyncMatchSignalAppliesStatusBeforeDeferredDispatch(
 			WorkerControllerInstanceWorkflowArgs: args,
 			a:                                    activities,
 			logger:                               sdkworkflow.GetLogger(ctx),
-			metrics: sdkworkflow.GetMetricsHandler(
-				ctx,
-			),
+			metrics:                              sdkworkflow.GetMetricsHandler(ctx),
 		}
 		runner.handleNoSyncMatchSignal(ctx, &event)
 		return runner.State.ScalingStatus, nil
@@ -823,14 +613,8 @@ func TestHandleNoSyncMatchSignalAppliesStatusBeforeDeferredDispatch(
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())
 
-	require.Len(
-		t,
-		deferredRequests,
-		1,
-		"no-sync-match signal must dispatch one deferred scaling decision activity",
-	)
-	assert.Equal(
-		t,
+	require.Len(t, deferredRequests, 1, "no-sync-match signal must dispatch one deferred scaling decision activity")
+	assert.Equal(t,
 		iface.ScalingAlgorithmStatus{"phase": "process"},
 		deferredRequests[0].ScalingStatus,
 		"deferred activity must receive the post-process status; a stale 'pre-process' value here means the caller dispatched before persisting resp.UpdatedScalingStatus",
@@ -851,13 +635,9 @@ func TestPullStatsAppliesStatusBeforeHandleActions(t *testing.T) {
 		currentDeferredScalingDecisionTestAlgorithm = nil
 	})
 
-	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(
-		iface.ScalingAlgorithmConfig{},
-	)
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
-	computeConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(
-		map[string]any{},
-	)
+	computeConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{})
 	require.NoError(t, err)
 
 	activities := NewActivities(nil, nil, nil)
@@ -868,11 +648,7 @@ func TestPullStatsAppliesStatusBeforeHandleActions(t *testing.T) {
 		State: &iface.WorkerControllerInstanceLocalState{
 			Spec: &iface.WorkerControllerInstanceSpec{
 				ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
-					"workflow": newTestScalingGroupSpec(
-						enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-						scalingConfigPayload,
-						computeConfigPayload,
-					),
+					"workflow": newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, computeConfigPayload),
 				},
 			},
 			ScalingStatus: map[string]iface.ScalingAlgorithmStatus{
@@ -888,9 +664,7 @@ func TestPullStatsAppliesStatusBeforeHandleActions(t *testing.T) {
 			WorkerControllerInstanceWorkflowArgs: args,
 			a:                                    activities,
 			logger:                               sdkworkflow.GetLogger(ctx),
-			metrics: sdkworkflow.GetMetricsHandler(
-				ctx,
-			),
+			metrics:                              sdkworkflow.GetMetricsHandler(ctx),
 		}
 		runner.pullStatsAndUpdate(ctx)
 		return runner.State.ScalingStatus, nil
@@ -907,10 +681,7 @@ func TestPullStatsAppliesStatusBeforeHandleActions(t *testing.T) {
 		Return(&PullStatsActivityResponse{
 			UpdatedScalingStatus: postPollStatus,
 			Actions: []scalingalgorithm.ScalingAction{
-				{
-					ScalingGroupKey: "workflow",
-					Action:          scalingalgorithm.ActionTypeInvokeWorker,
-				},
+				{ScalingGroupKey: "workflow", Action: scalingalgorithm.ActionTypeInvokeWorker},
 			},
 			NextPollSeconds: 30,
 		}, nil)
@@ -924,8 +695,7 @@ func TestPullStatsAppliesStatusBeforeHandleActions(t *testing.T) {
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())
 
-	assert.Equal(
-		t,
+	assert.Equal(t,
 		iface.ScalingAlgorithmStatus{"phase": "post-poll"},
 		observedStatusAtDispatch["workflow"],
 		"InvokeWorker must observe the post-poll status: pullStatsAndUpdate must assign resp.UpdatedScalingStatus to d.State.ScalingStatus before invoking handleActions",
@@ -941,31 +711,21 @@ type fakeWorkflowServiceClient struct {
 	describeFn    func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error)
 }
 
-func (f *fakeWorkflowServiceClient) DescribeWorkerDeploymentVersion(
-	_ context.Context,
-	in *workflowservice.DescribeWorkerDeploymentVersionRequest,
-	_ ...grpc.CallOption,
-) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
+func (f *fakeWorkflowServiceClient) DescribeWorkerDeploymentVersion(_ context.Context, in *workflowservice.DescribeWorkerDeploymentVersionRequest, _ ...grpc.CallOption) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
 	f.describeCalls++
 	if f.describeFn == nil {
-		return nil, errors.New(
-			"fakeWorkflowServiceClient.describeFn not configured",
-		)
+		return nil, errors.New("fakeWorkflowServiceClient.describeFn not configured")
 	}
 	return f.describeFn(in)
 }
 
-func newDescribeResponseWithWorkflowBacklog(
-	count int64,
-) *workflowservice.DescribeWorkerDeploymentVersionResponse {
+func newDescribeResponseWithWorkflowBacklog(count int64) *workflowservice.DescribeWorkerDeploymentVersionResponse {
 	return &workflowservice.DescribeWorkerDeploymentVersionResponse{
 		VersionTaskQueues: []*workflowservice.DescribeWorkerDeploymentVersionResponse_VersionTaskQueue{
 			{
-				Name: "test-queue",
-				Type: enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-				Stats: &taskqueuepb.TaskQueueStats{
-					ApproximateBacklogCount: count,
-				},
+				Name:  "test-queue",
+				Type:  enumspb.TASK_QUEUE_TYPE_WORKFLOW,
+				Stats: &taskqueuepb.TaskQueueStats{ApproximateBacklogCount: count},
 			},
 		},
 	}
@@ -973,20 +733,14 @@ func newDescribeResponseWithWorkflowBacklog(
 
 // runDeferredActivityWithFakeClient is a helper that wires a fakeWorkflowServiceClient into
 // Activities and runs HandleDeferredScalingDecision once for the "workflow" scaling group.
-func runDeferredActivityWithFakeClient(
-	t *testing.T,
-	algo *deferredScalingDecisionTestAlgorithm,
-	fake *fakeWorkflowServiceClient,
-) (*HandleDeferredScalingDecisionActivityResponse, error) {
+func runDeferredActivityWithFakeClient(t *testing.T, algo *deferredScalingDecisionTestAlgorithm, fake *fakeWorkflowServiceClient) (*HandleDeferredScalingDecisionActivityResponse, error) {
 	t.Helper()
 	currentDeferredScalingDecisionTestAlgorithm = algo
 	t.Cleanup(func() {
 		currentDeferredScalingDecisionTestAlgorithm = nil
 	})
 
-	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(
-		iface.ScalingAlgorithmConfig{},
-	)
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
 
 	activities := NewActivities(nil, nil, fake)
@@ -996,26 +750,17 @@ func runDeferredActivityWithFakeClient(
 			DeploymentName:    "test-deployment",
 			DeploymentBuildID: "test-build",
 		},
-		Request:         newTestSignalTaskAddEvent(),
-		ScalingGroupKey: "workflow",
-		ScalingGroupSpec: newTestScalingGroupSpec(
-			enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-			scalingConfigPayload,
-			nil,
-		),
-		EffectiveTaskTypes: []enumspb.TaskQueueType{
-			enumspb.TASK_QUEUE_TYPE_WORKFLOW,
-		},
-		ScalingStatus: iface.ScalingAlgorithmStatus{"phase": "prior"},
+		Request:            newTestSignalTaskAddEvent(),
+		ScalingGroupKey:    "workflow",
+		ScalingGroupSpec:   newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, nil),
+		EffectiveTaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW},
+		ScalingStatus:      iface.ScalingAlgorithmStatus{"phase": "prior"},
 	}
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()
 	env.RegisterActivity(activities.HandleDeferredScalingDecision)
-	encodedResp, err := env.ExecuteActivity(
-		activities.HandleDeferredScalingDecision,
-		req,
-	)
+	encodedResp, err := env.ExecuteActivity(activities.HandleDeferredScalingDecision, req)
 	if err != nil {
 		return nil, err
 	}
@@ -1051,74 +796,31 @@ func TestHandleDeferredScalingDecisionMemoizesMetricsSnapshot(t *testing.T) {
 	_, err := runDeferredActivityWithFakeClient(t, algo, fake)
 	require.NoError(t, err)
 
-	assert.Equal(
-		t,
-		1,
-		fake.describeCalls,
-		"DescribeWorkerDeploymentVersion must be called exactly once across all getter invocations",
-	)
+	assert.Equal(t, 1, fake.describeCalls, "DescribeWorkerDeploymentVersion must be called exactly once across all getter invocations")
 	require.Len(t, calls, 3)
 	for i, c := range calls {
 		require.NoError(t, c.err, "call %d", i)
 		require.NotNil(t, c.snap, "call %d", i)
-		require.NotNil(
-			t,
-			c.snap.Workflow,
-			"call %d: workflow filter must retain workflow stats",
-			i,
-		)
-		assert.Equal(
-			t,
-			int64(42),
-			c.snap.Workflow.LastBacklogCount,
-			"call %d",
-			i,
-		)
-		assert.Nil(
-			t,
-			c.snap.Activity,
-			"call %d: activity must be filtered out for workflow-only group",
-			i,
-		)
-		assert.Nil(
-			t,
-			c.snap.Nexus,
-			"call %d: nexus must be filtered out for workflow-only group",
-			i,
-		)
+		require.NotNil(t, c.snap.Workflow, "call %d: workflow filter must retain workflow stats", i)
+		assert.Equal(t, int64(42), c.snap.Workflow.LastBacklogCount, "call %d", i)
+		assert.Nil(t, c.snap.Activity, "call %d: activity must be filtered out for workflow-only group", i)
+		assert.Nil(t, c.snap.Nexus, "call %d: nexus must be filtered out for workflow-only group", i)
 	}
 	// Isolation: each call returns an independently-owned snapshot. The describeCalls == 1
 	// assertion above already proves the cache is shared upstream; here we verify that the
 	// inner pointers are not aliased between sibling returns, so a mutation on one cannot
 	// corrupt another.
-	assert.NotSame(
-		t,
-		calls[0].snap.Workflow,
-		calls[1].snap.Workflow,
-		"filter must deep-copy inner stats so each getter call returns an independently-owned snapshot",
-	)
+	assert.NotSame(t, calls[0].snap.Workflow, calls[1].snap.Workflow, "filter must deep-copy inner stats so each getter call returns an independently-owned snapshot")
 	calls[0].snap.Workflow.LastBacklogCount = 999
-	assert.Equal(
-		t,
-		int64(42),
-		calls[1].snap.Workflow.LastBacklogCount,
-		"mutating one returned snapshot must not bleed into another",
-	)
-	assert.Equal(
-		t,
-		int64(42),
-		calls[2].snap.Workflow.LastBacklogCount,
-		"mutating one returned snapshot must not bleed into another",
-	)
+	assert.Equal(t, int64(42), calls[1].snap.Workflow.LastBacklogCount, "mutating one returned snapshot must not bleed into another")
+	assert.Equal(t, int64(42), calls[2].snap.Workflow.LastBacklogCount, "mutating one returned snapshot must not bleed into another")
 }
 
 // TestHandleDeferredScalingDecisionMemoizesMetricsSnapshotErrorSticky pins the sync.OnceValues
 // contract on the error path: a first-call failure is cached for the activity invocation, the
 // underlying RPC must not be retried within the same call, and DeferredScalingDecisionMetricsPullFailedCount
 // fires exactly once.
-func TestHandleDeferredScalingDecisionMemoizesMetricsSnapshotErrorSticky(
-	t *testing.T,
-) {
+func TestHandleDeferredScalingDecisionMemoizesMetricsSnapshotErrorSticky(t *testing.T) {
 	pullErr := errors.New("simulated describe failure")
 	fake := &fakeWorkflowServiceClient{
 		describeFn: func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
@@ -1143,22 +845,11 @@ func TestHandleDeferredScalingDecisionMemoizesMetricsSnapshotErrorSticky(
 	_, err := runDeferredActivityWithFakeClient(t, algo, fake)
 	require.NoError(t, err)
 
-	assert.Equal(
-		t,
-		1,
-		fake.describeCalls,
-		"DescribeWorkerDeploymentVersion must be called exactly once even when it fails: errors are sticky",
-	)
+	assert.Equal(t, 1, fake.describeCalls, "DescribeWorkerDeploymentVersion must be called exactly once even when it fails: errors are sticky")
 	require.Len(t, calls, 3)
 	for i, c := range calls {
 		assert.Nil(t, c.snap, "call %d", i)
 		require.Error(t, c.err, "call %d", i)
-		assert.ErrorIs(
-			t,
-			c.err,
-			pullErr,
-			"call %d: cached error must equal the original RPC error",
-			i,
-		)
+		assert.ErrorIs(t, c.err, pullErr, "call %d: cached error must equal the original RPC error", i)
 	}
 }
