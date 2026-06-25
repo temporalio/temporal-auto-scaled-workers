@@ -7,7 +7,7 @@ output:
 run:
   allow-parallel-runners: true
 severity:
-  default: error
+  default: warning
 linters:
   default: standard
   enable:
