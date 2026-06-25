@@ -9,23 +9,17 @@ permissions:
   contents: read
   actions: read
 
+concurrency: # Auto-cancel existing runs in the PR when a new commit is pushed
+  group: run-tests-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   unit-test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-intel, macos-arm, windows-latest]
-        go-version: ["oldstable", "stable"]
-        include:
-          - os: macos-intel
-            runsOn: macos-15-intel
-          - os: macos-arm
-            runsOn: macos-14
     permissions:
       contents: read
       checks: write
       statuses: write
-    runs-on: ${{ matrix.runsOn || matrix.os }}
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -35,7 +29,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version-file: "go.mod"
 
       - name: Run Unit Tests
         env:
