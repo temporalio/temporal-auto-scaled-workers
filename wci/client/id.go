@@ -9,6 +9,11 @@ import (
 const (
 	WorkerControllerInstanceDelimiter        = ":"
 	WorkerControllerInstanceWorkflowIDPrefix = "temporal-sys-worker-controller-instance"
+
+	// SignalSyncValidationStatus is the signal name sent to the version workflow
+	// when the WCI's ValidationStatus changes, so the deployment workflow can
+	// maintain an up-to-date connectivity summary in its memo.
+	SignalSyncValidationStatus = "sync-validation-status"
 )
 
 // GenerateWorkerControllerInstanceWorkflowID is a helper that generates a system accepted
