@@ -45,17 +45,25 @@ const (
 	configNoSyncMetricsPollIntervalMsKey     = "metrics_poll_interval_ms"
 	configNoSyncMetricsPollIntervalMsDefault = int64(60_000) // 60s
 
-	// configNoSyncRateLimitedSuppressQuietMsKey prevents ProcessMetricsPoll from invoking workers
-	// based on backlog growth caused by rate limiting. Without this, a backlog growing because of
-	// rate limiting would trigger more invocations, but those workers also hit the limit and add no throughput.
-	// After rate limiting is observed, backlog-driven scale-up is blocked for this many ms. 0 = disabled.
-	// Default is 2× the poll interval so at least one full poll cycle is suppressed.
+	// configNoSyncRateLimitedSuppressQuietMsKey is the duration to block backlog-driven scale-up
+	// after rate limiting is no longer actively signalled. Adding workers when the dispatch rate limit
+	// is being applied does not increase throughput; they will poll but not receive work any faster.
+	// Set to 0 to disable. Default is 2× the poll interval.
 	configNoSyncRateLimitedSuppressQuietMsKey     = "rate_limited_suppress_quiet_ms"
 	configNoSyncRateLimitedSuppressQuietMsDefault = 2 * configNoSyncMetricsPollIntervalMsDefault
 
-	// stateLastRateLimitedTimestampKey records when rate limiting was last observed.
-	// Written by ProcessTaskAdd, read by ProcessMetricsPoll to enforce the suppression window above.
+	// stateLastRateLimitedTimestampKey records when rate limiting was last confirmed active.
+	// Written by ProcessTaskAdd (on every observed signal) and refreshed by ProcessMetricsPoll
+	// (whenever the per-poll counter shows signals arrived since the last poll). Read by
+	// ProcessMetricsPoll to enforce the suppression window.
 	stateLastRateLimitedTimestampKey = "last_rate_limited_time_ms"
+
+	// stateRateLimitedCountSinceLastPollKey accumulates rate-limited event counts between
+	// consecutive ProcessMetricsPoll runs. ProcessTaskAdd increments it; ProcessMetricsPoll
+	// reads it, refreshes the suppression timestamp if non-zero (signals still arriving), then
+	// resets it to zero. This bridges the two signal paths so suppression stays active as long
+	// as rate limiting is ongoing — even when idle pollers disappear because workers are busy.
+	stateRateLimitedCountSinceLastPollKey = "rate_limited_count_since_last_poll"
 
 	stateLastScaleUpTimestampKey = "last_scale_up_time_ms"
 	// stateLastDispatchRateKeyFmt is a format string for per-queue dispatch rate state keys.
@@ -78,6 +86,7 @@ var noSyncValidConfigKeys = map[string]struct{}{
 var noSyncValidStateKeys = map[string]struct{}{
 	stateLastScaleUpTimestampKey:                         {},
 	stateLastRateLimitedTimestampKey:                     {},
+	stateRateLimitedCountSinceLastPollKey:                {},
 	fmt.Sprintf(stateLastDispatchRateKeyFmt, "workflow"): {},
 	fmt.Sprintf(stateLastDispatchRateKeyFmt, "activity"): {},
 	fmt.Sprintf(stateLastDispatchRateKeyFmt, "nexus"):    {},
@@ -183,13 +192,15 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 	rateLimitedCount := 0
 	if event.RateLimitedSignalsSinceLast > 0 {
 		// No scale-up action is taken for rate-limited events — workers are already polling,
-		// the bottleneck is the task queue dispatch rate limit. Record the count for the metric
-		// and update the timestamp so ProcessMetricsPoll suppresses backlog-driven scale-up for
-		// the configured quiet window.
+		// the bottleneck is the task queue dispatch rate limit. Record the count for the metric,
+		// stamp the timestamp, and accumulate into the per-poll counter so ProcessMetricsPoll
+		// can keep suppression active while signals keep arriving.
 		logger.Info("Task queue dispatch rate limiting observed, suppressing scale-up",
 			"rate_limited_count", event.RateLimitedSignalsSinceLast)
 		rateLimitedCount = event.RateLimitedSignalsSinceLast
 		updatedState[stateLastRateLimitedTimestampKey] = nowMs
+		prevCount := priorState.GetInt64Field(stateRateLimitedCountSinceLastPollKey, 0)
+		updatedState[stateRateLimitedCountSinceLastPollKey] = prevCount + int64(event.RateLimitedSignalsSinceLast)
 	}
 
 	return &TaskAddResponse{Actions: actions, Status: updatedState, ThrottledCount: throttledCount, RateLimitedCount: rateLimitedCount}, nil
@@ -231,13 +242,24 @@ func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config 
 	elapsedSinceScaleUp := nowMs - lastScaleUpMs
 
 	suppressQuietMs := config.GetInt64Field(configNoSyncRateLimitedSuppressQuietMsKey, configNoSyncRateLimitedSuppressQuietMsDefault)
+	rateLimitedCountSinceLastPoll := priorState.GetInt64Field(stateRateLimitedCountSinceLastPollKey, 0)
 	lastRateLimitedMs := priorState.GetInt64Field(stateLastRateLimitedTimestampKey, 0)
-	// lastRateLimitedMs > 0 ensures suppression only activates when rate limiting has actually
-	// been observed.
+
+	if rateLimitedCountSinceLastPoll > 0 {
+		// Rate-limited signals arrived since our last poll — rate limiting is still active.
+		// Refresh the suppression timestamp to now and reset the counter so the next poll
+		// starts fresh.
+		lastRateLimitedMs = nowMs
+		updatedState[stateLastRateLimitedTimestampKey] = nowMs
+		updatedState[stateRateLimitedCountSinceLastPollKey] = int64(0)
+	}
+
+	// lastRateLimitedMs > 0 ensures suppression only activates when rate limiting has been observed.
 	if suppressQuietMs > 0 && lastRateLimitedMs > 0 && nowMs-lastRateLimitedMs < suppressQuietMs {
-		logger.Info("no_sync_match: ProcessMetricsPoll scale-up suppressed due to recent rate limiting",
+		logger.Debug("no_sync_match: ProcessMetricsPoll scale-up suppressed due to recent rate limiting",
 			"elapsed_since_rate_limited_ms", nowMs-lastRateLimitedMs,
 			"suppress_quiet_ms", suppressQuietMs,
+			"rate_limited_count_since_last_poll", rateLimitedCountSinceLastPoll,
 		)
 		for _, q := range []struct {
 			qName   string

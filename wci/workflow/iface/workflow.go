@@ -155,7 +155,7 @@ type (
 
 		// SyncMatchSignalsSinceLast is the count of tasks successfully dispatched to a waiting worker in this batch.
 		// Rate-limited events (worker is available but there's no task handoff due to rate-limiting) are a
-		//distinct outcome tracked separately in RateLimitedSignalsSinceLast.
+		// distinct outcome tracked separately in RateLimitedSignalsSinceLast.
 		SyncMatchSignalsSinceLast   int `json:"sync_match_signals_batched,omitempty"`
 		NoSyncMatchSignalsSinceLast int `json:"no_sync_match_signals_batched,omitempty"`
 		RateLimitedSignalsSinceLast int `json:"rate_limited_signals_batched,omitempty"`

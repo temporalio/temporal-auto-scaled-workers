@@ -808,15 +808,70 @@ func TestNoSyncProcessMetricsPollRateLimitedSuppression(t *testing.T) {
 			configNoSyncRateLimitedSuppressQuietMsKey: int64(30_000),
 			configNoSyncScaleUpCooloffMsKey:           int64(0),
 		}
-		// First: a rate-limited signal writes the state key.
+		// First: a rate-limited signal writes the state key and counter.
 		event := iface.SignalTaskAddRequest{RateLimitedSignalsSinceLast: 2}
 		taskAddResp, err := a.ProcessTaskAdd(ctx, cfg, nil, event)
 		require.NoError(t, err)
 		assert.Contains(t, taskAddResp.Status, stateLastRateLimitedTimestampKey)
+		assert.Equal(t, int64(2), taskAddResp.Status.GetInt64Field(stateRateLimitedCountSinceLastPollKey, 0))
 
-		// Second: ProcessMetricsPoll reads that state and suppresses.
+		// Second: ProcessMetricsPoll reads counter > 0, refreshes timestamp, resets counter, suppresses.
 		pollResp, err := a.ProcessMetricsPoll(ctx, cfg, taskAddResp.Status, snapshot)
 		require.NoError(t, err)
 		assert.Len(t, pollResp.Actions, 0, "ProcessMetricsPoll must be suppressed by rate-limited state from ProcessTaskAdd")
+		assert.Equal(t, int64(0), pollResp.Status.GetInt64Field(stateRateLimitedCountSinceLastPollKey, 0),
+			"counter must be reset to zero after ProcessMetricsPoll reads it")
+	})
+
+	t.Run("suppression sustained across multiple polls while signals keep arriving", func(t *testing.T) {
+		cfg := iface.ScalingAlgorithmConfig{
+			configNoSyncRateLimitedSuppressQuietMsKey: int64(30_000),
+			configNoSyncScaleUpCooloffMsKey:           int64(0),
+		}
+
+		// Simulate: rate-limited signal → poll → rate-limited signal → poll → still suppressed.
+		event := iface.SignalTaskAddRequest{RateLimitedSignalsSinceLast: 5}
+
+		// Round 1: signal arrives, first poll suppresses and resets counter.
+		taskAddResp1, err := a.ProcessTaskAdd(ctx, cfg, nil, event)
+		require.NoError(t, err)
+		pollResp1, err := a.ProcessMetricsPoll(ctx, cfg, taskAddResp1.Status, snapshot)
+		require.NoError(t, err)
+		assert.Len(t, pollResp1.Actions, 0, "first poll must be suppressed")
+		assert.Equal(t, int64(0), pollResp1.Status.GetInt64Field(stateRateLimitedCountSinceLastPollKey, 0))
+
+		// Round 2: another signal arrives (rate limiting still active), second poll also suppressed.
+		taskAddResp2, err := a.ProcessTaskAdd(ctx, cfg, pollResp1.Status, event)
+		require.NoError(t, err)
+		assert.Equal(t, int64(5), taskAddResp2.Status.GetInt64Field(stateRateLimitedCountSinceLastPollKey, 0),
+			"counter must accumulate from zero after the first poll reset it")
+		pollResp2, err := a.ProcessMetricsPoll(ctx, cfg, taskAddResp2.Status, snapshot)
+		require.NoError(t, err)
+		assert.Len(t, pollResp2.Actions, 0, "second poll must still be suppressed while signals keep arriving")
+		assert.Equal(t, int64(0), pollResp2.Status.GetInt64Field(stateRateLimitedCountSinceLastPollKey, 0))
+	})
+
+	t.Run("suppression lifts when signals stop and TTL expires", func(t *testing.T) {
+		cfg := iface.ScalingAlgorithmConfig{
+			configNoSyncRateLimitedSuppressQuietMsKey: int64(30_000),
+			configNoSyncScaleUpCooloffMsKey:           int64(0),
+		}
+
+		// Signal arrives → poll suppresses and resets counter.
+		event := iface.SignalTaskAddRequest{RateLimitedSignalsSinceLast: 3}
+		taskAddResp, err := a.ProcessTaskAdd(ctx, cfg, nil, event)
+		require.NoError(t, err)
+		pollResp1, err := a.ProcessMetricsPoll(ctx, cfg, taskAddResp.Status, snapshot)
+		require.NoError(t, err)
+		assert.Len(t, pollResp1.Actions, 0)
+
+		// No new signals — counter stays zero. Simulate TTL expired by backdating the timestamp.
+		stateAfterSignalsStopped := pollResp1.Status
+		stateAfterSignalsStopped[stateLastRateLimitedTimestampKey] = time.Now().Add(-time.Hour).UnixMilli()
+
+		pollResp2, err := a.ProcessMetricsPoll(ctx, cfg, stateAfterSignalsStopped, snapshot)
+		require.NoError(t, err)
+		assert.Len(t, pollResp2.Actions, 1, "scale-up must fire once TTL has elapsed and no new signals arrived")
+		assert.Equal(t, ActionTypeInvokeWorker, pollResp2.Actions[0].Action)
 	})
 }
