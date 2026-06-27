@@ -53,8 +53,6 @@ jobs:
   unit-test:
     permissions:
       contents: read
-      checks: write
-      statuses: write
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
