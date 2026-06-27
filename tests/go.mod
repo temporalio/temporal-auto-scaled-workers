@@ -3,11 +3,13 @@ module go.temporal.io/auto-scaled-workers/tests
 go 1.26.4
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
 	go.temporal.io/api v1.62.15-0.20260622232249-060670b1b866
 	go.temporal.io/auto-scaled-workers v0.0.0
+	go.temporal.io/sdk v1.41.1
 	go.temporal.io/server v1.29.0-135.0.0.20260625053956-d4cab6b2b2ff
-	go.uber.org/fx v1.24.0
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -94,7 +96,6 @@ require (
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.15 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
@@ -168,9 +169,9 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
-	go.temporal.io/sdk v1.41.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/dig v1.19.0 // indirect
+	go.uber.org/fx v1.24.0 // indirect
 	go.uber.org/mock v0.6.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.1 // indirect
@@ -190,7 +191,6 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260420184626-e10c466a9529 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260420184626-e10c466a9529 // indirect
 	google.golang.org/grpc v1.80.0 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/validator.v2 v2.0.1 // indirect

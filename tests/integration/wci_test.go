@@ -2,56 +2,264 @@ package integration
 
 import (
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	computepb "go.temporal.io/api/compute/v1"
 	deploymentpb "go.temporal.io/api/deployment/v1"
-	enumspb "go.temporal.io/api/enums/v1"
-	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	workflowservice "go.temporal.io/api/workflowservice/v1"
+	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	sdkclient "go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 func TestWCIInstanceLifecycle(t *testing.T) {
-	env := NewWCITestEnv(t)
-	ctx := env.Env.Context()
+	env := createWCITestEnv(t)
+	ctx := env.Context()
 
-	nsEntry, err := env.NamespaceRegistry.GetNamespace(env.Env.Namespace())
-	require.NoError(t, err)
-
+	deploymentName := uuid.NewString()
 	version := &deploymentpb.WorkerDeploymentVersion{
-		DeploymentName: "test-deployment",
-		BuildId:        "build-1",
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
 	}
 
-	exists, err := env.Client.WorkerControllerInstanceExists(ctx, nsEntry, version)
+	// Create the parent Worker Deployment before creating a version.
+	_, err := env.SdkClient().WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      env.Namespace().String(),
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
 	require.NoError(t, err)
-	require.False(t, exists)
 
-	_, err = env.Client.UpdateWorkerControllerInstance(
-		ctx,
-		nsEntry,
-		version,
-		nil,
-		"test-identity",
-		map[string]iface.ScalingGroupSpecUpdate{
-			"workers": {
-				Spec: iface.ScalingGroupSpec{
-					TaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW},
-					Compute: iface.ComputeProviderSpec{
-						ProviderType: iface.ComputeProviderTypeTestWorkerSet,
-					},
-					Scaling: &iface.ScalingAlgorithmSpec{
-						ScalingAlgorithm: iface.ScalingAlgorithmRateBased,
-					},
+	// Version should not exist yet.
+	_, err = env.SdkClient().WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+		&workflowservice.DescribeWorkerDeploymentVersionRequest{
+			Namespace:         env.Namespace().String(),
+			DeploymentVersion: version,
+		})
+	require.Error(t, err)
+
+	// Create with a test compute config (no external service calls).
+	cc := testComputeConfig()
+
+	_, err = env.SdkClient().WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         env.Namespace().String(),
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     cc,
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// Verify the version exists with the compute config set.
+	descResp, err := env.SdkClient().WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+		&workflowservice.DescribeWorkerDeploymentVersionRequest{
+			Namespace:         env.Namespace().String(),
+			DeploymentVersion: version,
+		})
+	require.NoError(t, err)
+	require.NotNil(t, descResp.GetWorkerDeploymentVersionInfo().GetComputeConfig())
+
+	// Update the compute config.
+	updatedCC := testComputeConfig()
+	_, err = env.SdkClient().WorkflowService().UpdateWorkerDeploymentVersionComputeConfig(ctx,
+		&workflowservice.UpdateWorkerDeploymentVersionComputeConfigRequest{
+			Namespace:         env.Namespace().String(),
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			RequestId:         uuid.NewString(),
+			ComputeConfigScalingGroups: map[string]*computepb.ComputeConfigScalingGroupUpdate{
+				"default": {
+					ScalingGroup: updatedCC.ScalingGroups["default"],
+					UpdateMask:   &fieldmaskpb.FieldMask{Paths: []string{"provider.details"}},
+				},
+			},
+		})
+	require.NoError(t, err)
+
+	// Remove the compute config.
+	_, err = env.SdkClient().WorkflowService().UpdateWorkerDeploymentVersionComputeConfig(ctx,
+		&workflowservice.UpdateWorkerDeploymentVersionComputeConfigRequest{
+			Namespace:                        env.Namespace().String(),
+			DeploymentVersion:                version,
+			Identity:                         "test-identity",
+			RequestId:                        uuid.NewString(),
+			RemoveComputeConfigScalingGroups: []string{"default"},
+		})
+	require.NoError(t, err)
+
+	// Delete the version.
+	_, err = env.SdkClient().WorkflowService().DeleteWorkerDeploymentVersion(ctx,
+		&workflowservice.DeleteWorkerDeploymentVersionRequest{
+			Namespace:         env.Namespace().String(),
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+		})
+	require.NoError(t, err)
+}
+
+// scaleUpWorkflow is a trivial workflow whose only purpose is to create a
+// backlog on a versioned task queue and then complete once a worker comes up.
+func scaleUpWorkflow(_ workflow.Context) error {
+	return nil
+}
+
+func TestWCIScaleUp(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	taskQueue := "scaleup-tq-" + deploymentName
+
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        buildID,
+	}
+
+	// Observe provider invocations for this build before anything can fire one.
+	spy := &invokeSpy{buildID: buildID, events: make(chan string, 16)}
+	t.Cleanup(computeprovider.SetInvokeObserver(spy))
+	events := spy.events
+
+	// Create the parent deployment, then a version backed by the no-op
+	// test-invoke provider with the no-sync scaler.
+	_, err := env.SdkClient().WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      env.Namespace().String(),
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	_, err = env.SdkClient().WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         env.Namespace().String(),
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// WCI validates the spec then invokes workers to register task queues: first invoke.
+	waitForInvoke(t, events, 60*time.Second, "register-task-queues invoke")
+
+	// React: bring up a versioned worker so the task queue registers against this version.
+	w1 := startVersionedWorker(t, env.SdkClient(), taskQueue, deploymentName, buildID)
+	require.Eventually(t, func() bool {
+		resp, derr := env.SdkClient().WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+			&workflowservice.DescribeWorkerDeploymentVersionRequest{
+				Namespace:         env.Namespace().String(),
+				DeploymentVersion: version,
+			})
+		return derr == nil && len(resp.GetWorkerDeploymentVersionInfo().GetTaskQueueInfos()) > 0
+	}, 60*time.Second, 500*time.Millisecond, "task queue never registered against the version")
+
+	// Drop the poller so a backlog can form on the versioned task queue.
+	w1.Stop()
+	drainEvents(t, events)
+
+	// Submit a workflow pinned to this version with no poller present, creating a backlog.
+	run, err := env.SdkClient().ExecuteWorkflow(ctx,
+		sdkclient.StartWorkflowOptions{
+			TaskQueue: taskQueue,
+			ID:        "scaleup-wf-" + uuid.NewString(),
+			VersioningOverride: &sdkclient.PinnedVersioningOverride{
+				Version: worker.WorkerDeploymentVersion{DeploymentName: deploymentName, BuildID: buildID},
+			},
+		}, scaleUpWorkflow)
+	require.NoError(t, err)
+
+	// The backlog with no poller should drive WCI to invoke a worker: second invoke.
+	waitForInvoke(t, events, 60*time.Second, "scale-up invoke")
+
+	// React: bring up a worker to drain the backlog and complete the workflow.
+	w2 := startVersionedWorker(t, env.SdkClient(), taskQueue, deploymentName, buildID)
+	t.Cleanup(w2.Stop)
+
+	require.NoError(t, run.Get(ctx, nil))
+}
+
+func startVersionedWorker(t *testing.T, c sdkclient.Client, taskQueue, deploymentName, buildID string) worker.Worker {
+	t.Helper()
+	w := worker.New(c, taskQueue, worker.Options{
+		DeploymentOptions: worker.DeploymentOptions{
+			UseVersioning:             true,
+			Version:                   worker.WorkerDeploymentVersion{DeploymentName: deploymentName, BuildID: buildID},
+			DefaultVersioningBehavior: workflow.VersioningBehaviorAutoUpgrade,
+		},
+	})
+	w.RegisterWorkflow(scaleUpWorkflow)
+	require.NoError(t, w.Start())
+	return w
+}
+
+// invokeSpy observes test-invoke provider actions for a single deployment build
+// and forwards them onto a channel the test consumes.
+type invokeSpy struct {
+	buildID string
+	events  chan string
+}
+
+func (s *invokeSpy) ObserveProviderInvoke(rc computeprovider.RequestContext, action string) {
+	if rc.DeploymentBuildID != s.buildID {
+		return
+	}
+	select {
+	case s.events <- action:
+	default:
+	}
+}
+
+// waitForInvoke blocks until an "invoke" provider action arrives, logging any
+// other actions (e.g. "validate") seen along the way.
+func waitForInvoke(t *testing.T, events <-chan string, timeout time.Duration, desc string) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case action := <-events:
+			t.Logf("provider action while awaiting %s: %s", desc, action)
+			if action == "invoke" {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", desc)
+		}
+	}
+}
+
+func drainEvents(t *testing.T, events <-chan string) {
+	t.Helper()
+	for {
+		select {
+		case action := <-events:
+			t.Logf("drained provider action: %s", action)
+		default:
+			return
+		}
+	}
+}
+
+func testComputeConfig() *computepb.ComputeConfig {
+	return &computepb.ComputeConfig{
+		ScalingGroups: map[string]*computepb.ComputeConfigScalingGroup{
+			"default": {
+				Provider: &computepb.ComputeProvider{
+					Type: "test-invoke",
+				},
+				Scaler: &computepb.ComputeScaler{
+					Type: "no-sync",
 				},
 			},
 		},
-		nil,
-	)
-	require.NoError(t, err)
-
-	exists, err = env.Client.WorkerControllerInstanceExists(ctx, nsEntry, version)
-	require.NoError(t, err)
-	require.True(t, exists)
-
-	err = env.Client.DeleteWorkerControllerInstance(ctx, nsEntry, version, "test-identity")
-	require.NoError(t, err)
+	}
 }
