@@ -38,14 +38,13 @@ var Module = fx.Options(
 
 	fx.Provide(persistenceClient.ClusterNameProvider),
 	fx.Provide(persistenceClient.HealthSignalAggregatorProvider),
-	fx.Provide(persistenceClient.DataStoreFactoryProvider),
 	fx.Provide(persistenceClient.EnableDataLossMetricsProvider),
-	fx.Invoke(persistenceClient.DataStoreFactoryLifetimeHooks),
 	fx.Provide(newMetadataManager, newClusterMetadataManager),
 
 	fx.Provide(resource.ClientFactoryProvider),
 	fx.Provide(namespace.NewDefaultReplicationResolverFactory),
 	fx.Provide(resource.NamespaceRegistryProvider),
+	fx.Provide(func() namespace.NamespaceStateChangedFn { return nsregistry.DefaultNamespaceStateChanged }),
 	nsregistry.RegistryLifetimeHooksModule,
 	cluster.MetadataLifetimeHooksModule,
 
@@ -87,7 +86,7 @@ func WorkerConfigProvider(config *Config) *worker.Config {
 }
 
 func newMetadataManager(
-	dataStoreFactory persistence.DataStoreFactory,
+	store persistence.MetadataStore,
 	serializer serialization.Serializer,
 	logger log.Logger,
 	clusterName persistenceClient.ClusterName,
@@ -95,11 +94,6 @@ func newMetadataManager(
 	healthSignals persistence.HealthSignalAggregator,
 	enableDataLossMetrics persistenceClient.EnableDataLossMetrics,
 ) (persistence.MetadataManager, error) {
-	store, err := dataStoreFactory.NewMetadataStore()
-	if err != nil {
-		return nil, err
-	}
-
 	result := persistence.NewMetadataManagerImpl(store, serializer, logger, string(clusterName))
 	// if f.systemRateLimiter != nil && f.namespaceRateLimiter != nil {
 	// 	result = persistence.NewMetadataPersistenceRateLimitedClient(result, f.systemRateLimiter, f.namespaceRateLimiter, f.shardRateLimiter, f.logger)
@@ -112,7 +106,7 @@ func newMetadataManager(
 }
 
 func newClusterMetadataManager(
-	dataStoreFactory persistence.DataStoreFactory,
+	store persistence.ClusterMetadataStore,
 	serializer serialization.Serializer,
 	logger log.Logger,
 	clusterName persistenceClient.ClusterName,
@@ -120,11 +114,6 @@ func newClusterMetadataManager(
 	healthSignals persistence.HealthSignalAggregator,
 	enableDataLossMetrics persistenceClient.EnableDataLossMetrics,
 ) (persistence.ClusterMetadataManager, error) {
-	store, err := dataStoreFactory.NewClusterMetadataStore()
-	if err != nil {
-		return nil, err
-	}
-
 	result := persistence.NewClusterMetadataManagerImpl(store, serializer, string(clusterName), logger)
 	// if f.systemRateLimiter != nil && f.namespaceRateLimiter != nil {
 	// 	result = persistence.NewClusterMetadataPersistenceRateLimitedClient(result, f.systemRateLimiter, f.namespaceRateLimiter, f.shardRateLimiter, f.logger)
