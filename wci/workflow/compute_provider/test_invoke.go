@@ -76,13 +76,16 @@ type InvokeObserver interface {
 
 var (
 	invokeObserverMu sync.RWMutex
-	invokeObserver   InvokeObserver
+	// invokeObservers maps a deployment build ID to the observer watching it,
+	// so concurrent tests each observe only their own build's actions.
+	invokeObservers = map[string]InvokeObserver{}
 )
 
-// emitProviderEvent reports an action to the installed observer, if any.
+// emitProviderEvent reports an action to the observer registered for the
+// request's deployment build, if any.
 func emitProviderEvent(rc RequestContext, action string) {
 	invokeObserverMu.RLock()
-	o := invokeObserver
+	o := invokeObservers[rc.DeploymentBuildID]
 	invokeObserverMu.RUnlock()
 	if o != nil {
 		o.ObserveProviderInvoke(rc, action)

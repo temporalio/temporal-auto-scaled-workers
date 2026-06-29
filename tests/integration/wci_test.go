@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -149,8 +150,8 @@ func TestWCIScaleUp(t *testing.T) {
 	}
 
 	// Observe provider invocations for this build before anything can fire one.
-	spy := &invokeSpy{buildID: buildID, events: make(chan string, 16)}
-	t.Cleanup(computeprovider.SetInvokeObserver(spy))
+	spy := &invokeSpy{events: make(chan string, 16)}
+	t.Cleanup(computeprovider.SetInvokeObserver(buildID, spy))
 	events := spy.events
 
 	// Create the parent deployment, then a version backed by the no-op
@@ -215,7 +216,9 @@ func TestWCIScaleUp(t *testing.T) {
 	t.Cleanup(w2.Stop)
 
 	var result string
-	require.NoError(t, run.Get(ctx, &result))
+	getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	require.NoError(t, run.Get(getCtx, &result))
 	require.Equal(t, "foo", result)
 }
 
@@ -240,20 +243,17 @@ func startVersionedWorker(
 	return w
 }
 
-// invokeSpy observes test-invoke provider actions for a single deployment build
-// and forwards them onto a channel the test consumes.
+// invokeSpy forwards the test-invoke provider actions it observes onto a
+// channel the test consumes. It is registered against a single deployment
+// build (see SetInvokeObserver), so every action it receives is relevant.
 type invokeSpy struct {
-	buildID string
-	events  chan string
+	events chan string
 }
 
 func (s *invokeSpy) ObserveProviderInvoke(
-	rc computeprovider.RequestContext,
+	_ computeprovider.RequestContext,
 	action string,
 ) {
-	if rc.DeploymentBuildID != s.buildID {
-		return
-	}
 	select {
 	case s.events <- action:
 	default:
