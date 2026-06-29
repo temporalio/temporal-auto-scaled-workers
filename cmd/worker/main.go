@@ -5,8 +5,8 @@ import (
 	"os"
 	_ "time/tzdata" // embed tzdata as a fallback
 
-	"go.temporal.io/auto-scaled-workers/wci"
 	"github.com/urfave/cli/v2"
+	"go.temporal.io/auto-scaled-workers/wci"
 	"go.temporal.io/server/common/build"
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/debug"
@@ -16,6 +16,7 @@ import (
 	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/membership/ringpop"
 	"go.temporal.io/server/common/metrics"
+	"go.temporal.io/server/common/persistence"
 	persistenceClient "go.temporal.io/server/common/persistence/client"
 	_ "go.temporal.io/server/common/persistence/sql/sqlplugin/mysql"      // needed to load mysql plugin
 	_ "go.temporal.io/server/common/persistence/sql/sqlplugin/postgresql" // needed to load postgresql plugin
@@ -118,6 +119,9 @@ func buildCLI() *cli.App {
 					config.Module,
 					temporal.FxLogAdapter,
 					ringpop.MembershipModule,
+					fx.Provide(persistenceClient.DataStoreFactoryProvider),
+					fx.Invoke(persistenceClient.DataStoreFactoryLifetimeHooks),
+					fx.Provide(newMetadataStore, newClusterMetadataStore),
 					fx.Provide(
 						func() primitives.ServiceName {
 							return wci.ServiceName
@@ -168,4 +172,12 @@ func buildCLI() *cli.App {
 		},
 	}
 	return app
+}
+
+func newMetadataStore(dataStoreFactory persistence.DataStoreFactory) (persistence.MetadataStore, error) {
+	return dataStoreFactory.NewMetadataStore()
+}
+
+func newClusterMetadataStore(dataStoreFactory persistence.DataStoreFactory) (persistence.ClusterMetadataStore, error) {
+	return dataStoreFactory.NewClusterMetadataStore()
 }
