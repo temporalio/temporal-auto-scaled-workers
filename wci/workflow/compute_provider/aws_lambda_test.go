@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"go.temporal.io/auto-scaled-workers/wci/client"
 )
 
