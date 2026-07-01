@@ -64,7 +64,7 @@ func TestAWSLambdaCheckExternalID_BothSet_CallsFn(t *testing.T) {
 		configAWSLambdaRoleExternalID: "my-eid",
 	}
 
-	require.NoError(t, p.checkExternalID(context.Background(), cfg, testLambdaARN))
+	require.NoError(t, p.checkExternalID(t.Context(), cfg, testLambdaARN))
 	assert.True(t, called, "expected verifyExternalIDEnforcedFn to be called")
 	assert.Equal(t, "us-east-1", gotRegion)
 	assert.Equal(t, testRoleARN, gotRoleARN)
@@ -85,7 +85,7 @@ func TestAWSLambdaCheckExternalID_NoExternalID_SkipsFn(t *testing.T) {
 		// no role_external_id
 	}
 
-	require.NoError(t, p.checkExternalID(context.Background(), cfg, testLambdaARN))
+	require.NoError(t, p.checkExternalID(t.Context(), cfg, testLambdaARN))
 	assert.False(t, called, "verifyExternalIDEnforcedFn should not be called")
 }
 
@@ -104,7 +104,7 @@ func TestAWSLambdaCheckExternalID_NoRole_SkipsFn(t *testing.T) {
 		// no role
 	}
 
-	require.NoError(t, p.checkExternalID(context.Background(), cfg, testLambdaARN))
+	require.NoError(t, p.checkExternalID(t.Context(), cfg, testLambdaARN))
 	assert.False(t, called, "verifyExternalIDEnforcedFn should not be called")
 }
 
@@ -115,7 +115,7 @@ func TestAWSLambdaValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 		// no role
 	}
 
-	require.Error(t, p.ValidateConfig(context.Background(), RequestContext{}, cfg))
+	require.Error(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
 }
 
 func TestAWSLambdaValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
@@ -126,10 +126,12 @@ func TestAWSLambdaValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
 		// no role_external_id
 	}
 
-	require.Error(t, p.ValidateConfig(context.Background(), RequestContext{}, cfg))
+	require.Error(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
 }
 
-func TestAWSLambdaValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(t *testing.T) {
+func TestAWSLambdaValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(
+	t *testing.T,
+) {
 	// With requireRoleAndExternalID=false the mandatory check is skipped.
 	// The call will still fail when it tries to reach AWS, which is expected.
 	p := &awsLambdaComputeProvider{requireRoleAndExternalID: false}
@@ -139,9 +141,17 @@ func TestAWSLambdaValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(t *test
 	}
 
 	// We expect a non-mandatory error (e.g. AWS call failure), not the mandatory check error.
-	if err := p.ValidateConfig(context.Background(), RequestContext{}, cfg); err != nil {
-		assert.NotEqual(t, `AWS Lambda compute provider requires "role" to be configured`, err.Error())
-		assert.NotEqual(t, `AWS Lambda compute provider requires "role_external_id" to be configured`, err.Error())
+	if err := p.ValidateConfig(t.Context(), RequestContext{}, cfg); err != nil {
+		assert.NotEqual(
+			t,
+			`AWS Lambda compute provider requires "role" to be configured`,
+			err.Error(),
+		)
+		assert.NotEqual(
+			t,
+			`AWS Lambda compute provider requires "role_external_id" to be configured`,
+			err.Error(),
+		)
 	}
 }
 
@@ -158,7 +168,7 @@ func TestAWSLambdaCheckExternalID_FnError_Propagated(t *testing.T) {
 		configAWSLambdaRoleExternalID: "my-eid",
 	}
 
-	require.Error(t, p.checkExternalID(context.Background(), cfg, testLambdaARN))
+	require.Error(t, p.checkExternalID(t.Context(), cfg, testLambdaARN))
 }
 
 func TestInvokeLambda_Success(t *testing.T) {
