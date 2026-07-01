@@ -1,0 +1,106 @@
+name: Continuous Integration
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency: # Auto-cancel existing runs in the PR when a new commit is pushed
+  group: run-tests-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  check-go-mod-sync:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check go.mod consistency between root and tests/
+        run: |
+          fail=0
+
+          check() {
+            local name="$1" root="$2" tests="$3"
+            if [ "$root" != "$tests" ]; then
+              echo "MISMATCH: $name"
+              echo "  go.mod:       $root"
+              echo "  tests/go.mod: $tests"
+              fail=1
+            else
+              echo "OK: $name ($root)"
+            fi
+          }
+
+          check "go version" \
+            "$(grep '^go ' go.mod | awk '{print $2}')" \
+            "$(grep '^go ' tests/go.mod | awk '{print $2}')"
+
+          check "go.temporal.io/api" \
+            "$(grep 'go\.temporal\.io/api ' go.mod | awk '{print $2}')" \
+            "$(grep 'go\.temporal\.io/api ' tests/go.mod | awk '{print $2}')"
+
+          check "go.temporal.io/server" \
+            "$(grep 'go\.temporal\.io/server ' go.mod | awk '{print $2}')" \
+            "$(grep 'go\.temporal\.io/server ' tests/go.mod | awk '{print $2}')"
+
+          exit $fail
+
+  unit-test:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+
+      - name: Run Unit Tests
+        env:
+          UNIT_TEST_FLAGS: -v -cover
+        run: make unit-test
+
+  integration-test:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "tests/go.mod"
+
+      - name: Run Integration Tests
+        working-directory: tests
+        run: go test -tags=test_dep -timeout 300s ./integration/...
+
+  integration-test-server-main:
+    continue-on-error: true
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "tests/go.mod"
+
+      - name: Update server to main
+        working-directory: tests
+        run: |
+          go get go.temporal.io/server@main
+          go mod tidy
+
+      - name: Run Integration Tests
+        working-directory: tests
+        run: go test -tags=test_dep -timeout 300s ./integration/...
