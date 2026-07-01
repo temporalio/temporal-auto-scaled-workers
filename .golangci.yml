@@ -1,0 +1,58 @@
+version: "2"
+output:
+  sort-order:
+    - linter
+    - severity
+    - file
+run:
+  allow-parallel-runners: true
+severity:
+  default: warning
+linters:
+  default: standard
+  enable:
+    # - depguard
+    - errcheck
+    - exhaustive
+    - forbidigo
+    - gocheckcompilerdirectives
+    - godox
+    # - gomodguard
+    - govet
+    - iotamixing
+    - staticcheck
+    - testifylint
+    - usetesting
+  settings:
+    usetesting:
+      context-background: true
+      context-todo: true
+    testifylint:
+      enable-all: true
+      disable:
+        - require-error
+    exhaustive:
+      default-signifies-exhaustive: true
+    forbidigo:
+      forbid:
+        - pattern: time.Sleep
+          msg: Please use require.Eventually or assert.Eventually instead unless you've no other option
+        - pattern: log.NewTestLogger
+          msg: Please use testx.NewTestLogger(*testing.T) to keep our logs in CI clean
+    godox:
+      keywords:
+        - FIXME
+formatters:
+  enable:
+    - gci
+    - gofmt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(go.temporal.io,github.com/temporalio)
+        - prefix(github.com/temporalio/temporal-auto-scaled-workers)
+      custom-order: true
+    gofmt:
+      simplify: true
