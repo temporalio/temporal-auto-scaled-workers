@@ -19,6 +19,8 @@ RED :=   "\e[1;31m%s\e[0m\n"
 ALL_SRC         := $(shell find . -name "*.go")
 ALL_SRC         += go.mod
 UNIT_TEST_DIRS  ?= ./...
+LINT_DIRS       ?= ./...
+MAIN_BRANCH     ?= main
 
 ##### Binaries #####
 clean-bins:
@@ -41,6 +43,18 @@ unit-test: clean-test-output
 	@! grep -q "^--- FAIL" test.log
 
 test: unit-test
+
+##### Linting #####
+lint:
+	@printf $(COLOR) "Run golangci-lint..."
+	@golangci-lint run $(LINT_DIRS)
+
+# Lint only changes introduced since this branch diverged from $(MAIN_BRANCH).
+branch-lint:
+	@printf $(COLOR) "Run golangci-lint on changes since merge-base with $(MAIN_BRANCH)..."
+	@golangci-lint run --new-from-rev=$$(git merge-base HEAD $(MAIN_BRANCH)) $(LINT_DIRS)
+
+.PHONY: lint branch-lint
 
 ##### Run server #####
 start: start-sqlite-file
