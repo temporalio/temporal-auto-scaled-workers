@@ -44,17 +44,27 @@ unit-test: clean-test-output
 
 test: unit-test
 
-##### Linting #####
+##### Linting / formatting #####
 lint:
 	@printf $(COLOR) "Run golangci-lint..."
 	@golangci-lint run $(LINT_DIRS)
 
 # Lint only changes introduced since this branch diverged from $(MAIN_BRANCH).
-branch-lint:
+lint-branch:
 	@printf $(COLOR) "Run golangci-lint on changes since merge-base with $(MAIN_BRANCH)..."
 	@golangci-lint run --new-from-rev=$$(git merge-base HEAD $(MAIN_BRANCH)) $(LINT_DIRS)
 
-.PHONY: lint branch-lint
+fmt:
+	@printf $(COLOR) "Format with golangci-lint..."
+	@golangci-lint fmt $(LINT_DIRS)
+
+# Format only Go files changed since this branch diverged from $(MAIN_BRANCH).
+fmt-branch:
+	@printf $(COLOR) "Format Go files changed since merge-base with $(MAIN_BRANCH)..."
+	@files=$$(git diff --name-only --diff-filter=d $$(git merge-base HEAD $(MAIN_BRANCH)) -- '*.go'); \
+	if [ -n "$$files" ]; then golangci-lint fmt $$files; else printf $(COLOR) "No changed Go files."; fi
+
+.PHONY: lint lint-branch fmt fmt-branch
 
 ##### Run server #####
 start: start-sqlite-file
