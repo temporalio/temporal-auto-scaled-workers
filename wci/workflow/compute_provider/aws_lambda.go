@@ -24,6 +24,11 @@ type awsLambdaComputeProvider struct {
 	requireRoleAndExternalID bool
 }
 
+type lambdaAPI interface {
+	Invoke(ctx context.Context, params *lambda.InvokeInput, optFns ...func(*lambda.Options)) (*lambda.InvokeOutput, error)
+	GetFunction(ctx context.Context, params *lambda.GetFunctionInput, optFns ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error)
+}
+
 func init() {
 	RegisterComputeProvider(iface.ComputeProviderTypeAWSLambda, NewAWSLambdaComputeProvider)
 }
@@ -61,10 +66,8 @@ func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, _ Request
 		return fmt.Errorf("cannot connect to the compute provider: %w", err)
 	}
 
-	if _, err = lambdaClient.GetFunction(ctx, &lambda.GetFunctionInput{
-		FunctionName: aws.String(arn),
-	}); err != nil {
-		return fmt.Errorf("cannot access the compute resource: %w", err)
+	if err := validateLambdaAccess(ctx, lambdaClient, arn); err != nil {
+		return err
 	}
 
 	if err := p.checkExternalID(ctx, cfg, arn); err != nil {
@@ -80,6 +83,10 @@ func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, _ RequestCo
 		return err
 	}
 
+	return invokeLambda(ctx, lambdaClient, arn)
+}
+
+func invokeLambda(ctx context.Context, lambdaClient lambdaAPI, arn string) error {
 	resp, err := lambdaClient.Invoke(ctx, &lambda.InvokeInput{
 		FunctionName:   aws.String(arn),
 		InvocationType: types.InvocationTypeEvent,
@@ -92,6 +99,15 @@ func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, _ RequestCo
 		return fmt.Errorf("failed to invoke lambda: %s", *resp.FunctionError)
 	}
 
+	return nil
+}
+
+func validateLambdaAccess(ctx context.Context, lambdaClient lambdaAPI, arn string) error {
+	if _, err := lambdaClient.GetFunction(ctx, &lambda.GetFunctionInput{
+		FunctionName: aws.String(arn),
+	}); err != nil {
+		return fmt.Errorf("cannot access the compute resource: %w", err)
+	}
 	return nil
 }
 

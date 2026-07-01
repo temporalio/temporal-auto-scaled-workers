@@ -5,8 +5,32 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"go.temporal.io/auto-scaled-workers/wci/client"
 )
+
+type mockLambdaClient struct {
+	invokeFn      func(ctx context.Context, params *lambda.InvokeInput, optFns ...func(*lambda.Options)) (*lambda.InvokeOutput, error)
+	getFunctionFn func(ctx context.Context, params *lambda.GetFunctionInput, optFns ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error)
+}
+
+func (m *mockLambdaClient) Invoke(
+	ctx context.Context,
+	params *lambda.InvokeInput,
+	optFns ...func(*lambda.Options),
+) (*lambda.InvokeOutput, error) {
+	return m.invokeFn(ctx, params, optFns...)
+}
+
+func (m *mockLambdaClient) GetFunction(
+	ctx context.Context,
+	params *lambda.GetFunctionInput,
+	optFns ...func(*lambda.Options),
+) (*lambda.GetFunctionOutput, error) {
+	return m.getFunctionFn(ctx, params, optFns...)
+}
 
 const (
 	testLambdaARN = "arn:aws:lambda:us-east-1:123456789012:function:my-function"
@@ -14,7 +38,9 @@ const (
 )
 
 func newLambdaProvider() *awsLambdaComputeProvider {
-	return &awsLambdaComputeProvider{intermediaryRoles: [][]client.AWSIAMRoleRequest{}}
+	return &awsLambdaComputeProvider{
+		intermediaryRoles: [][]client.AWSIAMRoleRequest{},
+	}
 }
 
 func TestAWSLambdaCheckExternalID_BothSet_CallsFn(t *testing.T) {
@@ -36,7 +62,11 @@ func TestAWSLambdaCheckExternalID_BothSet_CallsFn(t *testing.T) {
 		configAWSLambdaRoleExternalID: "my-eid",
 	}
 
-	if err := p.checkExternalID(context.Background(), cfg, testLambdaARN); err != nil {
+	if err := p.checkExternalID(
+		context.Background(),
+		cfg,
+		testLambdaARN,
+	); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -64,7 +94,11 @@ func TestAWSLambdaCheckExternalID_NoExternalID_SkipsFn(t *testing.T) {
 		// no role_external_id
 	}
 
-	if err := p.checkExternalID(context.Background(), cfg, testLambdaARN); err != nil {
+	if err := p.checkExternalID(
+		context.Background(),
+		cfg,
+		testLambdaARN,
+	); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -83,7 +117,11 @@ func TestAWSLambdaCheckExternalID_NoRole_SkipsFn(t *testing.T) {
 		// no role
 	}
 
-	if err := p.checkExternalID(context.Background(), cfg, testLambdaARN); err != nil {
+	if err := p.checkExternalID(
+		context.Background(),
+		cfg,
+		testLambdaARN,
+	); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -95,7 +133,11 @@ func TestAWSLambdaValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 		// no role
 	}
 
-	if err := p.ValidateConfig(context.Background(), RequestContext{}, cfg); err == nil {
+	if err := p.ValidateConfig(
+		context.Background(),
+		RequestContext{},
+		cfg,
+	); err == nil {
 		t.Fatal("expected error when role is missing, got nil")
 	}
 }
@@ -108,12 +150,18 @@ func TestAWSLambdaValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
 		// no role_external_id
 	}
 
-	if err := p.ValidateConfig(context.Background(), RequestContext{}, cfg); err == nil {
+	if err := p.ValidateConfig(
+		context.Background(),
+		RequestContext{},
+		cfg,
+	); err == nil {
 		t.Fatal("expected error when external ID is missing, got nil")
 	}
 }
 
-func TestAWSLambdaValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(t *testing.T) {
+func TestAWSLambdaValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(
+	t *testing.T,
+) {
 	// With requireRoleAndExternalID=false the mandatory check is skipped.
 	// The call will still fail when it tries to reach AWS, which is expected.
 	p := &awsLambdaComputeProvider{requireRoleAndExternalID: false}
@@ -124,9 +172,13 @@ func TestAWSLambdaValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(t *test
 
 	err := p.ValidateConfig(context.Background(), RequestContext{}, cfg)
 	// We expect a non-mandatory error (e.g. AWS call failure), not the mandatory check error.
-	if err != nil && (err.Error() == `AWS Lambda compute provider requires "role" to be configured` ||
-		err.Error() == `AWS Lambda compute provider requires "role_external_id" to be configured`) {
-		t.Fatalf("mandatory check should be skipped when requireRoleAndExternalID=false, got: %v", err)
+	if err != nil &&
+		(err.Error() == `AWS Lambda compute provider requires "role" to be configured` ||
+			err.Error() == `AWS Lambda compute provider requires "role_external_id" to be configured`) {
+		t.Fatalf(
+			"mandatory check should be skipped when requireRoleAndExternalID=false, got: %v",
+			err,
+		)
 	}
 }
 
@@ -143,7 +195,106 @@ func TestAWSLambdaCheckExternalID_FnError_Propagated(t *testing.T) {
 		configAWSLambdaRoleExternalID: "my-eid",
 	}
 
-	if err := p.checkExternalID(context.Background(), cfg, testLambdaARN); err == nil {
+	if err := p.checkExternalID(
+		context.Background(),
+		cfg,
+		testLambdaARN,
+	); err == nil {
 		t.Fatal("expected error to be propagated, got nil")
+	}
+}
+
+func TestInvokeLambda_Success(t *testing.T) {
+	var gotName string
+	var gotInvocationType types.InvocationType
+	c := &mockLambdaClient{
+		invokeFn: func(_ context.Context, params *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+			gotName = aws.ToString(params.FunctionName)
+			gotInvocationType = params.InvocationType
+			return &lambda.InvokeOutput{}, nil
+		},
+	}
+
+	if err := invokeLambda(t.Context(), c, testLambdaARN); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotName != testLambdaARN {
+		t.Errorf("expected function name %q, got %q", testLambdaARN, gotName)
+	}
+	if gotInvocationType != types.InvocationTypeEvent {
+		t.Errorf(
+			"expected invocation type %q, got %q",
+			types.InvocationTypeEvent,
+			gotInvocationType,
+		)
+	}
+}
+
+func TestInvokeLambda_InvokeError_Wrapped(t *testing.T) {
+	sentinel := errors.New("boom")
+	c := &mockLambdaClient{
+		invokeFn: func(_ context.Context, _ *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+			return nil, sentinel
+		},
+	}
+
+	err := invokeLambda(t.Context(), c, testLambdaARN)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected wrapped sentinel error, got %v", err)
+	}
+}
+
+func TestInvokeLambda_FunctionError_ReturnsError(t *testing.T) {
+	c := &mockLambdaClient{
+		invokeFn: func(_ context.Context, _ *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+			return &lambda.InvokeOutput{
+				FunctionError: aws.String("Unhandled"),
+			}, nil
+		},
+	}
+
+	if err := invokeLambda(t.Context(), c, testLambdaARN); err == nil {
+		t.Fatal("expected error when FunctionError is set, got nil")
+	}
+}
+
+func TestValidateLambdaAccess_Success(t *testing.T) {
+	var gotName string
+	c := &mockLambdaClient{
+		getFunctionFn: func(_ context.Context, params *lambda.GetFunctionInput, _ ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error) {
+			gotName = aws.ToString(params.FunctionName)
+			return &lambda.GetFunctionOutput{}, nil
+		},
+	}
+
+	if err := validateLambdaAccess(
+		t.Context(),
+		c,
+		testLambdaARN,
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotName != testLambdaARN {
+		t.Errorf("expected function name %q, got %q", testLambdaARN, gotName)
+	}
+}
+
+func TestValidateLambdaAccess_GetFunctionError_Wrapped(t *testing.T) {
+	sentinel := errors.New("access denied")
+	c := &mockLambdaClient{
+		getFunctionFn: func(_ context.Context, _ *lambda.GetFunctionInput, _ ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error) {
+			return nil, sentinel
+		},
+	}
+
+	err := validateLambdaAccess(t.Context(), c, testLambdaARN)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected wrapped sentinel error, got %v", err)
 	}
 }
