@@ -7,13 +7,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	commonpb "go.temporal.io/api/common/v1"
 	computepb "go.temporal.io/api/compute/v1"
 	deploymentpb "go.temporal.io/api/deployment/v1"
+	"go.temporal.io/api/serviceerror"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	sdkclient "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"go.temporal.io/server/common/sdk"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
@@ -126,6 +130,297 @@ func TestWCIInstanceLifecycle(t *testing.T) {
 				DeploymentVersion: version,
 			})
 	require.Error(t, err)
+}
+
+func TestWCIDuplicateDeploymentVersionAlreadyExists(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
+	}
+
+	// Create the parent Worker Deployment before creating a version.
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	cc := testComputeConfig()
+
+	// First create of the version succeeds.
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     cc,
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// Second create of the same version with a different request_id must be
+	// rejected as already existing.
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     cc,
+			RequestId:         uuid.NewString(),
+		})
+	require.Error(t, err)
+	var alreadyExists *serviceerror.AlreadyExists
+	require.ErrorAs(t, err, &alreadyExists,
+		"duplicate version create should return an AlreadyExists error, got: %v", err)
+}
+
+func TestWCIDescribeVersionReturnsCorrectComputeConfig(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
+	}
+
+	// Create the parent Worker Deployment before creating a version.
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	cc := testComputeConfig()
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     cc,
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// Describe the version and assert the stored compute config matches what we sent.
+	descResp, err := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+		&workflowservice.DescribeWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+		})
+	require.NoError(t, err)
+
+	got := descResp.GetWorkerDeploymentVersionInfo().GetComputeConfig()
+	require.NotNil(t, got)
+	require.True(t, proto.Equal(cc, got),
+		"described compute config does not match the create request:\nwant: %v\ngot:  %v", cc, got)
+}
+
+func TestWCICreateVersionInvalidComputeConfig(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
+	}
+
+	// Create the parent Worker Deployment before creating a version.
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// Creating the version with the invalid compute config must be rejected.
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     invalidTestComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.Error(t, err)
+	var invalidArg *serviceerror.InvalidArgument
+	require.ErrorAs(t, err, &invalidArg,
+		"invalid compute config should return an InvalidArgument error, got: %v", err)
+
+	// The rejected create must not have left a version behind.
+	_, err = cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+		&workflowservice.DescribeWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+		})
+	require.Error(t, err)
+}
+
+func TestWCIUpdateVersionInvalidComputeConfig(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
+	}
+
+	// Create the parent Worker Deployment before creating a version.
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	cc := testComputeConfig()
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     cc,
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// Updating the version with the invalid compute config should fail in provider ValidateConfig.
+	_, err = cli.WorkflowService().UpdateWorkerDeploymentVersionComputeConfig(ctx,
+		&workflowservice.UpdateWorkerDeploymentVersionComputeConfigRequest{
+			Namespace:                  namespace,
+			DeploymentVersion:          version,
+			Identity:                   "test-identity",
+			ComputeConfigScalingGroups: invalidTestScalingGroupUpdate(),
+			RequestId:                  uuid.NewString(),
+		})
+	require.Error(t, err)
+	var invalidArg *serviceerror.InvalidArgument
+	require.ErrorAs(t, err, &invalidArg,
+		"invalid compute config should return an InvalidArgument error, got: %v", err)
+
+	// Describe the version and assert the stored compute config matches original.
+	descResp, err := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+		&workflowservice.DescribeWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+		})
+	require.NoError(t, err)
+
+	got := descResp.GetWorkerDeploymentVersionInfo().GetComputeConfig()
+	require.NotNil(t, got)
+	require.True(t, proto.Equal(cc, got),
+		"described compute config does not match the create request:\nwant: %v\ngot:  %v", cc, got)
+}
+
+func TestWCIUpdateAndRemoveVersionComputeConfig(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
+	}
+
+	// Create the parent deployment + a version with the baseline compute config
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// Update the default scaling group's scaler details with a valid no-sync
+	// config
+	updated := validUpdatedComputeConfig()
+	_, err = cli.WorkflowService().UpdateWorkerDeploymentVersionComputeConfig(ctx,
+		&workflowservice.UpdateWorkerDeploymentVersionComputeConfigRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			RequestId:         uuid.NewString(),
+			ComputeConfigScalingGroups: map[string]*computepb.ComputeConfigScalingGroupUpdate{
+				"default": {
+					ScalingGroup: updated.GetScalingGroups()["default"],
+					UpdateMask: &fieldmaskpb.FieldMask{
+						Paths: []string{"scaler.details"},
+					},
+				},
+			},
+		})
+	require.NoError(t, err)
+
+	// Describe and assert the update took effect.
+	descResp, err := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+		&workflowservice.DescribeWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+		})
+	require.NoError(t, err)
+	got := descResp.GetWorkerDeploymentVersionInfo().GetComputeConfig()
+	require.NotNil(t, got)
+	require.True(t, proto.Equal(updated, got),
+		"described compute config does not match the update:\nwant: %v\ngot:  %v", updated, got)
+
+	// Remove the compute config for the default scaling group.
+	_, err = cli.WorkflowService().UpdateWorkerDeploymentVersionComputeConfig(ctx,
+		&workflowservice.UpdateWorkerDeploymentVersionComputeConfigRequest{
+			Namespace:                        namespace,
+			DeploymentVersion:                version,
+			Identity:                         "test-identity",
+			RequestId:                        uuid.NewString(),
+			RemoveComputeConfigScalingGroups: []string{"default"},
+		})
+	require.NoError(t, err)
+
+	// Describe and assert the compute config no longer has the removed group.
+	descResp, err = cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+		&workflowservice.DescribeWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+		})
+	require.NoError(t, err)
+	require.Nil(t,
+		descResp.GetWorkerDeploymentVersionInfo().GetComputeConfig().GetScalingGroups()["default"],
+		"default scaling group should have been removed from the compute config")
 }
 
 // scaleUpWorkflow is a trivial workflow whose only purpose is to create a
@@ -307,5 +602,62 @@ func testComputeConfig() *computepb.ComputeConfig {
 				},
 			},
 		},
+	}
+}
+
+// validUpdatedComputeConfig mirrors testComputeConfig but gives the no-sync
+// scaler a valid details payload.
+func validUpdatedComputeConfig() *computepb.ComputeConfig {
+	return &computepb.ComputeConfig{
+		ScalingGroups: map[string]*computepb.ComputeConfigScalingGroup{
+			"default": {
+				Provider: &computepb.ComputeProvider{
+					Type: "test-invoke",
+				},
+				Scaler: &computepb.ComputeScaler{
+					Type:    "no-sync",
+					Details: noSyncScalerDetails(),
+				},
+			},
+		},
+	}
+}
+
+func noSyncScalerDetails() *commonpb.Payload {
+	details := map[string]string{
+		"scale_up_backlog_threshold": "5",
+		"scale_up_cooloff_ms":        "500",
+		"max_worker_lifetime_ms":     "300000",
+	}
+	payload, err := sdk.PreferProtoDataConverter.ToPayload(details)
+	if err != nil {
+		panic(err)
+	}
+	return payload
+}
+
+func invalidTestComputeConfig() *computepb.ComputeConfig {
+	return &computepb.ComputeConfig{
+		ScalingGroups: map[string]*computepb.ComputeConfigScalingGroup{
+			"default": {
+				Provider: computeprovider.TestInvokeComputeProviderInvalidComputeProvider(),
+				Scaler: &computepb.ComputeScaler{
+					Type: "no-sync",
+				},
+			},
+		},
+	}
+}
+
+func invalidTestScalingGroupUpdate() map[string]*computepb.ComputeConfigScalingGroupUpdate {
+	invalidComputeConfig := invalidTestComputeConfig()
+	invalidTestScalingGroupUpdate := &computepb.ComputeConfigScalingGroupUpdate{
+		ScalingGroup: invalidComputeConfig.GetScalingGroups()["default"],
+		UpdateMask: &fieldmaskpb.FieldMask{
+			Paths: []string{"Provider"},
+		},
+	}
+	return map[string]*computepb.ComputeConfigScalingGroupUpdate{
+		"default": invalidTestScalingGroupUpdate,
 	}
 }
