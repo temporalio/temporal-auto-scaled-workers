@@ -13,6 +13,11 @@ import (
 	"go.temporal.io/auto-scaled-workers/wci/client"
 )
 
+const (
+	testLambdaARN = "arn:aws:lambda:us-east-1:123456789012:function:my-function"
+	testRoleARN   = "arn:aws:iam::123456789012:role/MyRole"
+)
+
 type mockLambdaClient struct {
 	invokeFn      func(ctx context.Context, params *lambda.InvokeInput, optFns ...func(*lambda.Options)) (*lambda.InvokeOutput, error)
 	getFunctionFn func(ctx context.Context, params *lambda.GetFunctionInput, optFns ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error)
@@ -34,81 +39,114 @@ func (m *mockLambdaClient) GetFunction(
 	return m.getFunctionFn(ctx, params, optFns...)
 }
 
-const (
-	testLambdaARN = "arn:aws:lambda:us-east-1:123456789012:function:my-function"
-	testRoleARN   = "arn:aws:iam::123456789012:role/MyRole"
-)
-
 func newLambdaProvider() *awsLambdaComputeProvider {
 	return &awsLambdaComputeProvider{
 		intermediaryRoles: [][]client.AWSIAMRoleRequest{},
 	}
 }
 
-func TestAWSLambdaCheckExternalID_BothSet_CallsFn(t *testing.T) {
-	called := false
-	var gotRegion, gotRoleARN string
-
-	orig := verifyExternalIDEnforcedFn
-	verifyExternalIDEnforcedFn = func(_ context.Context, region, roleARN string, _ [][]client.AWSIAMRoleRequest) error {
-		called = true
-		gotRegion = region
-		gotRoleARN = roleARN
-		return nil
+// stubLambdaClient swaps the client-build seam to return c, bypassing AWS.
+func stubLambdaClient(t *testing.T, c lambdaAPI) {
+	orig := newLambdaClientFn
+	newLambdaClientFn = func(context.Context, string, string, *string, [][]client.AWSIAMRoleRequest) (lambdaAPI, error) {
+		return c, nil
 	}
-	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
-
-	p := newLambdaProvider()
-	cfg := ComputeProviderConfig{
-		configAWSLambdaRole:           testRoleARN,
-		configAWSLambdaRoleExternalID: "my-eid",
-	}
-
-	require.NoError(t, p.checkExternalID(t.Context(), cfg, testLambdaARN))
-	assert.True(t, called, "expected verifyExternalIDEnforcedFn to be called")
-	assert.Equal(t, "us-east-1", gotRegion)
-	assert.Equal(t, testRoleARN, gotRoleARN)
+	t.Cleanup(func() { newLambdaClientFn = orig })
 }
 
-func TestAWSLambdaCheckExternalID_NoExternalID_SkipsFn(t *testing.T) {
-	called := false
-	orig := verifyExternalIDEnforcedFn
-	verifyExternalIDEnforcedFn = func(_ context.Context, _, _ string, _ [][]client.AWSIAMRoleRequest) error {
-		called = true
-		return nil
+// stubLambdaClientError swaps the client-build seam to fail with err.
+func stubLambdaClientError(t *testing.T, err error) {
+	orig := newLambdaClientFn
+	newLambdaClientFn = func(context.Context, string, string, *string, [][]client.AWSIAMRoleRequest) (lambdaAPI, error) {
+		return nil, err
 	}
-	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
-
-	p := newLambdaProvider()
-	cfg := ComputeProviderConfig{
-		configAWSLambdaRole: testRoleARN,
-		// no role_external_id
-	}
-
-	require.NoError(t, p.checkExternalID(t.Context(), cfg, testLambdaARN))
-	assert.False(t, called, "verifyExternalIDEnforcedFn should not be called")
+	t.Cleanup(func() { newLambdaClientFn = orig })
 }
 
-func TestAWSLambdaCheckExternalID_NoRole_SkipsFn(t *testing.T) {
-	called := false
+func stubVerifyExternalID(t *testing.T, fn func(context.Context, string, string, [][]client.AWSIAMRoleRequest) error) {
 	orig := verifyExternalIDEnforcedFn
-	verifyExternalIDEnforcedFn = func(_ context.Context, _, _ string, _ [][]client.AWSIAMRoleRequest) error {
-		called = true
-		return nil
-	}
+	verifyExternalIDEnforcedFn = fn
 	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
-
-	p := newLambdaProvider()
-	cfg := ComputeProviderConfig{
-		configAWSLambdaRoleExternalID: "my-eid",
-		// no role
-	}
-
-	require.NoError(t, p.checkExternalID(t.Context(), cfg, testLambdaARN))
-	assert.False(t, called, "verifyExternalIDEnforcedFn should not be called")
 }
 
-func TestAWSLambdaValidateConfig_MissingRole_ReturnsError(t *testing.T) {
+func TestInvokeWorker_Success(t *testing.T) {
+	var gotName string
+	var gotInvocationType types.InvocationType
+	stubLambdaClient(t, &mockLambdaClient{
+		invokeFn: func(_ context.Context, params *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+			gotName = aws.ToString(params.FunctionName)
+			gotInvocationType = params.InvocationType
+			return &lambda.InvokeOutput{}, nil
+		},
+	})
+
+	p := newLambdaProvider()
+	cfg := ComputeProviderConfig{configAWSLambdaARN: testLambdaARN}
+
+	require.NoError(t, p.InvokeWorker(t.Context(), RequestContext{}, cfg))
+	assert.Equal(t, testLambdaARN, gotName)
+	assert.Equal(t, types.InvocationTypeEvent, gotInvocationType)
+}
+
+func TestInvokeWorker_InvokeError_Wrapped(t *testing.T) {
+	sentinel := errors.New("boom")
+	stubLambdaClient(t, &mockLambdaClient{
+		invokeFn: func(_ context.Context, _ *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+			return nil, sentinel
+		},
+	})
+
+	p := newLambdaProvider()
+	cfg := ComputeProviderConfig{configAWSLambdaARN: testLambdaARN}
+
+	err := p.InvokeWorker(t.Context(), RequestContext{}, cfg)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sentinel)
+}
+
+func TestInvokeWorker_FunctionError_ReturnsError(t *testing.T) {
+	stubLambdaClient(t, &mockLambdaClient{
+		invokeFn: func(_ context.Context, _ *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+			return &lambda.InvokeOutput{FunctionError: aws.String("Unhandled")}, nil
+		},
+	})
+
+	p := newLambdaProvider()
+	cfg := ComputeProviderConfig{configAWSLambdaARN: testLambdaARN}
+
+	require.Error(t, p.InvokeWorker(t.Context(), RequestContext{}, cfg))
+}
+
+func TestInvokeWorker_ClientBuildError_Propagated(t *testing.T) {
+	sentinel := errors.New("assume role failed")
+	stubLambdaClientError(t, sentinel)
+
+	p := newLambdaProvider()
+	cfg := ComputeProviderConfig{configAWSLambdaARN: testLambdaARN}
+
+	err := p.InvokeWorker(t.Context(), RequestContext{}, cfg)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sentinel)
+}
+
+func TestInvokeWorker_InvalidARN_ReturnsError(t *testing.T) {
+	p := newLambdaProvider()
+	cfg := ComputeProviderConfig{} // no ARN
+
+	require.Error(t, p.InvokeWorker(t.Context(), RequestContext{}, cfg))
+}
+
+func TestInvokeWorker_InvalidRoleARN_ReturnsError(t *testing.T) {
+	p := newLambdaProvider()
+	cfg := ComputeProviderConfig{
+		configAWSLambdaARN:  testLambdaARN,
+		configAWSLambdaRole: "not-an-arn",
+	}
+
+	require.Error(t, p.InvokeWorker(t.Context(), RequestContext{}, cfg))
+}
+
+func TestValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 	p := &awsLambdaComputeProvider{requireRoleAndExternalID: true}
 	cfg := ComputeProviderConfig{
 		configAWSLambdaARN: testLambdaARN,
@@ -118,7 +156,7 @@ func TestAWSLambdaValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 	require.Error(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
 }
 
-func TestAWSLambdaValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
+func TestValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
 	p := &awsLambdaComputeProvider{requireRoleAndExternalID: true}
 	cfg := ComputeProviderConfig{
 		configAWSLambdaARN:  testLambdaARN,
@@ -129,111 +167,112 @@ func TestAWSLambdaValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
 	require.Error(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
 }
 
-func TestAWSLambdaValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(
-	t *testing.T,
-) {
-	// With requireRoleAndExternalID=false the mandatory check is skipped.
-	// The call will still fail when it tries to reach AWS, which is expected.
-	p := &awsLambdaComputeProvider{requireRoleAndExternalID: false}
+func TestValidateConfig_Success_ChecksExternalID(t *testing.T) {
+	stubLambdaClient(t, &mockLambdaClient{
+		getFunctionFn: func(_ context.Context, _ *lambda.GetFunctionInput, _ ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error) {
+			return &lambda.GetFunctionOutput{}, nil
+		},
+	})
+
+	var gotRegion, gotRoleARN string
+	stubVerifyExternalID(t, func(_ context.Context, region, roleARN string, _ [][]client.AWSIAMRoleRequest) error {
+		gotRegion = region
+		gotRoleARN = roleARN
+		return nil
+	})
+
+	p := &awsLambdaComputeProvider{requireRoleAndExternalID: true}
 	cfg := ComputeProviderConfig{
-		configAWSLambdaARN: testLambdaARN,
-		// no role or external ID
-	}
-
-	// We expect a non-mandatory error (e.g. AWS call failure), not the mandatory check error.
-	if err := p.ValidateConfig(t.Context(), RequestContext{}, cfg); err != nil {
-		assert.NotEqual(
-			t,
-			`AWS Lambda compute provider requires "role" to be configured`,
-			err.Error(),
-		)
-		assert.NotEqual(
-			t,
-			`AWS Lambda compute provider requires "role_external_id" to be configured`,
-			err.Error(),
-		)
-	}
-}
-
-func TestAWSLambdaCheckExternalID_FnError_Propagated(t *testing.T) {
-	orig := verifyExternalIDEnforcedFn
-	verifyExternalIDEnforcedFn = func(_ context.Context, _, _ string, _ [][]client.AWSIAMRoleRequest) error {
-		return errors.New("external ID not enforced")
-	}
-	t.Cleanup(func() { verifyExternalIDEnforcedFn = orig })
-
-	p := newLambdaProvider()
-	cfg := ComputeProviderConfig{
+		configAWSLambdaARN:            testLambdaARN,
 		configAWSLambdaRole:           testRoleARN,
 		configAWSLambdaRoleExternalID: "my-eid",
 	}
 
-	require.Error(t, p.checkExternalID(t.Context(), cfg, testLambdaARN))
+	require.NoError(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
+	assert.Equal(t, "us-east-1", gotRegion)
+	assert.Equal(t, testRoleARN, gotRoleARN)
 }
 
-func TestInvokeLambda_Success(t *testing.T) {
-	var gotName string
-	var gotInvocationType types.InvocationType
-	c := &mockLambdaClient{
-		invokeFn: func(_ context.Context, params *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
-			gotName = aws.ToString(params.FunctionName)
-			gotInvocationType = params.InvocationType
-			return &lambda.InvokeOutput{}, nil
-		},
-	}
-
-	require.NoError(t, invokeLambda(t.Context(), c, testLambdaARN))
-	assert.Equal(t, testLambdaARN, gotName)
-	assert.Equal(t, types.InvocationTypeEvent, gotInvocationType)
-}
-
-func TestInvokeLambda_InvokeError_Wrapped(t *testing.T) {
-	sentinel := errors.New("boom")
-	c := &mockLambdaClient{
-		invokeFn: func(_ context.Context, _ *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
-			return nil, sentinel
-		},
-	}
-
-	err := invokeLambda(t.Context(), c, testLambdaARN)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, sentinel)
-}
-
-func TestInvokeLambda_FunctionError_ReturnsError(t *testing.T) {
-	c := &mockLambdaClient{
-		invokeFn: func(_ context.Context, _ *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
-			return &lambda.InvokeOutput{
-				FunctionError: aws.String("Unhandled"),
-			}, nil
-		},
-	}
-
-	require.Error(t, invokeLambda(t.Context(), c, testLambdaARN))
-}
-
-func TestValidateLambdaAccess_Success(t *testing.T) {
-	var gotName string
-	c := &mockLambdaClient{
-		getFunctionFn: func(_ context.Context, params *lambda.GetFunctionInput, _ ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error) {
-			gotName = aws.ToString(params.FunctionName)
-			return &lambda.GetFunctionOutput{}, nil
-		},
-	}
-
-	require.NoError(t, validateLambdaAccess(t.Context(), c, testLambdaARN))
-	assert.Equal(t, testLambdaARN, gotName)
-}
-
-func TestValidateLambdaAccess_GetFunctionError_Wrapped(t *testing.T) {
+func TestValidateConfig_GetFunctionError_Wrapped(t *testing.T) {
 	sentinel := errors.New("access denied")
-	c := &mockLambdaClient{
+	stubLambdaClient(t, &mockLambdaClient{
 		getFunctionFn: func(_ context.Context, _ *lambda.GetFunctionInput, _ ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error) {
 			return nil, sentinel
 		},
+	})
+
+	p := &awsLambdaComputeProvider{requireRoleAndExternalID: true}
+	cfg := ComputeProviderConfig{
+		configAWSLambdaARN:            testLambdaARN,
+		configAWSLambdaRole:           testRoleARN,
+		configAWSLambdaRoleExternalID: "my-eid",
 	}
 
-	err := validateLambdaAccess(t.Context(), c, testLambdaARN)
+	err := p.ValidateConfig(t.Context(), RequestContext{}, cfg)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sentinel)
+	assert.Contains(t, err.Error(), "cannot access the compute resource")
+}
+
+func TestValidateConfig_ClientBuildError_Wrapped(t *testing.T) {
+	sentinel := errors.New("assume role failed")
+	stubLambdaClientError(t, sentinel)
+
+	p := &awsLambdaComputeProvider{requireRoleAndExternalID: true}
+	cfg := ComputeProviderConfig{
+		configAWSLambdaARN:            testLambdaARN,
+		configAWSLambdaRole:           testRoleARN,
+		configAWSLambdaRoleExternalID: "my-eid",
+	}
+
+	err := p.ValidateConfig(t.Context(), RequestContext{}, cfg)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sentinel)
+	assert.Contains(t, err.Error(), "cannot connect to the compute provider")
+}
+
+func TestValidateConfig_ExternalIDError_Wrapped(t *testing.T) {
+	stubLambdaClient(t, &mockLambdaClient{
+		getFunctionFn: func(_ context.Context, _ *lambda.GetFunctionInput, _ ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error) {
+			return &lambda.GetFunctionOutput{}, nil
+		},
+	})
+
+	sentinel := errors.New("external ID not enforced")
+	stubVerifyExternalID(t, func(_ context.Context, _, _ string, _ [][]client.AWSIAMRoleRequest) error {
+		return sentinel
+	})
+
+	p := &awsLambdaComputeProvider{requireRoleAndExternalID: true}
+	cfg := ComputeProviderConfig{
+		configAWSLambdaARN:            testLambdaARN,
+		configAWSLambdaRole:           testRoleARN,
+		configAWSLambdaRoleExternalID: "my-eid",
+	}
+
+	err := p.ValidateConfig(t.Context(), RequestContext{}, cfg)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sentinel)
+	assert.Contains(t, err.Error(), "IAM role trust policy does not enforce ExternalID condition")
+}
+
+func TestValidateConfig_ExternalIDSkipped_WhenRoleMissing(t *testing.T) {
+	stubLambdaClient(t, &mockLambdaClient{
+		getFunctionFn: func(_ context.Context, _ *lambda.GetFunctionInput, _ ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error) {
+			return &lambda.GetFunctionOutput{}, nil
+		},
+	})
+
+	called := false
+	stubVerifyExternalID(t, func(_ context.Context, _, _ string, _ [][]client.AWSIAMRoleRequest) error {
+		called = true
+		return nil
+	})
+
+	// requireRoleAndExternalID=false so the mandatory guard is skipped and no role/eid is set.
+	p := &awsLambdaComputeProvider{requireRoleAndExternalID: false}
+	cfg := ComputeProviderConfig{configAWSLambdaARN: testLambdaARN}
+
+	require.NoError(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
+	assert.False(t, called, "verifyExternalIDEnforcedFn should not be called without role and external ID")
 }

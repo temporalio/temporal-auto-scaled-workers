@@ -66,8 +66,10 @@ func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, _ Request
 		return fmt.Errorf("cannot connect to the compute provider: %w", err)
 	}
 
-	if err := validateLambdaAccess(ctx, lambdaClient, arn); err != nil {
-		return err
+	if _, err = lambdaClient.GetFunction(ctx, &lambda.GetFunctionInput{
+		FunctionName: aws.String(arn),
+	}); err != nil {
+		return fmt.Errorf("cannot access the compute resource: %w", err)
 	}
 
 	if err := p.checkExternalID(ctx, cfg, arn); err != nil {
@@ -83,10 +85,6 @@ func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, _ RequestCo
 		return err
 	}
 
-	return invokeLambda(ctx, lambdaClient, arn)
-}
-
-func invokeLambda(ctx context.Context, lambdaClient lambdaAPI, arn string) error {
 	resp, err := lambdaClient.Invoke(ctx, &lambda.InvokeInput{
 		FunctionName:   aws.String(arn),
 		InvocationType: types.InvocationTypeEvent,
@@ -99,15 +97,6 @@ func invokeLambda(ctx context.Context, lambdaClient lambdaAPI, arn string) error
 		return fmt.Errorf("failed to invoke lambda: %s", *resp.FunctionError)
 	}
 
-	return nil
-}
-
-func validateLambdaAccess(ctx context.Context, lambdaClient lambdaAPI, arn string) error {
-	if _, err := lambdaClient.GetFunction(ctx, &lambda.GetFunctionInput{
-		FunctionName: aws.String(arn),
-	}); err != nil {
-		return fmt.Errorf("cannot access the compute resource: %w", err)
-	}
 	return nil
 }
 
@@ -128,8 +117,21 @@ func (p *awsLambdaComputeProvider) checkExternalID(ctx context.Context, cfg Comp
 	return verifyExternalIDEnforcedFn(ctx, region, roleARN, p.intermediaryRoles)
 }
 
-// getLambdaClientAndARN builds AWS config (including intermediary and config role assumption), returns a Lambda client and the function ARN.
-func (p *awsLambdaComputeProvider) getLambdaClientAndARN(ctx context.Context, cfg ComputeProviderConfig) (*lambda.Client, string, error) {
+// newLambdaClientFn builds the AWS config (including intermediary and config role
+// assumption) and constructs a Lambda client. It is a package-level variable so tests
+// can swap it for a mock without reaching AWS.
+var newLambdaClientFn = newLambdaClient
+
+func newLambdaClient(ctx context.Context, region, roleARN string, externalID *string, intermediaryRoles [][]client.AWSIAMRoleRequest) (lambdaAPI, error) {
+	awsConfig, err := buildAWSConfig(ctx, region, roleARN, externalID, intermediaryRoles)
+	if err != nil {
+		return nil, err
+	}
+	return lambda.NewFromConfig(awsConfig), nil
+}
+
+// getLambdaClientAndARN validates the config and returns a Lambda client and the function ARN.
+func (p *awsLambdaComputeProvider) getLambdaClientAndARN(ctx context.Context, cfg ComputeProviderConfig) (lambdaAPI, string, error) {
 	arn, ok := cfg[configAWSLambdaARN].(string)
 	if !ok || arn == "" {
 		return nil, "", fmt.Errorf("AWS Lambda Function ARN not found or invalid")
@@ -152,10 +154,10 @@ func (p *awsLambdaComputeProvider) getLambdaClientAndARN(ctx context.Context, cf
 		roleExternalID = &eid
 	}
 
-	awsConfig, err := buildAWSConfig(ctx, region, roleARN, roleExternalID, p.intermediaryRoles)
+	lambdaClient, err := newLambdaClientFn(ctx, region, roleARN, roleExternalID, p.intermediaryRoles)
 	if err != nil {
 		return nil, "", err
 	}
 
-	return lambda.NewFromConfig(awsConfig), arn, nil
+	return lambdaClient, arn, nil
 }
