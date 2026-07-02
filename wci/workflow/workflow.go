@@ -261,6 +261,8 @@ func (d *WorkflowRunner) validateValidateSpec(args *iface.ValidateSpecRequest) e
 	return nil
 }
 
+// handleValidateSpec is the handler for the validateSpec update request. It implements a dry-run for any submitted changes,
+// or validates the current configuration if no changes are provided.
 func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.ValidateSpecRequest) (*iface.ValidateSpecResponse, error) {
 	if err := d.preUpdateChecks(ctx); err != nil {
 		return nil, err
@@ -305,11 +307,20 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 			}).Counter(wcimetrics.Updates.Name()).Inc(1)
 
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+				if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
+					d.State.ValidationStatus = iface.NewValidationStatusFailed(workflow.Now(ctx), appErr.Message())
+					d.signalVersionWorkflow(ctx)
+				}
 				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
 			} else {
 				return nil, err
 			}
 		}
+	}
+
+	if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
+		d.State.ValidationStatus = iface.NewValidationStatusSuccess(workflow.Now(ctx))
+		d.signalVersionWorkflow(ctx)
 	}
 
 	d.metrics.WithTags(map[string]string{
