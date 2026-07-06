@@ -2,6 +2,7 @@ package iface
 
 import (
 	"slices"
+	"strings"
 
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -14,9 +15,11 @@ type (
 
 	// ComputeProviderSpec is a single provider type and its settings (used per task queue type or as default).
 	ComputeProviderSpec struct {
-		ProviderType  ComputeProviderType `json:"provider_type,omitempty"`
-		Config        *commonpb.Payload   `json:"config,omitempty"`
-		NexusEndpoint string              `json:"nexus_endpoint,omitempty"`
+		ProviderType ComputeProviderType `json:"provider_type,omitempty"`
+		Config       *commonpb.Payload   `json:"config,omitempty"`
+		// NexusEndpoint is the Nexus endpoint used to reach the compute provider. It is
+		// required for and only consulted by the nexus-* provider types; other types ignore it.
+		NexusEndpoint string `json:"nexus_endpoint,omitempty"`
 	}
 
 	ScalingAlgorithmType   string
@@ -47,26 +50,30 @@ type (
 )
 
 const (
-	ComputeProviderTypeAWSLambda     ComputeProviderType = "aws-lambda"
-	ComputeProviderTypeAWSECS        ComputeProviderType = "aws-ecs"
-	ComputeProviderTypeSubprocess    ComputeProviderType = "subprocess"
-	ComputeProviderTypeK8s           ComputeProviderType = "k8s"
-	ComputeProviderTypeGCPCloudRun   ComputeProviderType = "gcp-cloud-run"
-	ComputeProviderTypeTestInvoke    ComputeProviderType = "test-invoke"
-	ComputeProviderTypeTestWorkerSet ComputeProviderType = "test-worker-set"
+	ComputeProviderTypeAWSLambda      ComputeProviderType = "aws-lambda"
+	ComputeProviderTypeAWSECS         ComputeProviderType = "aws-ecs"
+	ComputeProviderTypeSubprocess     ComputeProviderType = "subprocess"
+	ComputeProviderTypeK8s            ComputeProviderType = "k8s"
+	ComputeProviderTypeGCPCloudRun    ComputeProviderType = "gcp-cloud-run"
+	ComputeProviderTypeNexusInvoke    ComputeProviderType = "nexus-invoke"
+	ComputeProviderTypeNexusWorkerSet ComputeProviderType = "nexus-worker-set"
+	ComputeProviderTypeTestInvoke     ComputeProviderType = "test-invoke"
+	ComputeProviderTypeTestWorkerSet  ComputeProviderType = "test-worker-set"
 
 	ScalingAlgorithmNoSync    ScalingAlgorithmType = "no-sync"
 	ScalingAlgorithmRateBased ScalingAlgorithmType = "rate-based"
 )
 
 var validComputeProviderTypes = map[string]ComputeProviderType{
-	string(ComputeProviderTypeAWSLambda):     ComputeProviderTypeAWSLambda,
-	string(ComputeProviderTypeAWSECS):        ComputeProviderTypeAWSECS,
-	string(ComputeProviderTypeSubprocess):    ComputeProviderTypeSubprocess,
-	string(ComputeProviderTypeK8s):           ComputeProviderTypeK8s,
-	string(ComputeProviderTypeGCPCloudRun):   ComputeProviderTypeGCPCloudRun,
-	string(ComputeProviderTypeTestInvoke):    ComputeProviderTypeTestInvoke,
-	string(ComputeProviderTypeTestWorkerSet): ComputeProviderTypeTestWorkerSet,
+	string(ComputeProviderTypeAWSLambda):      ComputeProviderTypeAWSLambda,
+	string(ComputeProviderTypeAWSECS):         ComputeProviderTypeAWSECS,
+	string(ComputeProviderTypeSubprocess):     ComputeProviderTypeSubprocess,
+	string(ComputeProviderTypeK8s):            ComputeProviderTypeK8s,
+	string(ComputeProviderTypeGCPCloudRun):    ComputeProviderTypeGCPCloudRun,
+	string(ComputeProviderTypeNexusInvoke):    ComputeProviderTypeNexusInvoke,
+	string(ComputeProviderTypeNexusWorkerSet): ComputeProviderTypeNexusWorkerSet,
+	string(ComputeProviderTypeTestInvoke):     ComputeProviderTypeTestInvoke,
+	string(ComputeProviderTypeTestWorkerSet):  ComputeProviderTypeTestWorkerSet,
 }
 
 var validScalingAlgorithmTypes = map[string]ScalingAlgorithmType{
@@ -80,6 +87,23 @@ func ValidComputeProviderType(s string) bool {
 		return true
 	}
 	return false
+}
+
+// IsNexusComputeProviderType reports whether t is one of the nexus-* provider types,
+// which are invoked over Nexus from workflow code rather than via the activity-based
+// native compute provider path. These types require a NexusEndpoint.
+func IsNexusComputeProviderType(t ComputeProviderType) bool {
+	return t == ComputeProviderTypeNexusInvoke || t == ComputeProviderTypeNexusWorkerSet
+}
+
+func (c ComputeProviderSpec) Validate() error {
+	if !ValidComputeProviderType(string(c.ProviderType)) {
+		return serviceerror.NewInvalidArgumentf("invalid compute provider type '%s'", c.ProviderType)
+	}
+	if IsNexusComputeProviderType(c.ProviderType) && strings.TrimSpace(c.NexusEndpoint) == "" {
+		return serviceerror.NewInvalidArgumentf("compute provider type '%s' requires a nexus_endpoint", c.ProviderType)
+	}
+	return nil
 }
 
 // ValidScalingAlgorithmType returns true  if s is a valid enum value, and false otherwise.
@@ -179,8 +203,8 @@ func (c *WorkerControllerInstanceSpec) Validate() error {
 			}
 			seen[t] = struct{}{}
 		}
-		if !ValidComputeProviderType(string(v.Compute.ProviderType)) {
-			return serviceerror.NewInvalidArgumentf("entry %s: invalid compute provider type '%s'", k, v.Compute.ProviderType)
+		if err := v.Compute.Validate(); err != nil {
+			return serviceerror.NewInvalidArgumentf("entry %s: %s", k, err.Error())
 		}
 		if v.Scaling != nil {
 			if !ValidScalingAlgorithmType(string(v.Scaling.ScalingAlgorithm)) {

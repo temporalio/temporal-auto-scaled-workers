@@ -16,6 +16,22 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "lts/*"
+
+      - name: Install code generation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Code
+        run: make generate
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:

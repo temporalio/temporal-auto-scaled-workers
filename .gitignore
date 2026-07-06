@@ -25,6 +25,15 @@ profile.cov
 go.work
 go.work.sum
 
+# Nexus RPC generated files
+/wci/workflow/compute_provider/nexus/nexus.pb.go
+/wci/workflow/compute_provider/nexus/nexus_invoke_nexusserver_gen.go
+/wci/workflow/compute_provider/nexus/nexus_invoke_nexusrpc_gen.go
+/wci/workflow/compute_provider/nexus/nexus_invoke.pb.go
+/wci/workflow/compute_provider/nexus/nexus_worker_set_nexusserver_gen.go
+/wci/workflow/compute_provider/nexus/nexus_worker_set_nexusrpc_gen.go
+/wci/workflow/compute_provider/nexus/nexus_worker_set.pb.go
+
 # env file
 .env
 
@@ -34,3 +43,4 @@ go.work.sum
 
 # Executables produced by temporal repo
 /temporal-auto-scaled-workers
+/nexus-subprocess-example

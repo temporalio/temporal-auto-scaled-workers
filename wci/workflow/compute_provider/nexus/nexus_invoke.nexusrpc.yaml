@@ -1,0 +1,20 @@
+nexusrpc: "1.0.0"
+
+services:
+  InvokeComputeProvider:
+    description: >
+      Interface for a custom invoke-type compute provider to be used with
+      Temporal server-managed compute.
+    operations:
+      validate_config:
+        description: validate_config checks the provided configuration for correctness.
+        input:
+          $goRef: "*ValidateConfigInput"
+        output:
+          $goRef: "*ValidateConfigOutput"
+      invoke_worker:
+        description: invoke_worker starts a new worker instance.
+        input:
+          $goRef: "*InvokeWorkerInput"
+        output:
+          $goRef: "*InvokeWorkerOutput"

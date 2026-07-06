@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package temporal.auto_scaled_workers.wci.workflow.compute_provider.nexus;
+
+import "nexus.proto";
+import "temporal/api/common/v1/message.proto";
+
+option go_package = "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider/nexus;nexus";
+
+message UpdateWorkerSetSizeInput {
+  RequestContext request_context = 1;
+  temporal.api.common.v1.Payload config = 2;
+  int32 size = 3;
+}
+
+message UpdateWorkerSetSizeOutput {}

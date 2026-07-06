@@ -63,6 +63,18 @@ jobs:
         with:
           go-version-file: "go.mod"
 
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "lts/*"
+
+      - name: Install code generation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Run Unit Tests
         env:
           UNIT_TEST_FLAGS: -v -cover
@@ -79,6 +91,21 @@ jobs:
         with:
           go-version-file: "tests/go.mod"
 
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "lts/*"
+
+      - name: Install code generation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Code
+        run: make generate
+
       - name: Run Integration Tests
         working-directory: tests
         run: go test -tags=test_dep -timeout 300s ./integration/...
@@ -94,6 +121,21 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: "tests/go.mod"
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "lts/*"
+
+      - name: Install code generation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Code
+        run: make generate
 
       - name: Update server to main
         working-directory: tests

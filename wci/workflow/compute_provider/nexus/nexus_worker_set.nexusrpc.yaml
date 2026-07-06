@@ -1,0 +1,20 @@
+nexusrpc: "1.0.0"
+
+services:
+  WorkerSetComputeProvider:
+    description: >
+      Interface for a custom worker-set-type compute provider to be used with
+      Temporal server-managed compute.
+    operations:
+      validate_config:
+        description: validate_config checks the provided configuration for correctness.
+        input:
+          $goRef: "*ValidateConfigInput"
+        output:
+          $goRef: "*ValidateConfigOutput"
+      update_worker_set_size:
+        description: update_worker_set_size updates the size of the managed worker set to the provided 'size'.
+        input:
+          $goRef: "*UpdateWorkerSetSizeInput"
+        output:
+          $goRef: "*UpdateWorkerSetSizeOutput"

@@ -158,24 +158,31 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	defer cancel()
 
 	for key, entry := range req.Spec.ScalingGroupSpecs {
-		provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.dc)
-		if err != nil {
-			recordError(wcimetrics.ErrorTypeComputeProviderFailed)
-			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
-		}
-		if provider == nil {
-			recordError(wcimetrics.ErrorTypeComputeProviderUnavailable)
-			return temporal.NewApplicationError(fmt.Sprintf("%s: Could not instantiate compute provider with type '%s'", key, entry.Compute.ProviderType), "InvalidArgument")
-		}
-		logger.Debug("Validating compute provider", "scaling_group_name", key, "compute_provider_type", entry.Compute.ProviderType)
-		config := map[string]any{}
-		if err := sdk.PreferProtoDataConverter.FromPayload(entry.Compute.Config, &config); err != nil {
-			recordError(wcimetrics.ErrorTypeInvalidRequest)
-			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
-		}
-		if err := provider.ValidateConfig(timeoutCtx, req.RequestContext, config); err != nil {
-			recordError(wcimetrics.ErrorTypeInvalidRequest)
-			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
+		isNexusProvider := iface.IsNexusComputeProviderType(entry.Compute.ProviderType)
+		var launchStrategy computeprovider.LaunchStrategy
+		if isNexusProvider {
+			logger.Debug("Skipping native compute provider validation for Nexus provider", "scaling_group_name", key, "compute_provider_type", entry.Compute.ProviderType)
+		} else {
+			provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.dc)
+			if err != nil {
+				recordError(wcimetrics.ErrorTypeComputeProviderFailed)
+				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
+			}
+			if provider == nil {
+				recordError(wcimetrics.ErrorTypeComputeProviderUnavailable)
+				return temporal.NewApplicationError(fmt.Sprintf("%s: Could not instantiate compute provider with type '%s'", key, entry.Compute.ProviderType), "InvalidArgument")
+			}
+			logger.Debug("Validating compute provider", "scaling_group_name", key, "compute_provider_type", entry.Compute.ProviderType)
+			config := map[string]any{}
+			if err := sdk.PreferProtoDataConverter.FromPayload(entry.Compute.Config, &config); err != nil {
+				recordError(wcimetrics.ErrorTypeInvalidRequest)
+				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
+			}
+			if err := provider.ValidateConfig(timeoutCtx, req.RequestContext, config); err != nil {
+				recordError(wcimetrics.ErrorTypeInvalidRequest)
+				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
+			}
+			launchStrategy = provider.LaunchStrategy()
 		}
 
 		if entry.Scaling != nil {
@@ -199,10 +206,12 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err), "InvalidArgument", err)
 			}
 
-			compatibleLaunchStrategies := scalingAlgo.CompatibleLaunchStrategies()
-			if !slices.Contains(compatibleLaunchStrategies, provider.LaunchStrategy()) {
-				recordError(wcimetrics.ErrorTypeInvalidRequest)
-				return temporal.NewApplicationError(fmt.Sprintf("%s: Scaling Algorithm '%s' is not compatible with compute provider '%s'", key, entry.Scaling.ScalingAlgorithm, entry.Compute.ProviderType), "InvalidArgument")
+			if !isNexusProvider {
+				compatibleLaunchStrategies := scalingAlgo.CompatibleLaunchStrategies()
+				if !slices.Contains(compatibleLaunchStrategies, launchStrategy) {
+					recordError(wcimetrics.ErrorTypeInvalidRequest)
+					return temporal.NewApplicationError(fmt.Sprintf("%s: Scaling Algorithm '%s' is not compatible with compute provider '%s'", key, entry.Scaling.ScalingAlgorithm, entry.Compute.ProviderType), "InvalidArgument")
+				}
 			}
 		}
 	}
@@ -220,6 +229,10 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	for k, v := range req.ScalingGroupSpecs {
+		if iface.IsNexusComputeProviderType(v.Compute.ProviderType) {
+			continue
+		}
+
 		provider, err := computeprovider.GetComputeProvider(ctx, v.Compute.ProviderType, a.dc)
 		if err != nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderFailed)
