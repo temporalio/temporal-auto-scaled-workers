@@ -14,8 +14,9 @@ type (
 
 	// ComputeProviderSpec is a single provider type and its settings (used per task queue type or as default).
 	ComputeProviderSpec struct {
-		ProviderType ComputeProviderType `json:"provider_type,omitempty"`
-		Config       *commonpb.Payload   `json:"config,omitempty"`
+		ProviderType  ComputeProviderType `json:"provider_type,omitempty"`
+		Config        *commonpb.Payload   `json:"config,omitempty"`
+		NexusEndpoint string              `json:"nexus_endpoint,omitempty"`
 	}
 
 	ScalingAlgorithmType   string
@@ -210,7 +211,8 @@ func (c *ScalingGroupSpec) Clone() *ScalingGroupSpec {
 	cloned := &ScalingGroupSpec{
 		TaskTypes: slices.Clone(c.TaskTypes),
 		Compute: ComputeProviderSpec{
-			ProviderType: c.Compute.ProviderType,
+			ProviderType:  c.Compute.ProviderType,
+			NexusEndpoint: c.Compute.NexusEndpoint,
 		},
 	}
 

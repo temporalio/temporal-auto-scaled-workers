@@ -28,6 +28,8 @@ func applyFieldMask(dst, src *ScalingGroupSpec, paths []string) error {
 			} else {
 				dst.Compute.Config = proto.Clone(src.Compute.Config).(*common.Payload)
 			}
+		case "provider.nexus_endpoint":
+			dst.Compute.NexusEndpoint = src.Compute.NexusEndpoint
 		case "scaler":
 			if src.Scaling == nil {
 				dst.Scaling = nil
