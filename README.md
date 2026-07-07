@@ -22,9 +22,31 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 | GCP Cloud Run | `gcp-cloud-run` | Worker set |
 | Kubernetes | `k8s` | Worker set |
 | Subprocess | `subprocess` | Invoke (dev/test only) |
+| Nexus invoke | `nexus-invoke` | Invoke (external Nexus service) |
+| Nexus worker set | `nexus-worker-set` | Worker set (external Nexus service) |
 
 **Invoke** providers are called once per scaling event to start a short-lived worker.
 **Worker-set** providers manage a persistent pool whose size is adjusted up or down.
+
+### Nexus compute providers
+
+Nexus compute providers let WCI call an implementation hosted outside the WCI worker. Unlike native providers, Nexus providers are invoked directly from workflow code through Temporal Nexus APIs, without scheduling the activity-based native provider path.
+
+For Nexus providers, `compute.nexus_endpoint` names the Temporal Nexus endpoint to call and `compute.config` is forwarded to the Nexus service as the provider config payload.
+
+Invoke-style Nexus providers use the `InvokeComputeProvider` service:
+
+| Operation | Purpose |
+|---|---|
+| `validate_config` | Validate the provider config payload |
+| `invoke_worker` | Start one worker instance |
+
+Worker-set Nexus providers use the `WorkerSetComputeProvider` service:
+
+| Operation | Purpose |
+|---|---|
+| `validate_config` | Validate the provider config payload |
+| `update_worker_set_size` | Resize the managed worker set |
 
 ## Supported Scaling Algorithms
 
@@ -90,6 +112,62 @@ A WCI spec is a map of named scaling groups:
 
 A group with no `task_types` acts as a catch-all for any task type not claimed by another group. At most one catch-all group is allowed. The `scaling` block is optional; omitting it leaves the group with the default scaling configuration for the given compute provider.
 
+### Nexus invoke spec example
+
+This example routes activity scaling events to a Nexus endpoint named `subprocess-compute`. The endpoint must be configured in Temporal to route to the task queue served by the example server below. The JSON below shows the decoded config values for readability; in the Go API, `compute.config` is a `*commonpb.Payload`.
+
+```json
+{
+  "scaling_group_specs": {
+    "activities": {
+      "task_types": ["ACTIVITY"],
+      "compute": {
+        "provider_type": "nexus-invoke",
+        "nexus_endpoint": "subprocess-compute",
+        "config": {
+          "command": "my-worker",
+          "args": "--namespace,default,--task-queue,my-task-queue"
+        }
+      },
+      "scaling": {
+        "scaling_algorithm": "no-sync",
+        "config": {
+          "scale_up_backlog_threshold": "5"
+        }
+      }
+    }
+  }
+}
+```
+
+When constructing the spec in Go, encode the provider config before assigning it. Note that `PreferProtoDataConverter` comes from `go.temporal.io/server/common/sdk`, not `go.temporal.io/sdk`:
+
+```go
+import (
+    enumspb "go.temporal.io/api/enums/v1"
+    computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+    "go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+    "go.temporal.io/server/common/sdk"
+)
+
+computeConfig, err := sdk.PreferProtoDataConverter.ToPayload(computeprovider.ComputeProviderConfig{
+    "command": "my-worker",
+    "args":    "--namespace,default,--task-queue,my-task-queue",
+})
+if err != nil {
+    return err
+}
+
+spec := iface.ScalingGroupSpec{
+    TaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_ACTIVITY},
+    Compute: iface.ComputeProviderSpec{
+        ProviderType:  iface.ComputeProviderTypeNexusInvoke,
+        NexusEndpoint: "subprocess-compute",
+        Config:        computeConfig,
+    },
+}
+```
+
 ### `no-sync` algorithm config
 
 | Key | Default | Description |
@@ -145,12 +223,45 @@ Enable per namespace via the `WorkerControllerEnabled` dynamic config setting.
 ## Building
 
 ```bash
-# Build
+# Build the worker and example binaries
 make bins
+
+# Build only the local Nexus subprocess example server
+make nexus-subprocess-example
 
 # Run tests
 make test
 ```
+
+## Nexus Subprocess Example Server
+
+`cmd/nexus-subprocess-example` is a local-development Nexus service implementation backed by the `subprocess` compute provider. It registers the generated `InvokeComputeProvider` Nexus service with a Temporal SDK worker and delegates `validate_config` and `invoke_worker` to the subprocess provider.
+
+Build and run it with:
+
+```bash
+make nexus-subprocess-example
+make start-nexus-subprocess-example
+```
+
+The run target uses these overridable variables:
+
+| Variable | Default |
+|---|---|
+| `NEXUS_EXAMPLE_ADDRESS` | `localhost:7233` |
+| `NEXUS_EXAMPLE_NAMESPACE` | `default` |
+| `NEXUS_EXAMPLE_TASK_QUEUE` | `nexus-subprocess-example` |
+
+Example:
+
+```bash
+make start-nexus-subprocess-example \
+  NEXUS_EXAMPLE_ADDRESS=localhost:7233 \
+  NEXUS_EXAMPLE_NAMESPACE=default \
+  NEXUS_EXAMPLE_TASK_QUEUE=nexus-subprocess-example
+```
+
+The example is a local-development helper and is not intended to ship to production. It requires GNU `timeout` and the configured subprocess `command` to be available on `PATH`. To call it from WCI, configure a Temporal Nexus endpoint whose name matches `compute.nexus_endpoint` and whose target task queue matches `NEXUS_EXAMPLE_TASK_QUEUE`.
 
 ## Run Together with a Local Temporal Server
 

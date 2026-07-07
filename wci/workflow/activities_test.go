@@ -18,6 +18,7 @@ import (
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
 	"go.temporal.io/sdk/testsuite"
 	sdkworkflow "go.temporal.io/sdk/workflow"
+	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/sdk"
 	"google.golang.org/grpc"
 )
@@ -43,6 +44,99 @@ func newTestScalingGroupSpec(taskType enumspb.TaskQueueType, scalingConfig, comp
 			Config:           scalingConfig,
 		},
 	}
+}
+
+func TestValidateSpecAcceptsNexusInvokeProvider(t *testing.T) {
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
+	require.NoError(t, err)
+
+	activities := NewActivities(nil, dynamicconfig.NewNoopCollection(), nil)
+	req := &ValidateSpecRequest{
+		RequestContext: RequestContext{NamespaceName: "test-namespace"},
+		Spec: &iface.WorkerControllerInstanceSpec{
+			ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
+				"nexus": {
+					TaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_NEXUS},
+					Compute: iface.ComputeProviderSpec{
+						ProviderType:  iface.ComputeProviderTypeNexusInvoke,
+						NexusEndpoint: "worker-controller-endpoint",
+						Config: &commonpb.Payload{
+							Metadata: map[string][]byte{"encoding": []byte("json/plain")},
+							Data:     []byte("not-json"),
+						},
+					},
+					Scaling: &iface.ScalingAlgorithmSpec{
+						ScalingAlgorithm: iface.ScalingAlgorithmNoSync,
+						Config:           scalingConfigPayload,
+					},
+				},
+			},
+		},
+	}
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	env.RegisterActivity(activities.ValidateSpec)
+	_, err = env.ExecuteActivity(activities.ValidateSpec, req)
+
+	require.NoError(t, err)
+}
+
+func TestValidateSpecSkipsNexusLaunchStrategyCompatibility(t *testing.T) {
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
+	require.NoError(t, err)
+
+	activities := NewActivities(nil, dynamicconfig.NewNoopCollection(), nil)
+	req := &ValidateSpecRequest{
+		RequestContext: RequestContext{NamespaceName: "test-namespace"},
+		Spec: &iface.WorkerControllerInstanceSpec{
+			ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
+				"nexus": {
+					TaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_NEXUS},
+					Compute: iface.ComputeProviderSpec{
+						ProviderType:  iface.ComputeProviderTypeNexusWorkerSet,
+						NexusEndpoint: "worker-controller-endpoint",
+					},
+					Scaling: &iface.ScalingAlgorithmSpec{
+						ScalingAlgorithm: iface.ScalingAlgorithmNoSync,
+						Config:           scalingConfigPayload,
+					},
+				},
+			},
+		},
+	}
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	env.RegisterActivity(activities.ValidateSpec)
+	_, err = env.ExecuteActivity(activities.ValidateSpec, req)
+
+	require.NoError(t, err)
+}
+
+func TestInvokeWorkersToRegisterTaskQueuesSkipsNexusProvider(t *testing.T) {
+	activities := NewActivities(nil, dynamicconfig.NewNoopCollection(), nil)
+	req := &InvokeWorkersToRegisterTaskQueuesRequest{
+		RequestContext: RequestContext{NamespaceName: "test-namespace"},
+		WorkerControllerInstanceSpec: iface.WorkerControllerInstanceSpec{
+			ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
+				"nexus": {
+					TaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_NEXUS},
+					Compute: iface.ComputeProviderSpec{
+						ProviderType:  iface.ComputeProviderTypeNexusInvoke,
+						NexusEndpoint: "worker-controller-endpoint",
+					},
+				},
+			},
+		},
+	}
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	env.RegisterActivity(activities.InvokeWorkersToRegisterTaskQueues)
+	_, err := env.ExecuteActivity(activities.InvokeWorkersToRegisterTaskQueues, req)
+
+	require.NoError(t, err)
 }
 
 const testDeferredScalingDecisionScalingAlgorithm iface.ScalingAlgorithmType = "test-deferred-scaling-decision"

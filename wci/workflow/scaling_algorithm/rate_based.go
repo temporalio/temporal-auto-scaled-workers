@@ -186,6 +186,8 @@ func init() {
 		iface.ComputeProviderTypeAWSECS,
 		iface.ComputeProviderTypeK8s,
 		iface.ComputeProviderTypeGCPCloudRun,
+		iface.ComputeProviderTypeNexusWorkerSet,
+		iface.ComputeProviderTypeTestWorkerSet,
 	)
 }
 

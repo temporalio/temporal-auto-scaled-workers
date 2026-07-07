@@ -6,8 +6,13 @@ import (
 	"errors"
 	"time"
 
+	nexussdk "github.com/nexus-rpc/sdk-go/nexus"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"go.temporal.io/api/serviceerror"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
+	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	nexuscomputeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider/nexus"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
 	sdkclient "go.temporal.io/sdk/client"
@@ -15,7 +20,6 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 	worker_versioning "go.temporal.io/server/common/worker_versioning"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -185,7 +189,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	addStatsPullTimer = func(nextPoll time.Duration) {
 		timerFuture := workflow.NewTimer(ctx, nextPoll)
 		d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
-			if err = f.Get(ctx, nil); err != nil {
+			if err := f.Get(ctx, nil); err != nil {
 				d.logger.Debug("Periodic stats timer cancelled, not re-arming", "error", err)
 
 				// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
@@ -213,7 +217,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		addPeriodicValidationTimer = func() {
 			timerFuture := workflow.NewTimer(ctx, validationInterval)
 			d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
-				if err = f.Get(ctx, nil); err != nil {
+				if err := f.Get(ctx, nil); err != nil {
 					d.logger.Debug("Periodic validation timer cancelled, not re-arming", "error", err)
 
 					// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
@@ -300,21 +304,49 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 				Spec:           updatedSpec,
 			},
 		).Get(ctx, nil); err != nil {
-			d.metrics.WithTags(map[string]string{
-				wcimetrics.UpdateTypeTagName:        wcimetrics.UpdateTypeValidateSpec,
-				wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
-				wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
-			}).Counter(wcimetrics.Updates.Name()).Inc(1)
-
+			// Only application errors indicate an actually-invalid spec.
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+				d.metrics.WithTags(map[string]string{
+					wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeValidateSpec,
+					wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeInvalidSpec),
+				}).Counter(wcimetrics.Updates.Name()).Inc(1)
+
 				if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
 					d.State.ValidationStatus = iface.NewValidationStatusFailed(workflow.Now(ctx), appErr.Message())
 					d.signalVersionWorkflow(ctx)
 				}
 				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
-			} else {
-				return nil, err
 			}
+
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.UpdateTypeTagName:        wcimetrics.UpdateTypeValidateSpec,
+				wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+				wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
+			}).Counter(wcimetrics.Updates.Name()).Inc(1)
+			return nil, err
+		}
+
+		if err := validateNexusComputeProviders(ctx, updatedSpec, d.requestContext()); err != nil {
+			// Only application errors indicate an actually-invalid spec. Other failures are
+			// transient Nexus infrastructure errors (timeouts, unreachable endpoint) and must
+			// not be counted as invalid-spec or surfaced as an InvalidArgument.
+			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+				d.metrics.WithTags(map[string]string{
+					wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeValidateSpec,
+					wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeInvalidSpec),
+				}).Counter(wcimetrics.Updates.Name()).Inc(1)
+
+				if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
+					d.State.ValidationStatus = iface.NewValidationStatusFailed(workflow.Now(ctx), appErr.Message())
+					d.signalVersionWorkflow(ctx)
+				}
+				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
+			}
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeValidateSpec,
+				wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeComputeProviderFailed),
+			}).Counter(wcimetrics.Updates.Name()).Inc(1)
+			return nil, err
 		}
 	}
 
@@ -405,15 +437,39 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 				Spec:           updatedSpec,
 			},
 		).Get(ctx, nil); err != nil {
+
+			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+				d.metrics.WithTags(map[string]string{
+					wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeUpdateInstance,
+					wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeInvalidSpec),
+				}).Counter(wcimetrics.Updates.Name()).Inc(1)
+				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
+			}
+
 			d.metrics.WithTags(map[string]string{
 				wcimetrics.UpdateTypeTagName:        wcimetrics.UpdateTypeUpdateInstance,
 				wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
 				wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
 			}).Counter(wcimetrics.Updates.Name()).Inc(1)
+			return nil, err
+		}
 
+		if err := validateNexusComputeProviders(ctx, updatedSpec, d.requestContext()); err != nil {
+			// Only application errors indicate an actually-invalid spec. Other failures are
+			// transient Nexus infrastructure errors (timeouts, unreachable endpoint) and must
+			// not be counted as invalid-spec or surfaced as an InvalidArgument.
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+				d.metrics.WithTags(map[string]string{
+					wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeUpdateInstance,
+					wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeInvalidSpec),
+				}).Counter(wcimetrics.Updates.Name()).Inc(1)
+
 				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
 			}
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeUpdateInstance,
+				wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeComputeProviderFailed),
+			}).Counter(wcimetrics.Updates.Name()).Inc(1)
 			return nil, err
 		}
 
@@ -441,6 +497,21 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			return nil, err
 		}
 
+		if err := d.invokeNexusWorkersToRegisterTaskQueues(ctx, updatedSpec); err != nil {
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.UpdateTypeTagName: wcimetrics.UpdateTypeUpdateInstance,
+				wcimetrics.ErrorTypeTagName:  string(wcimetrics.ErrorTypeComputeProviderFailed),
+			}).Counter(wcimetrics.Updates.Name()).Inc(1)
+
+			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+				if appErr.Type() == "InvalidArgument" {
+					return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
+				}
+				return nil, serviceerror.NewFailedPreconditionf("%s", appErr.Message())
+			}
+			return nil, err
+		}
+
 		d.State.ValidationStatus = iface.NewValidationStatusSuccess(validationTime)
 		d.signalVersionWorkflow(ctx)
 		d.State.ConflictToken = args.ConflictToken
@@ -452,6 +523,34 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 	}).Counter(wcimetrics.Updates.Name()).Inc(1)
 
 	return &iface.UpdateWorkerControllerInstanceResponse{Spec: d.State.Spec}, nil
+}
+
+func (d *WorkflowRunner) invokeNexusWorkersToRegisterTaskQueues(ctx workflow.Context, spec *iface.WorkerControllerInstanceSpec) error {
+	if spec == nil {
+		return nil
+	}
+
+	for _, key := range workflow.DeterministicKeys(spec.ScalingGroupSpecs) {
+		entry := spec.ScalingGroupSpecs[key]
+		provider, err := nexuscomputeprovider.GetNexusComputeProvider(ctx, entry.Compute.ProviderType, entry.Compute.NexusEndpoint)
+		if err != nil {
+			return temporal.NewApplicationErrorWithCause(key+": "+err.Error(), "InvalidArgument", err)
+		}
+		if provider == nil || provider.LaunchStrategy() != computeprovider.LaunchStrategyInvoke {
+			continue
+		}
+
+		if err := provider.InvokeWorker(ctx, d.requestContext(), entry.Compute.Config); err != nil {
+			// A non-retryable handler rejection is an invalid spec, not a transient failure;
+			// surface it as InvalidArgument so the caller reports it as such.
+			if msg, ok := nexusHandlerRejection(err); ok {
+				return temporal.NewApplicationErrorWithCause(key+": "+msg, "InvalidArgument", err)
+			}
+			return temporal.NewApplicationErrorWithCause(key+": "+err.Error(), "InvokeWorkerFailed", err)
+		}
+	}
+
+	return nil
 }
 
 func (d *WorkflowRunner) validateDeleteInstance(args *iface.DeleteWorkerControllerInstanceRequest) error {
@@ -549,20 +648,44 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 			Spec:           d.State.Spec,
 		},
 	).Get(ctx, nil); err != nil {
-		d.metrics.WithTags(map[string]string{
-			wcimetrics.OperationTagName:         wcimetrics.OperationTypeValidateSpec,
-			wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
-			wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
-		}).Counter(wcimetrics.Operations.Name()).Inc(1)
-
 		if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.OperationTagName: wcimetrics.OperationTypeValidateSpec,
+				wcimetrics.ErrorTypeTagName: string(wcimetrics.ErrorTypeInvalidSpec),
+			}).Counter(wcimetrics.Operations.Name()).Inc(1)
+
 			d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
 			d.signalVersionWorkflow(ctx)
 			d.logger.Warn("Periodic spec validation failed with spec error", "error", err)
 		} else {
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.OperationTagName:         wcimetrics.OperationTypeValidateSpec,
+				wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+				wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
+			}).Counter(wcimetrics.Operations.Name()).Inc(1)
+
 			// Transient infrastructure errors (timeouts, server errors, cancellation) are not
 			// spec failures — leave ValidationStatus at its last known value.
 			d.logger.Warn("Periodic spec validation failed with transient error, leaving validation state unchanged", "error", err)
+		}
+	} else if err := validateNexusComputeProviders(ctx, d.State.Spec, d.requestContext()); err != nil {
+		if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.OperationTagName: wcimetrics.OperationTypeValidateSpec,
+				wcimetrics.ErrorTypeTagName: string(wcimetrics.ErrorTypeInvalidSpec),
+			}).Counter(wcimetrics.Operations.Name()).Inc(1)
+			d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
+			d.signalVersionWorkflow(ctx)
+			d.logger.Warn("Periodic Nexus spec validation failed with spec error", "error", err)
+		} else {
+			d.metrics.WithTags(map[string]string{
+				wcimetrics.OperationTagName: wcimetrics.OperationTypeValidateSpec,
+				wcimetrics.ErrorTypeTagName: string(wcimetrics.ErrorTypeComputeProviderFailed),
+			}).Counter(wcimetrics.Operations.Name()).Inc(1)
+
+			// Transient infrastructure errors (timeouts, server errors, cancellation) are not
+			// spec failures — leave ValidationStatus at its last known value.
+			d.logger.Warn("Periodic Nexus spec validation failed with transient error, leaving validation state unchanged", "error", err)
 		}
 	} else {
 		d.metrics.WithTags(map[string]string{
@@ -709,27 +832,38 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			d.metrics.Counter(wcimetrics.ScaleUpCount.Name()).Inc(1)
 
 			now := workflow.Now(ctx)
-			if err := workflow.ExecuteActivity(
-				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: InvokeWorkerActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
-				d.a.InvokeWorker,
-				InvokeWorkerActivityRequest{
-					RequestContext: d.requestContext(),
-					ComputeConfig:  &spec.Compute,
-				},
-			).Get(ctx, nil); err != nil {
-				d.logger.Warn("Failed to execute new worker instance activity", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "error", err)
+			nexusProvider, err := nexuscomputeprovider.GetNexusComputeProvider(ctx, spec.Compute.ProviderType, spec.Compute.NexusEndpoint)
+			if err != nil {
+				// GetNexusComputeProvider only fails for deterministic spec errors — an
+				// unregistered nexus-* provider type or an empty endpoint (already rejected by
+				// spec.Validate()). These are permanent, not transient, so unlike a failed Nexus
+				// operation (see handleScaleActionError) we unconditionally flip ValidationStatus.
+				d.logger.Warn("Failed to instantiate Nexus compute provider", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "compute_provider_type", spec.Compute.ProviderType, "error", err)
+				d.State.ValidationStatus = iface.NewValidationStatusFailed(now, err.Error())
+				d.signalVersionWorkflow(ctx)
 
-				// only application errors can indicate validation errors, so filtering for them first
-				if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
-					// TODO: filter out further transient errors to avoid the validation state oscillating
-					d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
-					d.signalVersionWorkflow(ctx)
-				}
 				d.metrics.WithTags(map[string]string{
-					wcimetrics.OperationTagName:         wcimetrics.OperationTypeInvokeWorker,
-					wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
-					wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
+					wcimetrics.OperationTagName: wcimetrics.OperationTypeInvokeWorker,
+					wcimetrics.ErrorTypeTagName: string(wcimetrics.ErrorTypeComputeProviderFailed),
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
+				continue
+			}
+
+			if nexusProvider == nil {
+				err = workflow.ExecuteActivity(
+					workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: InvokeWorkerActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
+					d.a.InvokeWorker,
+					InvokeWorkerActivityRequest{
+						RequestContext: d.requestContext(),
+						ComputeConfig:  &spec.Compute,
+					},
+				).Get(ctx, nil)
+			} else {
+				err = nexusProvider.InvokeWorker(ctx, d.requestContext(), spec.Compute.Config)
+			}
+
+			if err != nil {
+				d.handleScaleActionError(ctx, wcimetrics.OperationTypeInvokeWorker, spec.Compute.ProviderType, nexusProvider != nil, now, err)
 			} else {
 				d.metrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeInvokeWorker,
@@ -752,29 +886,39 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			}
 
 			now := workflow.Now(ctx)
-			if err := workflow.ExecuteActivity(
-				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: UpdateWorkerSetSizeActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
-				d.a.UpdateWorkerSetSize,
-				UpdateWorkerSetSizeActivityRequest{
-					RequestContext: d.requestContext(),
-					ComputeConfig:  &spec.Compute,
-					UpdatedSize:    count,
-				},
-			).Get(ctx, nil); err != nil {
-				d.logger.Warn("Failed to execute update worker-set size activity", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "error", err)
-
-				// only application errors can indicate validation errors, so filtering for them first
-				if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
-					// TODO: filter out transient errors to avoid the validation state oscillating
-					d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
-					d.signalVersionWorkflow(ctx)
-				}
+			nexusProvider, err := nexuscomputeprovider.GetNexusComputeProvider(ctx, spec.Compute.ProviderType, spec.Compute.NexusEndpoint)
+			if err != nil {
+				// GetNexusComputeProvider only fails for deterministic spec errors — an
+				// unregistered nexus-* provider type or an empty endpoint (already rejected by
+				// spec.Validate()). These are permanent, not transient, so unlike a failed Nexus
+				// operation (see handleScaleActionError) we unconditionally flip ValidationStatus.
+				d.logger.Warn("Failed to instantiate Nexus compute provider", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "compute_provider_type", spec.Compute.ProviderType, "error", err)
+				d.State.ValidationStatus = iface.NewValidationStatusFailed(now, err.Error())
+				d.signalVersionWorkflow(ctx)
 
 				d.metrics.WithTags(map[string]string{
-					wcimetrics.OperationTagName:         wcimetrics.OperationTypeUpdateWorkerSetSize,
-					wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
-					wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
+					wcimetrics.OperationTagName: wcimetrics.OperationTypeUpdateWorkerSetSize,
+					wcimetrics.ErrorTypeTagName: string(wcimetrics.ErrorTypeComputeProviderFailed),
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
+				continue
+			}
+
+			if nexusProvider == nil {
+				err = workflow.ExecuteActivity(
+					workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: UpdateWorkerSetSizeActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
+					d.a.UpdateWorkerSetSize,
+					UpdateWorkerSetSizeActivityRequest{
+						RequestContext: d.requestContext(),
+						ComputeConfig:  &spec.Compute,
+						UpdatedSize:    count,
+					},
+				).Get(ctx, nil)
+			} else {
+				err = nexusProvider.UpdateWorkerSetSize(ctx, d.requestContext(), spec.Compute.Config, count)
+			}
+
+			if err != nil {
+				d.handleScaleActionError(ctx, wcimetrics.OperationTypeUpdateWorkerSetSize, spec.Compute.ProviderType, nexusProvider != nil, now, err)
 			} else {
 				d.metrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeUpdateWorkerSetSize,
@@ -898,6 +1042,85 @@ func (d *WorkflowRunner) signalVersionWorkflow(ctx workflow.Context) {
 		if !errors.As(err, &notFound) {
 			d.logger.Warn("failed to signal version workflow with validation status", "error", err, "version_wf_id", versionWfID)
 		}
+	}
+}
+
+// nexusHandlerRejection reports whether err's chain contains a non-retryable Nexus
+// *nexus.HandlerError. A failed Nexus operation surfaces as a *temporal.NexusOperationError
+// whose cause is a *nexus.HandlerError when the remote handler rejected the request. A
+// non-retryable handler error (e.g. BAD_REQUEST) is a permanent, client-side rejection — an
+// invalid spec — rather than a transient infrastructure failure such as a timeout. Because
+// it is not a *temporal.ApplicationError, callers that classify only on ApplicationError
+// would otherwise mistake it for a transient failure and leave ValidationStatus unchanged.
+// It returns the handler error message and true when matched, or "" and false otherwise.
+func nexusHandlerRejection(err error) (string, bool) {
+	var handlerErr *nexussdk.HandlerError
+	if errors.As(err, &handlerErr) && !handlerErr.Retryable() {
+		return handlerErr.Error(), true
+	}
+	return "", false
+}
+
+// handleScaleActionError records metrics and logs for a failed scale action (InvokeWorker
+// or UpdateWorkerSetSize) dispatched via either the activity or the Nexus path, and marks
+// the spec's ValidationStatus failed when appropriate. Classification:
+//   - errors.ErrUnsupported: the action was dispatched to a provider whose launch strategy
+//     does not support it. CompatibleLaunchStrategies validation should make this
+//     impossible, so it indicates an internal invariant violation, not a spec or infra
+//     failure. Logged at Error level; ValidationStatus is left unchanged.
+//   - *temporal.ApplicationError, or a non-retryable Nexus handler rejection (e.g. a
+//     BAD_REQUEST *nexus.HandlerError): indicates an actually-invalid spec. Flips
+//     ValidationStatus to failed. TODO: filter out further transient errors so the
+//     validation state does not oscillate.
+//   - any other error on the Nexus path: a transient failure (e.g. an operation timeout).
+func (d *WorkflowRunner) handleScaleActionError(ctx workflow.Context, operation string, providerType iface.ComputeProviderType, isNexus bool, now time.Time, err error) {
+	logArgs := []any{
+		"namespace", d.NamespaceName,
+		"deployment_name", d.DeploymentName,
+		"compute_provider_type", providerType,
+		"operation", operation,
+		"error", err,
+	}
+
+	switch {
+	case errors.Is(err, errors.ErrUnsupported):
+		d.logger.Error("Compute provider does not support scaling action", logArgs...)
+	default:
+		if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+			d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
+			d.signalVersionWorkflow(ctx)
+			d.logger.Warn("Failed to run scaling action", logArgs...)
+		} else if msg, ok := nexusHandlerRejection(err); ok {
+			d.State.ValidationStatus = iface.NewValidationStatusFailed(now, msg)
+			d.signalVersionWorkflow(ctx)
+			d.logger.Warn("Failed to run scaling action", logArgs...)
+		} else if isNexus {
+			d.logger.Error("Failed to run Nexus scaling action", logArgs...)
+		} else {
+			d.logger.Warn("Failed to run scaling action", logArgs...)
+		}
+	}
+
+	d.metrics.WithTags(invokeErrorTags(operation, isNexus, err)).Counter(wcimetrics.Operations.Name()).Inc(1)
+}
+
+// invokeErrorTags builds the metric tags for a failed scaling operation. Native
+// providers fail via an activity, so their errors are classified as activity
+// errors. Nexus providers are invoked inline as workflow commands, not
+// activities; a transient Nexus failure (e.g. an operation timeout) does not mark
+// the spec invalid and would otherwise be swallowed here, so it is tagged
+// distinctly as a compute-provider failure to keep it observable.
+func invokeErrorTags(operation string, isNexus bool, err error) map[string]string {
+	if isNexus {
+		return map[string]string{
+			wcimetrics.OperationTagName: operation,
+			wcimetrics.ErrorTypeTagName: string(wcimetrics.ErrorTypeComputeProviderFailed),
+		}
+	}
+	return map[string]string{
+		wcimetrics.OperationTagName:         operation,
+		wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
+		wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
 	}
 }
 
