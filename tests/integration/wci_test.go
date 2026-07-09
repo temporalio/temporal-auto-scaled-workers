@@ -563,7 +563,7 @@ func TestWCIVersionInactiveAfterInvoke(t *testing.T) {
 	require.NoError(t, err)
 
 	// Before any worker has registered a task queue against the version, its
-	// status should be created.
+	// status should have status CREATED.
 	descResp, err := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
 		&workflowservice.DescribeWorkerDeploymentVersionRequest{
 			Namespace:         namespace,
@@ -572,7 +572,7 @@ func TestWCIVersionInactiveAfterInvoke(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, enumspb.WORKER_DEPLOYMENT_VERSION_STATUS_CREATED,
 		descResp.GetWorkerDeploymentVersionInfo().GetStatus(),
-		"version should be CREATED before any task queue is registered")
+		"version should have status CREATED before any task queue is registered")
 
 	// WCI validates the spec then invokes workers to register task queues.
 	waitForInvoke(t, events, 60*time.Second, "register-task-queues invoke")
@@ -617,10 +617,9 @@ func TestWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
 		})
 	require.NoError(t, err)
 
-
 	buildID1 := uuid.NewString()
 	buildID2 := uuid.NewString()
-	taskQueue := "inactive-tq" + deploymentName
+	taskQueue := "pinned-wflws-tq-" + deploymentName
 
 	version1 := &deploymentpb.WorkerDeploymentVersion{
 		DeploymentName: deploymentName,
@@ -691,8 +690,7 @@ func TestWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
 	drainEvents(t, events2)
 	w2.Stop()
 
-
-	// Submit a workflow pinned to both versions with no pollers present, creating a backlog.
+	// Submit a workflow pinned to version 1 and assert only version 1 receives events
 	wflow1, err := cli.ExecuteWorkflow(ctx,
 		sdkclient.StartWorkflowOptions{
 			TaskQueue: taskQueue,
@@ -706,6 +704,21 @@ func TestWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
 		}, scaleUpWorkflow)
 	require.NoError(t, err)
 
+	waitForInvoke(t, events1, 60*time.Second, "wflow1 scale-up version1 invoke")
+	w1 = startVersionedWorker(t, cli, taskQueue, deploymentName, buildID1)
+	t.Cleanup(w1.Stop)
+
+	var result string
+	getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	require.NoError(t, wflow1.Get(getCtx, &result))
+	require.Equal(t, "foo", result)
+
+	// Ensure no more events in version 1 channel and also that no events were sent to version 2
+	requireNoEvents(t, events1)
+	requireNoEvents(t, events2)
+
+	// Run wflow 2 against version 2, ensuring invoke and no events to channel 1
 	wflow2, err := cli.ExecuteWorkflow(ctx,
 		sdkclient.StartWorkflowOptions{
 			TaskQueue: taskQueue,
@@ -719,20 +732,7 @@ func TestWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
 		}, scaleUpWorkflow)
 	require.NoError(t, err)
 
-	w1 = startVersionedWorker(t, cli, taskQueue, deploymentName, buildID1)
-	t.Cleanup(w1.Stop)
-
-	var result string
-	getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	require.NoError(t, wflow1.Get(getCtx, &result))
-	require.Equal(t, "foo", result)
-
-	waitForInvoke(t, events1, 60*time.Second, "wflow1 scale-up v2 invoke")
-	requireNoEvents(t, events2)
-	drainEvents(t, events1)
-
-	// Run wflow 2
+	waitForInvoke(t, events2, 60*time.Second, "wflow2 scale-up version2 invoke")
 	w2 = startVersionedWorker(t, cli, taskQueue, deploymentName, buildID2)
 	t.Cleanup(w2.Stop)
 
@@ -740,8 +740,10 @@ func TestWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
 	defer cancel()
 	require.NoError(t, wflow2.Get(getCtx, &result))
 	require.Equal(t, "foo", result)
-	waitForInvoke(t, events2, 60*time.Second, "wflow1 scale-up v2 invoke")
+
+	// Ensure no more events in version 2 channel and also that no events were sent to version 2
 	requireNoEvents(t, events1)
+	requireNoEvents(t, events2)
 }
 
 func startVersionedWorker(
@@ -807,12 +809,12 @@ func waitForInvoke(
 
 func requireNoEvents(t *testing.T, events <-chan string) {
 	t.Helper()
-    select {
-    case action := <-events:
+	select {
+	case action := <-events:
 		t.Fatalf("expected no provider actions, but observed: %q", action)
-    default:
+	default:
 		// empty, as expected
-    }
+	}
 }
 
 func drainEvents(t *testing.T, events <-chan string) {
