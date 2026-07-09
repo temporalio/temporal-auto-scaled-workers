@@ -24,6 +24,21 @@ const (
 	configGCPCloudRunServiceAccount = "service_account"
 )
 
+// scalingManualInstanceCountMask restricts a WorkerPool update to just the manual
+// instance count. The path MUST be the proto field path (snake_case), not the
+// camelCase JSON name: Cloud Run silently ignores an unknown mask path and instead
+// applies the sparse WorkerPool wholesale, which resets the pool's runtime
+// serviceAccount to the project default compute SA and fails the deployer's actAs
+// check on it. Building via fieldmaskpb.New verifies the path against the proto, so
+// a bad path panics at package load rather than misbehaving silently at runtime.
+var scalingManualInstanceCountMask = func() *fieldmaskpb.FieldMask {
+	m, err := fieldmaskpb.New(&runpb.WorkerPool{}, "scaling.manual_instance_count")
+	if err != nil {
+		panic(fmt.Sprintf("invalid WorkerPool scaling field mask: %v", err))
+	}
+	return m
+}()
+
 type gcpCloudRunComputeProvider struct {
 	intermediaryServiceAccounts [][]client.GCPIAMServiceAccountRequest
 }
@@ -76,7 +91,7 @@ func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, rc
 			Name:    name,
 			Scaling: &runpb.WorkerPoolScaling{ManualInstanceCount: &count},
 		},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"scaling.manualInstanceCount"}},
+		UpdateMask: scalingManualInstanceCountMask,
 	}); err != nil {
 		return fmt.Errorf("failed to update worker pool %q: %w", name, err)
 	}
