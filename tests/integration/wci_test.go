@@ -12,6 +12,7 @@ import (
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	sdkclient "go.temporal.io/sdk/client"
@@ -744,6 +745,388 @@ func TestWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
 	// Ensure no more events in version 2 channel and also that no events were sent to version 2
 	requireNoEvents(t, events1)
 	requireNoEvents(t, events2)
+}
+
+// Asserts thats you cannot delete a WDV if it is the current version.
+func TestWCICannotDeleteCurrentVersion(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	taskQueue := "delete-protect-tq-" + deploymentName
+
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+	version, _ := createAndRegisterVersion(t, ctx, cli, namespace, deploymentName, buildID, taskQueue)
+
+	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
+		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
+			Namespace:               namespace,
+			DeploymentName:          deploymentName,
+			BuildId:                 buildID,
+			IgnoreMissingTaskQueues: false,
+			Identity:                "test-identity",
+		})
+	require.NoError(t, err)
+
+	_, err = cli.WorkflowService().DeleteWorkerDeploymentVersion(ctx,
+		&workflowservice.DeleteWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+		})
+	requireDeleteProtected(t, err, "current")
+}
+
+// Asserts thats you cannot delete a WDV if it is currently ramping.
+func TestWCICannotDeleteRampingVersion(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	taskQueue := "delete-protect-tq-" + deploymentName
+
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+	version, _ := createAndRegisterVersion(t, ctx, cli, namespace, deploymentName, buildID, taskQueue)
+
+	// Mark the version as the ramping version (partial rollout target).
+	_, err = cli.WorkflowService().SetWorkerDeploymentRampingVersion(ctx,
+		&workflowservice.SetWorkerDeploymentRampingVersionRequest{
+			Namespace:               namespace,
+			DeploymentName:          deploymentName,
+			BuildId:                 buildID,
+			Percentage:              50,
+			IgnoreMissingTaskQueues: true,
+			Identity:                "test-identity",
+		})
+	require.NoError(t, err)
+
+	_, err = cli.WorkflowService().DeleteWorkerDeploymentVersion(ctx,
+		&workflowservice.DeleteWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+		})
+	requireDeleteProtected(t, err, "ramping")
+}
+
+// Asserts thats you cannot delete a WDV if it is currently has status DRAINING.
+func TestWCICannotDeleteDrainingVersion(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID1 := uuid.NewString()
+	buildID2 := uuid.NewString()
+	taskQueue := "delete-protect-tq-" + deploymentName
+
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// Create version 1 without poller (poller would prevent delete regardless of DRAINING)
+	version1 := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        buildID1,
+	}
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version1,
+			Identity:          taskQueue,
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
+		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
+			Namespace:               namespace,
+			DeploymentName:          deploymentName,
+			BuildId:                 buildID1,
+			IgnoreMissingTaskQueues: false,
+			Identity:                taskQueue,
+		})
+	require.NoError(t, err)
+
+	// Create v2 and set current, which starts draining v1.
+	version2 := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        buildID2,
+	}
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version2,
+			Identity:          taskQueue,
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
+		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
+			Namespace:               namespace,
+			DeploymentName:          deploymentName,
+			BuildId:                 buildID2,
+			IgnoreMissingTaskQueues: true,
+			Identity:                taskQueue,
+		})
+	require.NoError(t, err)
+
+	// Wait for v1 to enter the DRAINING state.
+	require.Eventually(t, func() bool {
+		resp, derr := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+			&workflowservice.DescribeWorkerDeploymentVersionRequest{
+				Namespace:         namespace,
+				DeploymentVersion: version1,
+			})
+		return derr == nil &&
+			resp.GetWorkerDeploymentVersionInfo().GetDrainageInfo().GetStatus() == enumspb.VERSION_DRAINAGE_STATUS_DRAINING
+	}, 60*time.Second, 500*time.Millisecond, "version1 never entered DRAINING")
+
+	_, err = cli.WorkflowService().DeleteWorkerDeploymentVersion(ctx,
+		&workflowservice.DeleteWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version1,
+			Identity:          "test-identity",
+			SkipDrainage:      false,
+		})
+	requireDeleteProtected(t, err, "draining")
+}
+
+// Having active pollers prevents a draining version from deleting, even with the override field
+func TestWCICannotDeleteDrainingVersionWithOverrideDueToActivePollers(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID1 := uuid.NewString()
+	buildID2 := uuid.NewString()
+	taskQueue := "delete-protect-tq-" + deploymentName
+
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// Create V1 with a worker so that poller is present
+	version1, _ := createAndRegisterVersion(t, ctx, cli, namespace, deploymentName, buildID1, taskQueue)
+	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
+		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
+			Namespace:               namespace,
+			DeploymentName:          deploymentName,
+			BuildId:                 buildID1,
+			IgnoreMissingTaskQueues: false,
+			Identity:                "test-identity",
+		})
+	require.NoError(t, err)
+
+	// Create v2 and set current, which starts draining v1.
+	version2 := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        buildID2,
+	}
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version2,
+			Identity:          "test-identity",
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
+		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
+			Namespace:               namespace,
+			DeploymentName:          deploymentName,
+			BuildId:                 buildID2,
+			IgnoreMissingTaskQueues: true,
+			Identity:                "test-identity",
+		})
+	require.NoError(t, err)
+
+	// Wait for v1 to enter the DRAINING state.
+	require.Eventually(t, func() bool {
+		resp, derr := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+			&workflowservice.DescribeWorkerDeploymentVersionRequest{
+				Namespace:         namespace,
+				DeploymentVersion: version1,
+			})
+		return derr == nil &&
+			resp.GetWorkerDeploymentVersionInfo().GetDrainageInfo().GetStatus() == enumspb.VERSION_DRAINAGE_STATUS_DRAINING
+	}, 60*time.Second, 500*time.Millisecond, "version1 never entered DRAINING")
+
+	_, err = cli.WorkflowService().DeleteWorkerDeploymentVersion(ctx,
+		&workflowservice.DeleteWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version1,
+			Identity:          "test-identity",
+			SkipDrainage:      true,
+		})
+	requireDeleteProtected(t, err, "active poller")
+}
+
+// You can override the DRAINING state check for delete if there are no active pollers
+func TestWCICanDeleteDrainingVersionWithOverride(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID1 := uuid.NewString()
+	buildID2 := uuid.NewString()
+	taskQueue := "delete-protect-tq-" + deploymentName
+
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	// Create version 1 without poller
+	version1 := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        buildID1,
+	}
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version1,
+			Identity:          taskQueue,
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
+		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
+			Namespace:               namespace,
+			DeploymentName:          deploymentName,
+			BuildId:                 buildID1,
+			IgnoreMissingTaskQueues: false,
+			Identity:                taskQueue,
+		})
+	require.NoError(t, err)
+
+	// Create v2 and set current, which starts draining v1.
+	version2 := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        buildID2,
+	}
+	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version2,
+			Identity:          taskQueue,
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
+		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
+			Namespace:               namespace,
+			DeploymentName:          deploymentName,
+			BuildId:                 buildID2,
+			IgnoreMissingTaskQueues: true,
+			Identity:                taskQueue,
+		})
+	require.NoError(t, err)
+
+	// Wait for v1 to enter the DRAINING state.
+	require.Eventually(t, func() bool {
+		resp, derr := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+			&workflowservice.DescribeWorkerDeploymentVersionRequest{
+				Namespace:         namespace,
+				DeploymentVersion: version1,
+			})
+		return derr == nil &&
+			resp.GetWorkerDeploymentVersionInfo().GetDrainageInfo().GetStatus() == enumspb.VERSION_DRAINAGE_STATUS_DRAINING
+	}, 60*time.Second, 500*time.Millisecond, "version1 never entered DRAINING")
+
+	_, err = cli.WorkflowService().DeleteWorkerDeploymentVersion(ctx,
+		&workflowservice.DeleteWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version1,
+			Identity:          "test-identity",
+			SkipDrainage:      true,
+		})
+	require.NoError(t, err)
+}
+
+// Assert deletion protection and error includes wantReason.
+func requireDeleteProtected(t *testing.T, err error, wantReason string) {
+	t.Helper()
+	require.Error(t, err)
+	var failedPrecondition *serviceerror.FailedPrecondition
+	require.ErrorAs(t, err, &failedPrecondition,
+		"protected delete should return FailedPrecondition, got: %v", err)
+	require.ErrorContains(t, err, wantReason)
+}
+
+// Create a new WDV and spin up a worker.
+func createAndRegisterVersion(t *testing.T, ctx context.Context, cli sdkclient.Client, namespace, deploymentName, buildID, taskQueue string) (*deploymentpb.WorkerDeploymentVersion, worker.Worker) {
+	t.Helper()
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        buildID,
+	}
+	_, err := cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     testComputeConfig(),
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	w := startVersionedWorker(t, cli, taskQueue, deploymentName, buildID)
+	t.Cleanup(w.Stop)
+	require.Eventually(t, func() bool {
+		resp, derr := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+			&workflowservice.DescribeWorkerDeploymentVersionRequest{
+				Namespace:         namespace,
+				DeploymentVersion: version,
+			})
+		return derr == nil &&
+			len(resp.GetWorkerDeploymentVersionInfo().GetTaskQueueInfos()) > 0
+	}, 60*time.Second, 500*time.Millisecond, "task queue never registered against version "+buildID)
+
+	return version, w
 }
 
 func startVersionedWorker(
