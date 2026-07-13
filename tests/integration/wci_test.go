@@ -1087,6 +1087,114 @@ func TestWCICanDeleteDrainingVersionWithOverride(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestWCIDescribeVersionReportsTaskQueueStats(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	taskQueue := "stats-tq-" + deploymentName
+
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        buildID,
+	}
+
+	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
+		&workflowservice.CreateWorkerDeploymentRequest{
+			Namespace:      namespace,
+			DeploymentName: deploymentName,
+			Identity:       "test-identity",
+			RequestId:      uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+
+	// Bring up a worker so the task queue registers against (is polled by) the version.
+	_, w1 := createAndRegisterVersion(t, ctx, cli, namespace, deploymentName, buildID, taskQueue)
+	require.Eventually(t, func() bool {
+		resp, derr := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+			&workflowservice.DescribeWorkerDeploymentVersionRequest{
+				Namespace:         namespace,
+				DeploymentVersion: version,
+			})
+		return derr == nil &&
+			len(resp.GetWorkerDeploymentVersionInfo().GetTaskQueueInfos()) > 0
+	}, 60*time.Second, 500*time.Millisecond, "task queue never registered against the version")
+
+	// Baseline: without the flag, task queues are listed but carry no stats.
+	baseline, err := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+		&workflowservice.DescribeWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+		})
+	require.NoError(t, err)
+	require.NotEmpty(t, baseline.GetVersionTaskQueues(),
+		"version should list the task queues it has polled")
+	for _, vtq := range baseline.GetVersionTaskQueues() {
+		require.Nil(t, vtq.GetStats(),
+			"stats must not be reported for %s/%s when report_task_queue_stats is false",
+			vtq.GetName(), vtq.GetType())
+	}
+
+	// Stop the worker and submit workflows with no poller present to build a backlog.
+	w1.Stop()
+	for i := 0; i < 3; i++ {
+		_, err := cli.ExecuteWorkflow(ctx,
+			sdkclient.StartWorkflowOptions{
+				TaskQueue: taskQueue,
+				ID:        "stats-wf-" + uuid.NewString(),
+				VersioningOverride: &sdkclient.PinnedVersioningOverride{
+					Version: worker.WorkerDeploymentVersion{
+						DeploymentName: deploymentName,
+						BuildID:        buildID,
+					},
+				},
+			}, scaleUpWorkflow)
+		require.NoError(t, err)
+	}
+
+	// With `ReportTaskQueueStats: true`, the workflow task queue reports a backlog and rate
+	require.Eventually(t, func() bool {
+		stats := describeWorkflowTaskQueueStats(ctx, cli, namespace, version, taskQueue)
+		return stats != nil &&
+			stats.GetApproximateBacklogCount() > 0 &&
+			stats.GetTasksAddRate() > 0
+	}, 30*time.Second, 500*time.Millisecond, "expected backlog count and add rate to be reported")
+
+	// Drain the backlog with a fresh worker; dispatching tasks yields a non-zero dispatch rate.
+	w2 := startVersionedWorker(t, cli, taskQueue, deploymentName, buildID)
+	t.Cleanup(w2.Stop)
+
+	require.Eventually(t, func() bool {
+		stats := describeWorkflowTaskQueueStats(ctx, cli, namespace, version, taskQueue)
+		return stats != nil && stats.GetTasksDispatchRate() > 0
+	}, 30*time.Second, 500*time.Millisecond, "expected dispatch rate to be reported after draining")
+}
+
+// describeWorkflowTaskQueueStats describes the version with stats reporting on
+// and returns the reported stats for the workflow task queue named taskQueue,
+// or nil if the queue isn't listed / carries no stats.
+func describeWorkflowTaskQueueStats(ctx context.Context, cli sdkclient.Client, namespace string, version *deploymentpb.WorkerDeploymentVersion, taskQueue string) *taskqueuepb.TaskQueueStats {
+	resp, err := cli.WorkflowService().DescribeWorkerDeploymentVersion(ctx,
+		&workflowservice.DescribeWorkerDeploymentVersionRequest{
+			Namespace:            namespace,
+			DeploymentVersion:    version,
+			ReportTaskQueueStats: true,
+		})
+	if err != nil {
+		return nil
+	}
+	for _, vtq := range resp.GetVersionTaskQueues() {
+		if vtq.GetName() == taskQueue && vtq.GetType() == enumspb.TASK_QUEUE_TYPE_WORKFLOW {
+			return vtq.GetStats()
+		}
+	}
+	return nil
+}
+
 // Assert deletion protection and error includes wantReason.
 func requireDeleteProtected(t *testing.T, err error, wantReason string) {
 	t.Helper()
