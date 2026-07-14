@@ -9,13 +9,14 @@ import (
 
 	run "cloud.google.com/go/run/apiv2"
 	runpb "cloud.google.com/go/run/apiv2/runpb"
-	"go.temporal.io/auto-scaled-workers/wci/client"
-	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
-	"go.temporal.io/server/common/dynamicconfig"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"go.temporal.io/auto-scaled-workers/wci/client"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/server/common/dynamicconfig"
 )
 
 const (
