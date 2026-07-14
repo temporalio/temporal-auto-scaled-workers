@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
+	"golang.org/x/oauth2"
 	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -26,6 +27,13 @@ const (
 
 type gcpCloudRunComputeProvider struct {
 	intermediaryServiceAccounts [][]client.GCPIAMServiceAccountRequest
+}
+
+// impersonateTokenSourceFn is the seam over impersonate.CredentialsTokenSource so
+// tests can assert how the impersonation chain is constructed (base vs. delegates)
+// without real GCP auth.
+var impersonateTokenSourceFn = func(ctx context.Context, cfg impersonate.CredentialsConfig, opts ...option.ClientOption) (oauth2.TokenSource, error) {
+	return impersonate.CredentialsTokenSource(ctx, cfg, opts...)
 }
 
 func init() {
@@ -109,11 +117,32 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 			return nil, "", fmt.Errorf("failed to resolve impersonation chain: %w", err)
 		}
 
-		ts, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
+		scopes := []string{"https://www.googleapis.com/auth/cloud-platform"}
+
+		// delegates[0] is the pool's ambient identity can *directly*
+		// impersonate (workloadIdentityUser → getAccessToken).
+		// It must be the base of the chain, not a Delegates entry: the ambient SA
+		// holds no implicitDelegation through it. Remaining entries are genuine
+		// delegates to the customer target SA.
+		var baseOpts []option.ClientOption
+		chainDelegates := delegates
+		if len(chainDelegates) > 0 {
+			baseTS, err := impersonateTokenSourceFn(ctx, impersonate.CredentialsConfig{
+				TargetPrincipal: chainDelegates[0],
+				Scopes:          scopes,
+			})
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to impersonate global service account %q: %w", chainDelegates[0], err)
+			}
+			baseOpts = []option.ClientOption{option.WithTokenSource(baseTS)}
+			chainDelegates = chainDelegates[1:]
+		}
+
+		ts, err := impersonateTokenSourceFn(ctx, impersonate.CredentialsConfig{
 			TargetPrincipal: serviceAccount,
-			Scopes:          []string{"https://www.googleapis.com/auth/cloud-platform"},
-			Delegates:       delegates,
-		})
+			Scopes:          scopes,
+			Delegates:       chainDelegates,
+		}, baseOpts...)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to create impersonated credentials for %q: %w", serviceAccount, err)
 		}

@@ -3,12 +3,116 @@ package computeprovider
 import (
 	"context"
 	"errors"
-	"reflect"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	"golang.org/x/oauth2"
+	"google.golang.org/api/impersonate"
+	"google.golang.org/api/option"
 )
+
+type impersonateCall struct {
+	cfg     impersonate.CredentialsConfig
+	optsLen int
+}
+
+// stubImpersonate swaps the package impersonation seam with a recorder that
+// returns a dummy token source, so tests can assert how the chain is built
+// (base credential vs. Delegates) without real GCP auth. Restores on cleanup.
+func stubImpersonate(t *testing.T) *[]impersonateCall {
+	t.Helper()
+	var calls []impersonateCall
+	orig := impersonateTokenSourceFn
+	impersonateTokenSourceFn = func(_ context.Context, cfg impersonate.CredentialsConfig, opts ...option.ClientOption) (oauth2.TokenSource, error) {
+		calls = append(calls, impersonateCall{cfg: cfg, optsLen: len(opts)})
+		return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "fake"}), nil
+	}
+	t.Cleanup(func() { impersonateTokenSourceFn = orig })
+	return &calls
+}
+
+// TestGCPCloudRun_GlobalSAConsumedAsBaseNotDelegate asserts the delegates[0]
+// (pool serverless-global-sa) is established as the chain BASE via direct
+// impersonation — no base opts, empty Delegates — and only delegates[1:] reach
+// the target impersonation as Delegates, with the base token source threaded in.
+func TestGCPCloudRun_GlobalSAConsumedAsBaseNotDelegate(t *testing.T) {
+	setChainProviderForTest(t, &captureChainProvider{delegates: []string{"global@pool.iam.gserviceaccount.com", "acct@pool.iam.gserviceaccount.com"}})
+	calls := stubImpersonate(t)
+
+	p := &gcpCloudRunComputeProvider{}
+	// Return values discarded: the downstream Cloud Run client construction is
+	// irrelevant here — we assert only on the captured impersonation calls.
+	_, _, _ = p.buildClientAndParams(context.Background(), RequestContext{NamespaceName: "myns.acct"}, ComputeProviderConfig{
+		configGCPCloudRunProject:        "p",
+		configGCPCloudRunRegion:         "r",
+		configGCPCloudRunWorkerPool:     "wp",
+		configGCPCloudRunServiceAccount: "cust@example.com",
+	})
+
+	require.Len(t, *calls, 2, "expected base + target impersonation calls")
+	base, target := (*calls)[0], (*calls)[1]
+
+	assert.Equal(t, "global@pool.iam.gserviceaccount.com", base.cfg.TargetPrincipal, "base hop should target the global SA")
+	assert.Empty(t, base.cfg.Delegates, "base hop must be a direct impersonation (no Delegates)")
+	assert.Zero(t, base.optsLen, "base hop must use the ambient ADC (no base token source)")
+
+	assert.Equal(t, "cust@example.com", target.cfg.TargetPrincipal, "target hop should target the customer SA")
+	assert.Equal(t, []string{"acct@pool.iam.gserviceaccount.com"}, target.cfg.Delegates, "target hop Delegates should be delegates[1:]")
+	assert.Equal(t, 1, target.optsLen, "target hop must receive the base token source")
+}
+
+// TestGCPCloudRun_SingleElementChainBaseThenDirectTarget asserts the boundary
+// where the chain has exactly one entry (the global SA): it is consumed as the
+// base, leaving delegates[1:] as an empty slice, so the target hop impersonates
+// the customer directly *from the global SA base* — base opts present, empty
+// Delegates. Guards the chainDelegates[1:] slicing on a length-1 input.
+func TestGCPCloudRun_SingleElementChainBaseThenDirectTarget(t *testing.T) {
+	setChainProviderForTest(t, &captureChainProvider{delegates: []string{"global@pool.iam.gserviceaccount.com"}})
+	calls := stubImpersonate(t)
+
+	p := &gcpCloudRunComputeProvider{}
+	_, _, _ = p.buildClientAndParams(context.Background(), RequestContext{NamespaceName: "myns.acct"}, ComputeProviderConfig{
+		configGCPCloudRunProject:        "p",
+		configGCPCloudRunRegion:         "r",
+		configGCPCloudRunWorkerPool:     "wp",
+		configGCPCloudRunServiceAccount: "cust@example.com",
+	})
+
+	require.Len(t, *calls, 2, "expected base + target impersonation calls")
+	base, target := (*calls)[0], (*calls)[1]
+
+	assert.Equal(t, "global@pool.iam.gserviceaccount.com", base.cfg.TargetPrincipal, "base hop should directly impersonate the global SA")
+	assert.Empty(t, base.cfg.Delegates, "base hop must be a direct impersonation (no Delegates)")
+	assert.Zero(t, base.optsLen, "base hop must use the ambient ADC (no base token source)")
+
+	assert.Equal(t, "cust@example.com", target.cfg.TargetPrincipal, "target hop should target the customer SA")
+	assert.Empty(t, target.cfg.Delegates, "target hop must have empty Delegates when the chain has one entry")
+	assert.Equal(t, 1, target.optsLen, "target hop must still receive the global SA base token source")
+}
+
+// TestGCPCloudRun_EmptyChainDirectlyImpersonatesTarget asserts that when the
+// chain provider returns no delegates (e.g. namespace didn't parse), the target
+// is impersonated directly from the ambient ADC — a single call, no base opts.
+func TestGCPCloudRun_EmptyChainDirectlyImpersonatesTarget(t *testing.T) {
+	setChainProviderForTest(t, &captureChainProvider{delegates: nil})
+	calls := stubImpersonate(t)
+
+	p := &gcpCloudRunComputeProvider{}
+	_, _, _ = p.buildClientAndParams(context.Background(), RequestContext{NamespaceName: "no-dot-here"}, ComputeProviderConfig{
+		configGCPCloudRunProject:        "p",
+		configGCPCloudRunRegion:         "r",
+		configGCPCloudRunWorkerPool:     "wp",
+		configGCPCloudRunServiceAccount: "cust@example.com",
+	})
+
+	require.Len(t, *calls, 1, "expected a single direct impersonation call")
+	only := (*calls)[0]
+	assert.Equal(t, "cust@example.com", only.cfg.TargetPrincipal, "should impersonate the customer SA directly")
+	assert.Empty(t, only.cfg.Delegates, "expected no Delegates on empty chain")
+	assert.Zero(t, only.optsLen, "expected direct impersonation from ambient ADC (no base opts)")
+}
 
 type captureChainProvider struct {
 	capture   *ResolveChainInput
@@ -49,13 +153,8 @@ func TestGCPCloudRun_ChainProviderReceivesNamespaceAndFlattenedCandidates(t *tes
 		configGCPCloudRunWorkerPool:     "wp",
 		configGCPCloudRunServiceAccount: "cust@example.com",
 	})
-	if captured.Namespace != "my-ns" {
-		t.Errorf("namespace not threaded: got %q, want %q", captured.Namespace, "my-ns")
-	}
-	want := [][]string{{"sa-a", "sa-b"}, {"sa-c"}}
-	if !reflect.DeepEqual(captured.GlobalSACandidates, want) {
-		t.Errorf("candidates mismatch: got %v, want %v", captured.GlobalSACandidates, want)
-	}
+	assert.Equal(t, "my-ns", captured.Namespace, "namespace not threaded")
+	assert.Equal(t, [][]string{{"sa-a", "sa-b"}, {"sa-c"}}, captured.GlobalSACandidates, "candidates mismatch")
 }
 
 func TestGCPCloudRun_ChainProviderErrorWrapped(t *testing.T) {
@@ -67,15 +166,9 @@ func TestGCPCloudRun_ChainProviderErrorWrapped(t *testing.T) {
 		configGCPCloudRunWorkerPool:     "wp",
 		configGCPCloudRunServiceAccount: "cust@example.com",
 	})
-	if err == nil {
-		t.Fatal("expected wrapped chain-provider error")
-	}
-	if !strings.Contains(err.Error(), "boom") {
-		t.Errorf("expected wrapped error containing 'boom'; got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "impersonation chain") {
-		t.Errorf("expected 'impersonation chain' in error; got: %v", err)
-	}
+	require.Error(t, err, "expected wrapped chain-provider error")
+	assert.ErrorContains(t, err, "boom")
+	assert.ErrorContains(t, err, "impersonation chain")
 }
 
 func TestGCPCloudRun_ChainProviderNotCalledWithoutCustomerSA(t *testing.T) {
@@ -91,9 +184,7 @@ func TestGCPCloudRun_ChainProviderNotCalledWithoutCustomerSA(t *testing.T) {
 		configGCPCloudRunWorkerPool: "wp",
 		// no service_account → no impersonation chain needed
 	})
-	if called {
-		t.Error("chain provider should not be called when customer service account is absent")
-	}
+	assert.False(t, called, "chain provider should not be called when customer service account is absent")
 }
 
 type chainProviderFunc func(context.Context, ResolveChainInput) ([]string, error)
@@ -104,77 +195,50 @@ func (f chainProviderFunc) ResolveChain(ctx context.Context, input ResolveChainI
 
 func TestNoopGCPImpersonationChainProvider_Empty(t *testing.T) {
 	delegates, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if len(delegates) != 0 {
-		t.Errorf("expected empty Delegates, got: %v", delegates)
-	}
+	require.NoError(t, err)
+	assert.Empty(t, delegates, "expected empty Delegates")
 }
 
 func TestNoopGCPImpersonationChainProvider_SingleHopSingleCandidate(t *testing.T) {
 	delegates, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
 		GlobalSACandidates: [][]string{{"sa-a"}},
 	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if !reflect.DeepEqual(delegates, []string{"sa-a"}) {
-		t.Errorf("expected [sa-a], got: %v", delegates)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sa-a"}, delegates)
 }
 
 func TestNoopGCPImpersonationChainProvider_MultiHopOrderPreserved(t *testing.T) {
 	delegates, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
 		GlobalSACandidates: [][]string{{"hop-1"}, {"hop-2"}, {"hop-3"}},
 	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if !reflect.DeepEqual(delegates, []string{"hop-1", "hop-2", "hop-3"}) {
-		t.Errorf("expected ordered hops, got: %v", delegates)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, []string{"hop-1", "hop-2", "hop-3"}, delegates, "expected ordered hops")
 }
 
 func TestNoopGCPImpersonationChainProvider_EmptyStepSkipped(t *testing.T) {
 	delegates, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
 		GlobalSACandidates: [][]string{{"a"}, {}, {"b"}},
 	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if !reflect.DeepEqual(delegates, []string{"a", "b"}) {
-		t.Errorf("expected empty step skipped, got: %v", delegates)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b"}, delegates, "expected empty step skipped")
 }
 
 func TestNoopGCPImpersonationChainProvider_EmptyEntryErrors(t *testing.T) {
 	_, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
 		GlobalSACandidates: [][]string{{""}},
 	})
-	if err == nil {
-		t.Fatal("expected error for empty entry")
-	}
-	if !strings.Contains(err.Error(), "empty") {
-		t.Errorf("error should mention 'empty'; got: %v", err)
-	}
+	require.Error(t, err, "expected error for empty entry")
+	assert.ErrorContains(t, err, "empty")
 }
 
 func TestNoopGCPImpersonationChainProvider_MultiCandidatePickFromSet(t *testing.T) {
 	candidates := []string{"a", "b", "c"}
-	valid := map[string]bool{"a": true, "b": true, "c": true}
 	for i := 0; i < 10; i++ {
 		delegates, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(context.Background(), ResolveChainInput{
 			GlobalSACandidates: [][]string{candidates},
 		})
-		if err != nil {
-			t.Fatalf("iter %d: unexpected error: %v", i, err)
-		}
-		if len(delegates) != 1 {
-			t.Fatalf("iter %d: expected 1 delegate, got: %v", i, delegates)
-		}
-		if !valid[delegates[0]] {
-			t.Errorf("iter %d: pick %q not in candidate set", i, delegates[0])
-		}
+		require.NoErrorf(t, err, "iter %d", i)
+		require.Lenf(t, delegates, 1, "iter %d: expected 1 delegate", i)
+		assert.Containsf(t, candidates, delegates[0], "iter %d: pick not in candidate set", i)
 	}
 }
