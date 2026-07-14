@@ -759,27 +759,18 @@ func TestWCISetCurrentVersionHappyPath(t *testing.T) {
 	namespace := env.Namespace().String()
 	deploymentName, buildID, version := setupPolledVersion(t, env)
 
-	// Get the current conflict token from the deployment.
-	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
-		&workflowservice.DescribeWorkerDeploymentRequest{
-			Namespace:      namespace,
-			DeploymentName: deploymentName,
-		})
-	require.NoError(t, err)
-
 	// Promote the version to current.
-	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
+	_, err := cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
 		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
 			BuildId:        buildID,
-			ConflictToken:  descResp.GetConflictToken(),
 			Identity:       "test-identity",
 		})
 	require.NoError(t, err)
 
 	// The routing config should now name this version as current.
-	descResp, err = cli.WorkflowService().DescribeWorkerDeployment(ctx,
+	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
 		&workflowservice.DescribeWorkerDeploymentRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
@@ -814,18 +805,11 @@ func TestWCISetCurrentVersionToUnversioned(t *testing.T) {
 	deploymentName, _, version := setupPolledVersion(t, env)
 
 	// Promote the version to current first.
-	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
-		&workflowservice.DescribeWorkerDeploymentRequest{
-			Namespace:      namespace,
-			DeploymentName: deploymentName,
-		})
-	require.NoError(t, err)
-	setResp, err := cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
+	_, err := cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
 		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
 			BuildId:        version.GetBuildId(),
-			ConflictToken:  descResp.GetConflictToken(),
 			Identity:       "test-identity",
 		})
 	require.NoError(t, err)
@@ -836,13 +820,12 @@ func TestWCISetCurrentVersionToUnversioned(t *testing.T) {
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
 			BuildId:        "",
-			ConflictToken:  setResp.GetConflictToken(),
 			Identity:       "test-identity",
 		})
 	require.NoError(t, err)
 
 	// Routing config should no longer name a current deployment version.
-	descResp, err = cli.WorkflowService().DescribeWorkerDeployment(ctx,
+	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
 		&workflowservice.DescribeWorkerDeploymentRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
@@ -925,18 +908,11 @@ func TestWCISetCurrentVersionMissingTaskQueuesAndOverride(t *testing.T) {
 	}, 60*time.Second, 500*time.Millisecond, "task queue never registered against version A")
 
 	// Promote version A to current while it has active pollers.
-	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
-		&workflowservice.DescribeWorkerDeploymentRequest{
-			Namespace:      namespace,
-			DeploymentName: deploymentName,
-		})
-	require.NoError(t, err)
 	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
 		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
 			BuildId:        buildA,
-			ConflictToken:  descResp.GetConflictToken(),
 			Identity:       "test-identity",
 		})
 	require.NoError(t, err)
@@ -964,13 +940,6 @@ func TestWCISetCurrentVersionMissingTaskQueuesAndOverride(t *testing.T) {
 	// Version B is created but never polls A's backlogged task queue.
 	versionB := createUnpolledVersion(t, env, deploymentName)
 
-	descResp, err = cli.WorkflowService().DescribeWorkerDeployment(ctx,
-		&workflowservice.DescribeWorkerDeploymentRequest{
-			Namespace:      namespace,
-			DeploymentName: deploymentName,
-		})
-	require.NoError(t, err)
-
 	// Promoting version B must fail: it is missing A's backlogged task queue and
 	// ignore_missing_task_queues is false.
 	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
@@ -978,7 +947,6 @@ func TestWCISetCurrentVersionMissingTaskQueuesAndOverride(t *testing.T) {
 			Namespace:               namespace,
 			DeploymentName:          deploymentName,
 			BuildId:                 versionB.GetBuildId(),
-			ConflictToken:           descResp.GetConflictToken(),
 			Identity:                "test-identity",
 			IgnoreMissingTaskQueues: false,
 		})
@@ -990,25 +958,18 @@ func TestWCISetCurrentVersionMissingTaskQueuesAndOverride(t *testing.T) {
 	// Flip only ignore_missing_task_queues to true on the exact same backlogged
 	// state. The promotion that just failed must now succeed, proving the flag is
 	// what gates the guardrail.
-	descResp, err = cli.WorkflowService().DescribeWorkerDeployment(ctx,
-		&workflowservice.DescribeWorkerDeploymentRequest{
-			Namespace:      namespace,
-			DeploymentName: deploymentName,
-		})
-	require.NoError(t, err)
 	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
 		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
 			Namespace:               namespace,
 			DeploymentName:          deploymentName,
 			BuildId:                 versionB.GetBuildId(),
-			ConflictToken:           descResp.GetConflictToken(),
 			Identity:                "test-identity",
 			IgnoreMissingTaskQueues: true,
 		})
 	require.NoError(t, err,
 		"override with ignore_missing_task_queues=true should succeed on the same backlogged state")
 
-	descResp, err = cli.WorkflowService().DescribeWorkerDeployment(ctx,
+	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
 		&workflowservice.DescribeWorkerDeploymentRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
@@ -1079,24 +1040,17 @@ func TestWCISetRampingVersionHappyPath(t *testing.T) {
 	namespace := env.Namespace().String()
 	deploymentName, _, versionB := setupCurrentPlusSecondVersion(t, env)
 
-	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
-		&workflowservice.DescribeWorkerDeploymentRequest{
-			Namespace:      namespace,
-			DeploymentName: deploymentName,
-		})
-	require.NoError(t, err)
-	_, err = cli.WorkflowService().SetWorkerDeploymentRampingVersion(ctx,
+	_, err := cli.WorkflowService().SetWorkerDeploymentRampingVersion(ctx,
 		&workflowservice.SetWorkerDeploymentRampingVersionRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
 			BuildId:        versionB.GetBuildId(),
 			Percentage:     20.0,
-			ConflictToken:  descResp.GetConflictToken(),
 			Identity:       "test-identity",
 		})
 	require.NoError(t, err)
 
-	descResp, err = cli.WorkflowService().DescribeWorkerDeployment(ctx,
+	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
 		&workflowservice.DescribeWorkerDeploymentRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
@@ -1133,19 +1087,12 @@ func TestWCISetRampingVersionClear(t *testing.T) {
 	deploymentName, _, versionB := setupCurrentPlusSecondVersion(t, env)
 
 	// Set version B as ramping first.
-	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
-		&workflowservice.DescribeWorkerDeploymentRequest{
-			Namespace:      namespace,
-			DeploymentName: deploymentName,
-		})
-	require.NoError(t, err)
-	setResp, err := cli.WorkflowService().SetWorkerDeploymentRampingVersion(ctx,
+	_, err := cli.WorkflowService().SetWorkerDeploymentRampingVersion(ctx,
 		&workflowservice.SetWorkerDeploymentRampingVersionRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
 			BuildId:        versionB.GetBuildId(),
 			Percentage:     20.0,
-			ConflictToken:  descResp.GetConflictToken(),
 			Identity:       "test-identity",
 		})
 	require.NoError(t, err)
@@ -1157,12 +1104,11 @@ func TestWCISetRampingVersionClear(t *testing.T) {
 			DeploymentName: deploymentName,
 			BuildId:        "",
 			Percentage:     0,
-			ConflictToken:  setResp.GetConflictToken(),
 			Identity:       "test-identity",
 		})
 	require.NoError(t, err)
 
-	descResp, err = cli.WorkflowService().DescribeWorkerDeployment(ctx,
+	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
 		&workflowservice.DescribeWorkerDeploymentRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
@@ -1202,21 +1148,13 @@ func TestWCISetRampingVersionSameAsCurrent(t *testing.T) {
 	namespace := env.Namespace().String()
 	deploymentName, versionA, _ := setupCurrentPlusSecondVersion(t, env)
 
-	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
-		&workflowservice.DescribeWorkerDeploymentRequest{
-			Namespace:      namespace,
-			DeploymentName: deploymentName,
-		})
-	require.NoError(t, err)
-
 	// versionA is the current version; ramping to it must be rejected.
-	_, err = cli.WorkflowService().SetWorkerDeploymentRampingVersion(ctx,
+	_, err := cli.WorkflowService().SetWorkerDeploymentRampingVersion(ctx,
 		&workflowservice.SetWorkerDeploymentRampingVersionRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
 			BuildId:        versionA.GetBuildId(),
 			Percentage:     20.0,
-			ConflictToken:  descResp.GetConflictToken(),
 			Identity:       "test-identity",
 		})
 	require.Error(t, err)
@@ -1284,8 +1222,7 @@ func TestWCISetManagerHappyPath(t *testing.T) {
 			NewManagerIdentity: &workflowservice.SetWorkerDeploymentManagerRequest_ManagerIdentity{
 				ManagerIdentity: "wci-controller-xyz",
 			},
-			ConflictToken: descResp.GetConflictToken(),
-			Identity:      "test-identity",
+			Identity: "test-identity",
 		})
 	require.NoError(t, err)
 
@@ -1318,21 +1255,14 @@ func TestWCISetManagerOverride(t *testing.T) {
 	require.NoError(t, err)
 
 	// Set an initial manager identity.
-	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
-		&workflowservice.DescribeWorkerDeploymentRequest{
-			Namespace:      namespace,
-			DeploymentName: deploymentName,
-		})
-	require.NoError(t, err)
-	setResp, err := cli.WorkflowService().SetWorkerDeploymentManager(ctx,
+	_, err = cli.WorkflowService().SetWorkerDeploymentManager(ctx,
 		&workflowservice.SetWorkerDeploymentManagerRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
 			NewManagerIdentity: &workflowservice.SetWorkerDeploymentManagerRequest_ManagerIdentity{
 				ManagerIdentity: "old-controller",
 			},
-			ConflictToken: descResp.GetConflictToken(),
-			Identity:      "test-identity",
+			Identity: "test-identity",
 		})
 	require.NoError(t, err)
 
@@ -1344,12 +1274,11 @@ func TestWCISetManagerOverride(t *testing.T) {
 			NewManagerIdentity: &workflowservice.SetWorkerDeploymentManagerRequest_ManagerIdentity{
 				ManagerIdentity: "new-controller",
 			},
-			ConflictToken: setResp.GetConflictToken(),
-			Identity:      "test-identity",
+			Identity: "test-identity",
 		})
 	require.NoError(t, err)
 
-	descResp, err = cli.WorkflowService().DescribeWorkerDeployment(ctx,
+	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
 		&workflowservice.DescribeWorkerDeploymentRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
@@ -1428,21 +1357,14 @@ func TestWCIManagerIdentityEnforcedOnSetCurrent(t *testing.T) {
 	deploymentName, buildID, _ := setupPolledVersion(t, env)
 
 	// Claim ownership as "owner-a".
-	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
-		&workflowservice.DescribeWorkerDeploymentRequest{
-			Namespace:      namespace,
-			DeploymentName: deploymentName,
-		})
-	require.NoError(t, err)
-	setResp, err := cli.WorkflowService().SetWorkerDeploymentManager(ctx,
+	_, err := cli.WorkflowService().SetWorkerDeploymentManager(ctx,
 		&workflowservice.SetWorkerDeploymentManagerRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
 			NewManagerIdentity: &workflowservice.SetWorkerDeploymentManagerRequest_ManagerIdentity{
 				ManagerIdentity: "owner-a",
 			},
-			ConflictToken: descResp.GetConflictToken(),
-			Identity:      "owner-a",
+			Identity: "owner-a",
 		})
 	require.NoError(t, err)
 
@@ -1452,7 +1374,6 @@ func TestWCIManagerIdentityEnforcedOnSetCurrent(t *testing.T) {
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
 			BuildId:        buildID,
-			ConflictToken:  setResp.GetConflictToken(),
 			Identity:       "intruder-b",
 		})
 	require.Error(t, err)
@@ -1601,18 +1522,11 @@ func setupCurrentPlusSecondVersion(
 
 	versionA := createUnpolledVersion(t, env, deploymentName)
 
-	descResp, err := cli.WorkflowService().DescribeWorkerDeployment(ctx,
-		&workflowservice.DescribeWorkerDeploymentRequest{
-			Namespace:      namespace,
-			DeploymentName: deploymentName,
-		})
-	require.NoError(t, err)
 	_, err = cli.WorkflowService().SetWorkerDeploymentCurrentVersion(ctx,
 		&workflowservice.SetWorkerDeploymentCurrentVersionRequest{
 			Namespace:      namespace,
 			DeploymentName: deploymentName,
 			BuildId:        versionA.GetBuildId(),
-			ConflictToken:  descResp.GetConflictToken(),
 			Identity:       "test-identity",
 		})
 	require.NoError(t, err)
