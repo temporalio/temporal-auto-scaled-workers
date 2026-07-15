@@ -73,8 +73,13 @@ func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, _ Request
 		return fmt.Errorf("cannot access the compute resource: %w", err)
 	}
 
-	if err := p.checkExternalID(ctx, cfg, arn); err != nil {
-		return fmt.Errorf("IAM role trust policy does not enforce ExternalID condition: %w", err)
+	// Only enforce the ExternalID trust-policy check when role/external-ID are
+	// required. When require_role_and_external_id is false (e.g. local/dev), the
+	// flag governs the whole role/external-ID behavior, not just presence.
+	if p.requireRoleAndExternalID {
+		if err := p.checkExternalID(ctx, cfg, arn); err != nil {
+			return fmt.Errorf("IAM role trust policy does not enforce ExternalID condition: %w", err)
+		}
 	}
 
 	return nil

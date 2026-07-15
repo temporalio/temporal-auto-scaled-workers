@@ -277,3 +277,29 @@ func TestAWSLambdaValidateConfig_ExternalIDSkipped_WhenRoleMissing(t *testing.T)
 	require.NoError(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
 	assert.False(t, called, "verifyExternalIDEnforcedFn should not be called without role and external ID")
 }
+
+func TestAWSLambdaValidateConfig_ExternalIDSkipped_WhenNotRequired(t *testing.T) {
+	stubLambdaClient(t, &mockLambdaClient{
+		getFunctionFn: func(_ context.Context, _ *lambda.GetFunctionInput, _ ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error) {
+			return &lambda.GetFunctionOutput{}, nil
+		},
+	})
+
+	called := false
+	stubVerifyExternalID(t, func(_ context.Context, _, _ string, _ [][]client.AWSIAMRoleRequest) error {
+		called = true
+		return nil
+	})
+
+	// require_role_and_external_id=false governs enforcement, not just presence:
+	// even with role and external ID present, the enforcement probe is skipped.
+	p := &awsLambdaComputeProvider{requireRoleAndExternalID: false}
+	cfg := ComputeProviderConfig{
+		configAWSLambdaARN:            testLambdaARN,
+		configAWSLambdaRole:           testRoleARN,
+		configAWSLambdaRoleExternalID: "my-eid",
+	}
+
+	require.NoError(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
+	assert.False(t, called, "verifyExternalIDEnforcedFn should not be called when require_role_and_external_id is false")
+}
