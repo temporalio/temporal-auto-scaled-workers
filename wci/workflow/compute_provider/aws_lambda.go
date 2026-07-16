@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/lambda/types"
+
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -22,6 +23,11 @@ const (
 type awsLambdaComputeProvider struct {
 	intermediaryRoles        [][]client.AWSIAMRoleRequest
 	requireRoleAndExternalID bool
+}
+
+type lambdaAPI interface {
+	Invoke(ctx context.Context, params *lambda.InvokeInput, optFns ...func(*lambda.Options)) (*lambda.InvokeOutput, error)
+	GetFunction(ctx context.Context, params *lambda.GetFunctionInput, optFns ...func(*lambda.Options)) (*lambda.GetFunctionOutput, error)
 }
 
 func init() {
@@ -112,8 +118,21 @@ func (p *awsLambdaComputeProvider) checkExternalID(ctx context.Context, cfg Comp
 	return verifyExternalIDEnforcedFn(ctx, region, roleARN, p.intermediaryRoles)
 }
 
-// getLambdaClientAndARN builds AWS config (including intermediary and config role assumption), returns a Lambda client and the function ARN.
-func (p *awsLambdaComputeProvider) getLambdaClientAndARN(ctx context.Context, cfg ComputeProviderConfig) (*lambda.Client, string, error) {
+// newLambdaClientFn builds the AWS config (including intermediary and config role
+// assumption) and constructs a Lambda client. It is a package-level variable so tests
+// can swap it for a mock without reaching AWS.
+var newLambdaClientFn = newLambdaClient
+
+func newLambdaClient(ctx context.Context, region, roleARN string, externalID *string, intermediaryRoles [][]client.AWSIAMRoleRequest) (lambdaAPI, error) {
+	awsConfig, err := buildAWSConfig(ctx, region, roleARN, externalID, intermediaryRoles)
+	if err != nil {
+		return nil, err
+	}
+	return lambda.NewFromConfig(awsConfig), nil
+}
+
+// getLambdaClientAndARN validates the config and returns a Lambda client and the function ARN.
+func (p *awsLambdaComputeProvider) getLambdaClientAndARN(ctx context.Context, cfg ComputeProviderConfig) (lambdaAPI, string, error) {
 	arn, ok := cfg[configAWSLambdaARN].(string)
 	if !ok || arn == "" {
 		return nil, "", fmt.Errorf("AWS Lambda Function ARN not found or invalid")
@@ -136,10 +155,10 @@ func (p *awsLambdaComputeProvider) getLambdaClientAndARN(ctx context.Context, cf
 		roleExternalID = &eid
 	}
 
-	awsConfig, err := buildAWSConfig(ctx, region, roleARN, roleExternalID, p.intermediaryRoles)
+	lambdaClient, err := newLambdaClientFn(ctx, region, roleARN, roleExternalID, p.intermediaryRoles)
 	if err != nil {
 		return nil, "", err
 	}
 
-	return lambda.NewFromConfig(awsConfig), arn, nil
+	return lambdaClient, arn, nil
 }

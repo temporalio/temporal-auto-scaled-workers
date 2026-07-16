@@ -18,6 +18,9 @@ RED :=   "\e[1;31m%s\e[0m\n"
 
 ALL_SRC         := $(shell find . -name "*.go")
 ALL_SRC         += go.mod
+UNIT_TEST_DIRS  ?= ./...
+LINT_DIRS       ?= ./...
+MAIN_BRANCH     ?= main
 
 ##### Binaries #####
 clean-bins:
@@ -36,10 +39,32 @@ clean-test-output:
 
 unit-test: clean-test-output
 	@printf $(COLOR) "Run unit tests..."
-	@CGO_ENABLED=$(CGO_ENABLED) go test $(UNIT_TEST_DIRS) $(COMPILED_TEST_ARGS) 2>&1 | tee -a test.log
+	@CGO_ENABLED=$(CGO_ENABLED) go test $(UNIT_TEST_FLAGS) $(UNIT_TEST_DIRS) $(COMPILED_TEST_ARGS) 2>&1 | tee -a test.log
 	@! grep -q "^--- FAIL" test.log
 
 test: unit-test
+
+##### Linting / formatting #####
+lint:
+	@printf $(COLOR) "Run golangci-lint..."
+	@golangci-lint run $(LINT_DIRS)
+
+# Lint only changes introduced since this branch diverged from $(MAIN_BRANCH).
+lint-branch:
+	@printf $(COLOR) "Run golangci-lint on changes since merge-base with $(MAIN_BRANCH)..."
+	@golangci-lint run --new-from-rev=$$(git merge-base HEAD $(MAIN_BRANCH)) $(LINT_DIRS)
+
+fmt:
+	@printf $(COLOR) "Format with golangci-lint..."
+	@golangci-lint fmt $(LINT_DIRS)
+
+# Format only Go files changed since this branch diverged from $(MAIN_BRANCH).
+fmt-branch:
+	@printf $(COLOR) "Format Go files changed since merge-base with $(MAIN_BRANCH)..."
+	@files=$$(git diff --name-only --diff-filter=d $$(git merge-base HEAD $(MAIN_BRANCH)) -- '*.go'); \
+	if [ -n "$$files" ]; then golangci-lint fmt $$files; else printf $(COLOR) "No changed Go files."; fi
+
+.PHONY: lint lint-branch fmt fmt-branch
 
 ##### Run server #####
 start: start-sqlite-file

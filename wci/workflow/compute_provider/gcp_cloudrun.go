@@ -76,7 +76,7 @@ func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, rc
 			Name:    name,
 			Scaling: &runpb.WorkerPoolScaling{ManualInstanceCount: &count},
 		},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"scaling"}},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"scaling.manualInstanceCount"}},
 	}); err != nil {
 		return fmt.Errorf("failed to update worker pool %q: %w", name, err)
 	}

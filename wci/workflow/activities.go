@@ -158,7 +158,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	defer cancel()
 
 	for key, entry := range req.Spec.ScalingGroupSpecs {
-		provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.dc)
+		provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.namespace.Name().String(), a.dc)
 		if err != nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
@@ -220,7 +220,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	for k, v := range req.ScalingGroupSpecs {
-		provider, err := computeprovider.GetComputeProvider(ctx, v.Compute.ProviderType, a.dc)
+		provider, err := computeprovider.GetComputeProvider(ctx, v.Compute.ProviderType, a.namespace.Name().String(), a.dc)
 		if err != nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
@@ -257,7 +257,7 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorker)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
-	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.dc)
+	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.namespace.Name().String(), a.dc)
 	if err != nil {
 		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 		return err
@@ -295,7 +295,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeUpdateWorkerSetSize)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
-	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.dc)
+	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.namespace.Name().String(), a.dc)
 	if err != nil {
 		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 		return err
