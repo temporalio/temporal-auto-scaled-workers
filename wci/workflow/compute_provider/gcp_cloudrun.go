@@ -80,16 +80,28 @@ func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, rc
 	}
 	defer client.Close()
 
-	if _, err = client.UpdateWorkerPool(ctx, &runpb.UpdateWorkerPoolRequest{
+	if _, err = client.UpdateWorkerPool(ctx, buildUpdateWorkerPoolRequest(name, count)); err != nil {
+		return fmt.Errorf("failed to update worker pool %q: %w", name, err)
+	}
+	return nil
+}
+
+// scalingInstanceCountMaskPath is the update-mask path for WorkerPoolScaling.manual_instance_count.
+// It MUST be the proto field name (snake_case): the Cloud Run client speaks gRPC, which transmits
+// FieldMask paths verbatim (no camelCase→snake_case conversion — that only happens on the JSON/REST
+// transport). A camelCase path fails to resolve server-side, yielding a silent no-op update.
+const scalingInstanceCountMaskPath = "scaling.manual_instance_count"
+
+// buildUpdateWorkerPoolRequest constructs the request that sets the worker pool's manual instance
+// count. Extracted so tests can assert the update mask resolves against the WorkerPool descriptor.
+func buildUpdateWorkerPoolRequest(name string, count int32) *runpb.UpdateWorkerPoolRequest {
+	return &runpb.UpdateWorkerPoolRequest{
 		WorkerPool: &runpb.WorkerPool{
 			Name:    name,
 			Scaling: &runpb.WorkerPoolScaling{ManualInstanceCount: &count},
 		},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"scaling.manualInstanceCount"}},
-	}); err != nil {
-		return fmt.Errorf("failed to update worker pool %q: %w", name, err)
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{scalingInstanceCountMaskPath}},
 	}
-	return nil
 }
 
 // buildClientAndParams creates a Cloud Run WorkerPoolsClient and constructs the fully-qualified worker pool name.

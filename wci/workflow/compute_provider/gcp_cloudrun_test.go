@@ -10,6 +10,9 @@ import (
 	"golang.org/x/oauth2"
 	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	runpb "cloud.google.com/go/run/apiv2/runpb"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
 )
@@ -230,6 +233,30 @@ func TestNoopGCPImpersonationChainProvider_EmptyEntryErrors(t *testing.T) {
 	})
 	require.Error(t, err, "expected error for empty entry")
 	assert.ErrorContains(t, err, "empty")
+}
+
+// TestUpdateWorkerPoolMaskResolvesAgainstDescriptor is the regression guard for the
+// silent no-op scaling bug: the update mask must use the proto field name (snake_case)
+// so it resolves server-side over gRPC, which transmits FieldMask paths verbatim.
+//
+// FieldMask.IsValid performs the same lookup the Cloud Run server does — it walks each
+// path segment via the message descriptor's proto field names. A camelCase path
+// ("manualInstanceCount") does not resolve, so the field is dropped and instances never
+// scale.
+func TestUpdateWorkerPoolMaskResolvesAgainstDescriptor(t *testing.T) {
+	req := buildUpdateWorkerPoolRequest("projects/p/locations/r/workerPools/wp", 3)
+
+	// The production mask resolves against the real WorkerPool descriptor.
+	require.True(t, req.GetUpdateMask().IsValid(req.GetWorkerPool()),
+		"production update mask %v must resolve against the WorkerPool proto", req.GetUpdateMask().GetPaths())
+	assert.Equal(t, []string{"scaling.manual_instance_count"}, req.GetUpdateMask().GetPaths(),
+		"mask path must be the snake_case proto field name")
+
+	// Demonstrate the bug: the JSON/camelCase form does NOT resolve over the proto
+	// transport, which is why the previous mask produced a granted-but-no-op update.
+	buggy := &fieldmaskpb.FieldMask{Paths: []string{"scaling.manualInstanceCount"}}
+	assert.False(t, buggy.IsValid(&runpb.WorkerPool{}),
+		"camelCase mask path must NOT resolve — this is the no-op scaling bug")
 }
 
 func TestNoopGCPImpersonationChainProvider_MultiCandidatePickFromSet(t *testing.T) {
