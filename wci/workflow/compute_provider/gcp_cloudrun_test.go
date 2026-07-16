@@ -36,85 +36,82 @@ func stubImpersonate(t *testing.T) *[]impersonateCall {
 	return &calls
 }
 
-// TestGCPCloudRun_GlobalSAConsumedAsBaseNotDelegate asserts the delegates[0]
-// (pool serverless-global-sa) is established as the chain BASE via direct
-// impersonation — no base opts, empty Delegates — and only delegates[1:] reach
-// the target impersonation as Delegates, with the base token source threaded in.
-func TestGCPCloudRun_GlobalSAConsumedAsBaseNotDelegate(t *testing.T) {
-	setChainProviderForTest(t, &captureChainProvider{delegates: []string{"global@pool.iam.gserviceaccount.com", "acct@pool.iam.gserviceaccount.com"}})
-	calls := stubImpersonate(t)
+// TestGCPCloudRun_ImpersonationMatrix exercises how buildClientAndParams
+// constructs the impersonation calls across the first-delegate-as-base flag and
+// the size of the resolved delegate chain (nil / zero / one / more-than-one).
+//
+// With the flag ON, delegates[0] is the chain base: it is directly impersonated
+// (its own call, ambient ADC, no Delegates) and delegates[1:] become the target
+// hop's token-creator Delegates, with the base token source threaded in as one
+// client option. With the flag OFF, the whole chain is passed as Delegates from
+// the ambient ADC in a single call. nil and zero-length chains are equivalent
+// (both len 0), so no base hop runs regardless of the flag.
+func TestGCPCloudRun_ImpersonationMatrix(t *testing.T) {
+	const target = "cust@example.com"
+	const g = "global@pool.iam.gserviceaccount.com"
+	const a = "acct@pool.iam.gserviceaccount.com"
 
-	p := &gcpCloudRunComputeProvider{}
-	// Return values discarded: the downstream Cloud Run client construction is
-	// irrelevant here — we assert only on the captured impersonation calls.
-	_, _, _ = p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "myns.acct"}, ComputeProviderConfig{
-		configGCPCloudRunProject:        "p",
-		configGCPCloudRunRegion:         "r",
-		configGCPCloudRunWorkerPool:     "wp",
-		configGCPCloudRunServiceAccount: "cust@example.com",
-	})
+	cases := []struct {
+		name        string
+		asBase      bool
+		delegates   []string
+		wantCalls   int
+		wantBase    string   // base hop target principal; "" when there is no base hop
+		wantDelegs  []string // Delegates on the final (target) impersonation call
+		wantBaseOpt bool     // whether the base token source is threaded into the target call
+	}{
+		// Flag ON: delegates[0] consumed as the chain base, delegates[1:] as delegates.
+		{"base/nil", true, nil, 1, "", nil, false},
+		{"base/zero", true, []string{}, 1, "", nil, false},
+		{"base/one", true, []string{g}, 2, g, nil, true},
+		{"base/many", true, []string{g, a}, 2, g, []string{a}, true},
+		// Flag OFF: whole chain passed as delegates from ambient ADC, no base hop.
+		{"nobase/nil", false, nil, 1, "", nil, false},
+		{"nobase/zero", false, []string{}, 1, "", nil, false},
+		{"nobase/one", false, []string{g}, 1, "", []string{g}, false},
+		{"nobase/many", false, []string{g, a}, 1, "", []string{g, a}, false},
+	}
 
-	require.Len(t, *calls, 2, "expected base + target impersonation calls")
-	base, target := (*calls)[0], (*calls)[1]
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setChainProviderForTest(t, &captureChainProvider{delegates: tc.delegates})
+			calls := stubImpersonate(t)
 
-	assert.Equal(t, "global@pool.iam.gserviceaccount.com", base.cfg.TargetPrincipal, "base hop should target the global SA")
-	assert.Empty(t, base.cfg.Delegates, "base hop must be a direct impersonation (no Delegates)")
-	assert.Zero(t, base.optsLen, "base hop must use the ambient ADC (no base token source)")
+			p := &gcpCloudRunComputeProvider{firstDelegateAsBase: tc.asBase}
+			// Return values discarded: we assert only on the captured impersonation calls.
+			_, _, _ = p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "myns.acct"}, ComputeProviderConfig{
+				configGCPCloudRunProject:        "p",
+				configGCPCloudRunRegion:         "r",
+				configGCPCloudRunWorkerPool:     "wp",
+				configGCPCloudRunServiceAccount: target,
+			})
 
-	assert.Equal(t, "cust@example.com", target.cfg.TargetPrincipal, "target hop should target the customer SA")
-	assert.Equal(t, []string{"acct@pool.iam.gserviceaccount.com"}, target.cfg.Delegates, "target hop Delegates should be delegates[1:]")
-	assert.Equal(t, 1, target.optsLen, "target hop must receive the base token source")
-}
+			require.Len(t, *calls, tc.wantCalls, "impersonation call count")
 
-// TestGCPCloudRun_SingleElementChainBaseThenDirectTarget asserts the boundary
-// where the chain has exactly one entry (the global SA): it is consumed as the
-// base, leaving delegates[1:] as an empty slice, so the target hop impersonates
-// the customer directly *from the global SA base* — base opts present, empty
-// Delegates. Guards the chainDelegates[1:] slicing on a length-1 input.
-func TestGCPCloudRun_SingleElementChainBaseThenDirectTarget(t *testing.T) {
-	setChainProviderForTest(t, &captureChainProvider{delegates: []string{"global@pool.iam.gserviceaccount.com"}})
-	calls := stubImpersonate(t)
+			// The target (customer) impersonation is always the last call.
+			targetCall := (*calls)[len(*calls)-1]
+			assert.Equal(t, target, targetCall.cfg.TargetPrincipal, "final hop must target the customer SA")
+			if len(tc.wantDelegs) == 0 {
+				assert.Empty(t, targetCall.cfg.Delegates, "final hop Delegates should be empty")
+			} else {
+				assert.Equal(t, tc.wantDelegs, targetCall.cfg.Delegates, "final hop Delegates")
+			}
+			wantOpts := 0
+			if tc.wantBaseOpt {
+				wantOpts = 1
+			}
+			assert.Equal(t, wantOpts, targetCall.optsLen, "final hop opts (1 => base token source threaded in)")
 
-	p := &gcpCloudRunComputeProvider{}
-	_, _, _ = p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "myns.acct"}, ComputeProviderConfig{
-		configGCPCloudRunProject:        "p",
-		configGCPCloudRunRegion:         "r",
-		configGCPCloudRunWorkerPool:     "wp",
-		configGCPCloudRunServiceAccount: "cust@example.com",
-	})
-
-	require.Len(t, *calls, 2, "expected base + target impersonation calls")
-	base, target := (*calls)[0], (*calls)[1]
-
-	assert.Equal(t, "global@pool.iam.gserviceaccount.com", base.cfg.TargetPrincipal, "base hop should directly impersonate the global SA")
-	assert.Empty(t, base.cfg.Delegates, "base hop must be a direct impersonation (no Delegates)")
-	assert.Zero(t, base.optsLen, "base hop must use the ambient ADC (no base token source)")
-
-	assert.Equal(t, "cust@example.com", target.cfg.TargetPrincipal, "target hop should target the customer SA")
-	assert.Empty(t, target.cfg.Delegates, "target hop must have empty Delegates when the chain has one entry")
-	assert.Equal(t, 1, target.optsLen, "target hop must still receive the global SA base token source")
-}
-
-// TestGCPCloudRun_EmptyChainDirectlyImpersonatesTarget asserts that when the
-// chain provider returns no delegates (e.g. namespace didn't parse), the target
-// is impersonated directly from the ambient ADC — a single call, no base opts.
-func TestGCPCloudRun_EmptyChainDirectlyImpersonatesTarget(t *testing.T) {
-	setChainProviderForTest(t, &captureChainProvider{delegates: nil})
-	calls := stubImpersonate(t)
-
-	p := &gcpCloudRunComputeProvider{}
-	_, _, _ = p.buildClientAndParams(t.Context(), RequestContext{NamespaceName: "no-dot-here"}, ComputeProviderConfig{
-		configGCPCloudRunProject:        "p",
-		configGCPCloudRunRegion:         "r",
-		configGCPCloudRunWorkerPool:     "wp",
-		configGCPCloudRunServiceAccount: "cust@example.com",
-	})
-
-	require.Len(t, *calls, 1, "expected a single direct impersonation call")
-	only := (*calls)[0]
-	assert.Equal(t, "cust@example.com", only.cfg.TargetPrincipal, "should impersonate the customer SA directly")
-	assert.Empty(t, only.cfg.Delegates, "expected no Delegates on empty chain")
-	assert.Zero(t, only.optsLen, "expected direct impersonation from ambient ADC (no base opts)")
+			// A base hop only exists when the first-delegate-as-base flag consumed delegates[0].
+			if tc.wantBase != "" {
+				require.Len(t, *calls, 2, "expected a base hop before the target hop")
+				base := (*calls)[0]
+				assert.Equal(t, tc.wantBase, base.cfg.TargetPrincipal, "base hop must directly impersonate delegates[0]")
+				assert.Empty(t, base.cfg.Delegates, "base hop must be a direct impersonation (no Delegates)")
+				assert.Zero(t, base.optsLen, "base hop must use ambient ADC (no base token source)")
+			}
+		})
+	}
 }
 
 type captureChainProvider struct {

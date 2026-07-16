@@ -28,6 +28,10 @@ const (
 
 type gcpCloudRunComputeProvider struct {
 	intermediaryServiceAccounts [][]client.GCPIAMServiceAccountRequest
+	// firstDelegateAsBase controls whether delegates[0] is consumed as the chain
+	// base (direct impersonation) or passed as an ordinary token-creator delegate.
+	// See client.WorkerControllerGCPFirstDelegateAsBase.
+	firstDelegateAsBase bool
 }
 
 // impersonateTokenSourceFn is the seam over impersonate.CredentialsTokenSource so
@@ -43,12 +47,15 @@ func init() {
 
 func NewGCPCloudRunComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (ComputeProvider, error) {
 	var intermediaryServiceAccounts [][]client.GCPIAMServiceAccountRequest
+	firstDelegateAsBase := false
 	if dc != nil {
 		intermediaryServiceAccounts = client.WorkerControllerGCPIntermediaryServiceAccounts.Get(dc)()
+		firstDelegateAsBase = client.WorkerControllerGCPFirstDelegateAsBase.Get(dc)()
 	}
 
 	return &gcpCloudRunComputeProvider{
 		intermediaryServiceAccounts: intermediaryServiceAccounts,
+		firstDelegateAsBase:         firstDelegateAsBase,
 	}, nil
 }
 
@@ -132,14 +139,17 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 
 		scopes := []string{"https://www.googleapis.com/auth/cloud-platform"}
 
-		// delegates[0] is the pool's ambient identity can *directly*
-		// impersonate (workloadIdentityUser → getAccessToken).
-		// It must be the base of the chain, not a Delegates entry: the ambient SA
-		// holds no implicitDelegation through it. Remaining entries are genuine
-		// delegates to the customer target SA.
+		// When firstDelegateAsBase is set, delegates[0] is the identity the
+		// pool's ambient Workload Identity can *directly* impersonate
+		// (workloadIdentityUser → getAccessToken). It must be the base of the
+		// chain, not a Delegates entry: the ambient SA holds no implicitDelegation
+		// through it. Remaining entries are genuine token-creator delegates to the
+		// customer target SA. When unset, the whole chain is passed as delegates
+		// from the ambient ADC (requires implicitDelegation on delegates[0]).
+		// Controlled by client.WorkerControllerGCPFirstDelegateAsBase.
 		var baseOpts []option.ClientOption
 		chainDelegates := delegates
-		if len(chainDelegates) > 0 {
+		if p.firstDelegateAsBase && len(chainDelegates) > 0 {
 			baseTS, err := impersonateTokenSourceFn(ctx, impersonate.CredentialsConfig{
 				TargetPrincipal: chainDelegates[0],
 				Scopes:          scopes,
