@@ -80,6 +80,9 @@ const (
 	ErrorTypeAlgorithmFailed            ErrorType = "algorithm_failed"
 	ErrorTypeComputeProviderUnavailable ErrorType = "compute_provider_unavailable"
 	ErrorTypeComputeProviderFailed      ErrorType = "compute_provider_failed"
+	// ErrorTypeNone is the sentinel used when a metric's fixed tag schema requires the
+	// error_type tag on a non-error path.
+	ErrorTypeNone ErrorType = "none"
 )
 
 const (
@@ -92,6 +95,9 @@ const (
 	SkippedReasonInvalidCount         SkippedReason = "invalid_count"
 	SkippedReasonNoSourceRequest      SkippedReason = "no_source_request"
 	SkippedReasonTaskTypeMismatch     SkippedReason = "task_type_mismatch"
+	// SkippedReasonNone is the sentinel used when a metric's fixed tag schema requires the
+	// skip_reason tag on a non-skip path.
+	SkippedReasonNone SkippedReason = "none"
 )
 
 const (
@@ -101,6 +107,9 @@ const (
 	ActivityErrorTypePanic       ActivityErrorType = "panic"
 	ActivityErrorTypeTerminated  ActivityErrorType = "terminated"
 	ActivityErrorTypeOther       ActivityErrorType = "other"
+	// ActivityErrorTypeNone is the sentinel used when a metric's fixed tag schema requires
+	// the activity_error_type tag on a path that is not an activity error.
+	ActivityErrorTypeNone ActivityErrorType = "none"
 )
 
 const (
