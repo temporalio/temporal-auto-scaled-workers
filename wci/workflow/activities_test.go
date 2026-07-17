@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -428,7 +429,7 @@ func TestHandleActionsProcessesDeferredScalingDecision(t *testing.T) {
 			logger:                               sdkworkflow.GetLogger(ctx),
 			metrics:                              sdkworkflow.GetMetricsHandler(ctx),
 		}
-		runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, &event)
+		runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, &event, time.Time{})
 		return runner.State.ScalingStatus, nil
 	}
 
@@ -525,7 +526,7 @@ func TestHandleActionsDropsDeferredActionGuards(t *testing.T) {
 					logger:                               sdkworkflow.GetLogger(ctx),
 					metrics:                              sdkworkflow.GetMetricsHandler(ctx),
 				}
-				runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, taskAddRequest)
+				runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, taskAddRequest, time.Time{})
 				return nil
 			}
 

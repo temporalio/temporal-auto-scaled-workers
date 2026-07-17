@@ -526,7 +526,7 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 		if resp.UpdatedScalingStatus != nil {
 			d.State.ScalingStatus = resp.UpdatedScalingStatus
 		}
-		d.handleActions(ctx, resp.Actions, nil)
+		d.handleActions(ctx, resp.Actions, nil, time.Time{})
 
 		return time.Duration(resp.NextPollSeconds) * time.Second
 	}
@@ -577,6 +577,7 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 }
 
 func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *iface.SignalTaskAddRequest) {
+	signalReceiptTime := workflow.Now(ctx)
 	if req == nil {
 		d.logger.Warn("Received nil task-add signal request; dropping")
 		d.metrics.WithTags(map[string]string{
@@ -618,7 +619,7 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 		if resp.UpdatedScalingStatus != nil {
 			d.State.ScalingStatus = resp.UpdatedScalingStatus
 		}
-		d.handleActions(ctx, resp.Actions, req)
+		d.handleActions(ctx, resp.Actions, req, signalReceiptTime)
 	}
 }
 
@@ -630,7 +631,7 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 // follow-up activity and so must see the freshly-computed status. If a
 // dispatched action subsequently fails, the persisted status is not rolled
 // back.
-func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingalgorithm.ScalingAction, taskAddRequest *iface.SignalTaskAddRequest) {
+func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingalgorithm.ScalingAction, taskAddRequest *iface.SignalTaskAddRequest, signalReceiptTime time.Time) {
 	if d.State == nil || d.State.Spec == nil {
 		return
 	}
@@ -694,7 +695,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				if resp.UpdatedScalingStatus != nil {
 					d.State.ScalingStatus[action.ScalingGroupKey] = resp.UpdatedScalingStatus
 				}
-				d.handleActions(ctx, resp.Actions, nil)
+				d.handleActions(ctx, resp.Actions, nil, signalReceiptTime)
 
 				d.metrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeDeferredScalingDecision,
@@ -735,6 +736,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeInvokeWorker,
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
 
+				d.recordScalingActionLatency(ctx, signalReceiptTime, wcimetrics.OperationTypeInvokeWorker)
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
 		case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
@@ -779,6 +781,8 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				d.metrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeUpdateWorkerSetSize,
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
+
+				d.recordScalingActionLatency(ctx, signalReceiptTime, wcimetrics.OperationTypeUpdateWorkerSetSize)
 
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
@@ -859,6 +863,16 @@ func (d *WorkflowRunner) updateMemo(ctx workflow.Context) error {
 			CreateTime:     d.State.CreateTime,
 		},
 	})
+}
+
+func (d *WorkflowRunner) recordScalingActionLatency(ctx workflow.Context, signalReceiptTime time.Time, operation string) {
+	if signalReceiptTime.IsZero() {
+		return
+	}
+	d.metrics.WithTags(map[string]string{
+		wcimetrics.PathTagName:      wcimetrics.PathTaskAdd,
+		wcimetrics.OperationTagName: operation,
+	}).Timer(wcimetrics.ScalingActionLatency.Name()).Record(workflow.Now(ctx).Sub(signalReceiptTime))
 }
 
 func getWorkflowVersion(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion) WorkerControllerInstanceWorkflowVersion {

@@ -36,6 +36,10 @@ var (
 	Activities = metrics.NewCounterDef(
 		"worker_controller_instance_activities",
 		metrics.WithDescription("The number of times an activity was executed as part of a worker controller instance."))
+
+	ScalingActionLatency = metrics.NewTimerDef(
+		"worker_controller_instance_scaling_action_latency",
+		metrics.WithDescription("Latency from work detection to scaling-action completion, tagged by path and operation."))
 )
 
 // Tag key constants matching go.temporal.io/server/common/metrics/tags.go.
@@ -53,6 +57,7 @@ const (
 	ScaleUpTriggerTagName      = "scale_up_trigger"
 	SkipReasonTagName          = "skip_reason"
 	ActivityErrorTypeTagName   = "activity_error_type"
+	PathTagName                = "path"
 )
 
 // ErrorType is the bounded set of values for the `error_type` tag.
@@ -125,4 +130,6 @@ const (
 	OperationTypeDeferredScalingDecision = "deferred_scaling_decision"
 	ScaleUpTriggerTypeMetricsPoll        = "metrics_poll"
 	ScaleUpTriggerTypeTaskAdd            = "task_add"
+	PathTaskAdd                          = "task_add"
+	PathStats                            = "stats"
 )
