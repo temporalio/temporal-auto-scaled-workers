@@ -86,19 +86,26 @@ type (
 // In steady state (i.e. absence of ongoing updates or signals) the wf should only have
 // a single wft in the history.
 func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion, unsafeMaxVersion func() int, unsafePeriodicValidationInterval func() time.Duration, args *iface.WorkerControllerInstanceWorkflowArgs, activities *Activities) error {
+	// compute_provider is always present as a base tag (empty here) so that every
+	// workflow metric carries a stable tag key-set; emissions made in the context
+	// of a single scaling group override it with that group's provider (see
+	// handleActions).
+	metricTags := map[string]string{
+		wcimetrics.NamespaceTag:               args.NamespaceName,
+		wcimetrics.WorkerDeploymentNameTag:    args.DeploymentName,
+		wcimetrics.WorkerDeploymentBuildIDTag: args.BuildId,
+		wcimetrics.ComputeProviderTag:         "",
+	}
+
 	workflowRunner := &WorkflowRunner{
 		WorkerControllerInstanceWorkflowArgs: args,
 		workflowVersion:                      getWorkflowVersion(ctx, unsafeWorkflowVersionGetter),
 		a:                                    activities,
 		logger:                               sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName, "wf-deployment-name", args.DeploymentName, "wf-build-id", args.BuildId),
-		metrics: workflow.GetMetricsHandler(ctx).WithTags(map[string]string{
-			wcimetrics.NamespaceTag:               args.NamespaceName,
-			wcimetrics.WorkerDeploymentNameTag:    args.DeploymentName,
-			wcimetrics.WorkerDeploymentBuildIDTag: args.BuildId,
-		}),
-		lock:                             workflow.NewMutex(ctx),
-		unsafeMaxVersion:                 unsafeMaxVersion,
-		unsafePeriodicValidationInterval: unsafePeriodicValidationInterval,
+		metrics:                              workflow.GetMetricsHandler(ctx).WithTags(metricTags),
+		lock:                                 workflow.NewMutex(ctx),
+		unsafeMaxVersion:                     unsafeMaxVersion,
+		unsafePeriodicValidationInterval:     unsafePeriodicValidationInterval,
 		signalHandler: &SignalHandler{
 			signalSelector: workflow.NewSelector(ctx),
 		},
@@ -647,11 +654,20 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			continue
 		}
 
+		// Every emission below is in the context of this single scaling group, so
+		// tag its provider. actionMetrics overrides the empty base compute_provider
+		// tag on d.metrics; rc carries it to the dispatched activities' metrics.
+		actionMetrics := d.metrics.WithTags(map[string]string{
+			wcimetrics.ComputeProviderTag: string(spec.Compute.ProviderType),
+		})
+		rc := d.requestContext()
+		rc.ComputeProvider = spec.Compute.ProviderType
+
 		switch action.Action {
 		case scalingalgorithm.ActionTypeDeferredScalingDecision:
 			if action.Count != nil {
 				d.logger.Warn("Deferred scaling decision must not carry a count; dropping action", "scaling_group_key", action.ScalingGroupKey, "count", *action.Count)
-				d.metrics.WithTags(map[string]string{
+				actionMetrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName:  wcimetrics.OperationTypeDeferredScalingDecision,
 					wcimetrics.SkipReasonTagName: string(wcimetrics.SkippedReasonInvalidCount),
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
@@ -659,21 +675,21 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			}
 			if taskAddRequest == nil {
 				d.logger.Error("Deferred scaling decision cannot be handled without source task-add request; dropping (only ProcessTaskAdd may return ActionTypeDeferredScalingDecision)", "scaling_group_key", action.ScalingGroupKey)
-				d.metrics.WithTags(map[string]string{
+				actionMetrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName:  wcimetrics.OperationTypeDeferredScalingDecision,
 					wcimetrics.SkipReasonTagName: string(wcimetrics.SkippedReasonNoSourceRequest),
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
 				continue
 			}
 
-			d.metrics.Counter(wcimetrics.DeferredScalingDecisionCount.Name()).Inc(1)
+			actionMetrics.Counter(wcimetrics.DeferredScalingDecisionCount.Name()).Inc(1)
 
 			var resp HandleDeferredScalingDecisionActivityResponse
 			if err := workflow.ExecuteActivity(
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: HandleDeferredScalingDecisionActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.HandleDeferredScalingDecision,
 				HandleDeferredScalingDecisionActivityRequest{
-					RequestContext: d.requestContext(),
+					RequestContext: rc,
 
 					Request:         *taskAddRequest,
 					ScalingGroupKey: action.ScalingGroupKey,
@@ -684,7 +700,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				},
 			).Get(ctx, &resp); err != nil {
 				d.logger.Error("Failed to process deferred scaling decision", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "scaling_group_key", action.ScalingGroupKey, "error", err)
-				d.metrics.WithTags(map[string]string{
+				actionMetrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName:         wcimetrics.OperationTypeDeferredScalingDecision,
 					wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
 					wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
@@ -696,7 +712,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				}
 				d.handleActions(ctx, resp.Actions, nil)
 
-				d.metrics.WithTags(map[string]string{
+				actionMetrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeDeferredScalingDecision,
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
 			}
@@ -706,14 +722,14 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				d.logger.Warn("Invalid count for action type invoke worker received", "count", *action.Count)
 			}
 
-			d.metrics.Counter(wcimetrics.ScaleUpCount.Name()).Inc(1)
+			actionMetrics.Counter(wcimetrics.ScaleUpCount.Name()).Inc(1)
 
 			now := workflow.Now(ctx)
 			if err := workflow.ExecuteActivity(
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: InvokeWorkerActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.InvokeWorker,
 				InvokeWorkerActivityRequest{
-					RequestContext: d.requestContext(),
+					RequestContext: rc,
 					ComputeConfig:  &spec.Compute,
 				},
 			).Get(ctx, nil); err != nil {
@@ -725,13 +741,13 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 					d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
 					d.signalVersionWorkflow(ctx)
 				}
-				d.metrics.WithTags(map[string]string{
+				actionMetrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName:         wcimetrics.OperationTypeInvokeWorker,
 					wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
 					wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
 			} else {
-				d.metrics.WithTags(map[string]string{
+				actionMetrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeInvokeWorker,
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
 
@@ -742,7 +758,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			if action.Count != nil {
 				if *action.Count < 0 {
 					d.logger.Warn("Scaling action has invalid count value", "count", *action.Count)
-					d.metrics.WithTags(map[string]string{
+					actionMetrics.WithTags(map[string]string{
 						wcimetrics.OperationTagName:  wcimetrics.OperationTypeUpdateWorkerSetSize,
 						wcimetrics.SkipReasonTagName: string(wcimetrics.SkippedReasonInvalidRequest),
 					}).Counter(wcimetrics.Operations.Name()).Inc(1)
@@ -756,7 +772,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: UpdateWorkerSetSizeActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.UpdateWorkerSetSize,
 				UpdateWorkerSetSizeActivityRequest{
-					RequestContext: d.requestContext(),
+					RequestContext: rc,
 					ComputeConfig:  &spec.Compute,
 					UpdatedSize:    count,
 				},
@@ -770,13 +786,13 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 					d.signalVersionWorkflow(ctx)
 				}
 
-				d.metrics.WithTags(map[string]string{
+				actionMetrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName:         wcimetrics.OperationTypeUpdateWorkerSetSize,
 					wcimetrics.ErrorTypeTagName:         string(wcimetrics.ErrorTypeActivityError),
 					wcimetrics.ActivityErrorTypeTagName: string(classifyActivityErrorType(err)),
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
 			} else {
-				d.metrics.WithTags(map[string]string{
+				actionMetrics.WithTags(map[string]string{
 					wcimetrics.OperationTagName: wcimetrics.OperationTypeUpdateWorkerSetSize,
 				}).Counter(wcimetrics.Operations.Name()).Inc(1)
 

@@ -46,6 +46,7 @@ const (
 	ActivityTypeTag            = "activityType"
 	WorkerDeploymentNameTag    = "worker_deployment_name"
 	WorkerDeploymentBuildIDTag = "worker_build_id"
+	ComputeProviderTag         = "compute_provider"
 	SignalTypeTagName          = "signal_type"
 	UpdateTypeTagName          = "update_type"
 	OperationTagName           = metrics.OperationTagName

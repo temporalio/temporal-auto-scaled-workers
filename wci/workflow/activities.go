@@ -119,12 +119,23 @@ type (
 // function because RequestContext is an alias of a compute_provider type, so
 // methods can't be declared on it from this package.
 func metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetrics.ActivityType) sdkclient.MetricsHandler {
+	// compute_provider is always set (empty when the activity operates across all
+	// scaling groups, so no single provider applies) to keep the tag key-set
+	// stable. Per-group emissions override the value inside their loop.
 	return activity.GetMetricsHandler(ctx).WithTags(map[string]string{
 		wcimetrics.NamespaceTag:               rc.NamespaceName,
 		wcimetrics.WorkerDeploymentNameTag:    rc.DeploymentName,
 		wcimetrics.WorkerDeploymentBuildIDTag: rc.DeploymentBuildID,
 		wcimetrics.ActivityTypeTag:            string(activityType),
+		wcimetrics.ComputeProviderTag:         string(rc.ComputeProvider),
 	})
+}
+
+// computeProviderMetrics returns h re-tagged with the given compute provider,
+// overriding the base (possibly empty) compute_provider tag. Used for emissions
+// made in the context of a single scaling group inside an all-groups activity.
+func computeProviderMetrics(h sdkclient.MetricsHandler, provider iface.ComputeProviderType) sdkclient.MetricsHandler {
+	return h.WithTags(map[string]string{wcimetrics.ComputeProviderTag: string(provider)})
 }
 
 func NewActivities(
@@ -152,12 +163,15 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 
 	logger := activity.GetLogger(ctx)
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeValidateSpec)
-	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
+	_, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, validateSpecTimeout)
 	defer cancel()
 
 	for key, entry := range req.Spec.ScalingGroupSpecs {
+		// Errors here are attributable to this specific scaling group's provider.
+		recordError, _, _ := newActivityRecorders(computeProviderMetrics(metricsHandler, entry.Compute.ProviderType))
+
 		provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.namespace.Name().String(), a.dc)
 		if err != nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderFailed)
@@ -217,9 +231,12 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 	}
 
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorkersToRegisterTaskQueues)
-	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
+	_, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	for k, v := range req.ScalingGroupSpecs {
+		// Errors here are attributable to this specific scaling group's provider.
+		recordError, _, _ := newActivityRecorders(computeProviderMetrics(metricsHandler, v.Compute.ProviderType))
+
 		provider, err := computeprovider.GetComputeProvider(ctx, v.Compute.ProviderType, a.namespace.Name().String(), a.dc)
 		if err != nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderFailed)
@@ -398,7 +415,8 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 	}
 
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleTaskAddSignal)
-	_, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
+	// Base recorder (empty compute_provider) for skips emitted outside a matched group.
+	_, recordSkipped, _ := newActivityRecorders(metricsHandler)
 
 	if req.Spec == nil {
 		logger.Error("Did not receive a spec")
@@ -413,10 +431,14 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 			continue
 		}
 
+		// This task-add matched this scaling group; attribute its metrics to the group's provider.
+		groupMetrics := computeProviderMetrics(metricsHandler, entry.Compute.ProviderType)
+		_, recordSkippedForGroup, recordSuccess := newActivityRecorders(groupMetrics)
+
 		scalingAlgo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, entry)
 		if err != nil {
 			logger.Error("failed to get scaling algorithm", "error", err)
-			recordSkipped(wcimetrics.SkippedReasonAlgorithmUnavailable)
+			recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmUnavailable)
 			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 		}
 
@@ -425,12 +447,12 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		response, err := scalingAlgo.ProcessTaskAdd(ctx, scalingConfig, scalingStatus, req.Request)
 		if err != nil {
 			logger.Error("failed to process task add", "error", err)
-			recordSkipped(wcimetrics.SkippedReasonAlgorithmFailed)
+			recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmFailed)
 			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 		}
 		if response == nil {
 			logger.Error("task-add scaling algorithm returned nil response", "scaling_group_key", key)
-			recordSkipped(wcimetrics.SkippedReasonAlgorithmFailed)
+			recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmFailed)
 			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 		}
 
@@ -442,7 +464,7 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		}
 
 		if response.ThrottledCount > 0 {
-			metricsHandler.Counter(wcimetrics.ScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
+			groupMetrics.Counter(wcimetrics.ScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
 		}
 
 		recordSuccess()
