@@ -14,6 +14,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
+	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
@@ -429,7 +430,7 @@ func TestHandleActionsProcessesDeferredScalingDecision(t *testing.T) {
 			logger:                               sdkworkflow.GetLogger(ctx),
 			metrics:                              sdkworkflow.GetMetricsHandler(ctx),
 		}
-		runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, &event, time.Time{})
+		runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, &event, actionLatencyOrigin{path: wcimetrics.PathTaskAdd, start: time.Time{}})
 		return runner.State.ScalingStatus, nil
 	}
 
@@ -526,7 +527,7 @@ func TestHandleActionsDropsDeferredActionGuards(t *testing.T) {
 					logger:                               sdkworkflow.GetLogger(ctx),
 					metrics:                              sdkworkflow.GetMetricsHandler(ctx),
 				}
-				runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, taskAddRequest, time.Time{})
+				runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, taskAddRequest, actionLatencyOrigin{path: wcimetrics.PathTaskAdd, start: time.Time{}})
 				return nil
 			}
 
