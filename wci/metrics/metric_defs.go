@@ -140,5 +140,5 @@ const (
 	ScaleUpTriggerTypeMetricsPoll        = "metrics_poll"
 	ScaleUpTriggerTypeTaskAdd            = "task_add"
 	PathTaskAdd                          = "task_add"
-	PathStats                            = "stats"
+	PathPullStats                        = "pull_stats"
 )
