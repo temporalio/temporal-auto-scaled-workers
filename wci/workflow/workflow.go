@@ -686,6 +686,19 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				count = *action.Count
 			}
 
+			// A larger target than the algorithm's previous size is a scale-up, a smaller one
+			// a scale-down. PreviousCount is always set for UpdateWorkerSetSize actions.
+			if action.PreviousCount == nil {
+				d.logger.Error("UpdateWorkerSetSize action missing PreviousCount; scale direction not recorded", "scaling_group_key", action.ScalingGroupKey, "count", count)
+			} else {
+				switch {
+				case count > *action.PreviousCount:
+					actionMetrics.Counter(wcimetrics.ScaleUpCount.Name()).Inc(1)
+				case count < *action.PreviousCount:
+					actionMetrics.Counter(wcimetrics.ScaleDownCount.Name()).Inc(1)
+				}
+			}
+
 			now := workflow.Now(ctx)
 			if err := workflow.ExecuteActivity(
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: UpdateWorkerSetSizeActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),

@@ -360,7 +360,7 @@ func (a *scalingAlgorithmRateBased) ProcessTaskAdd(
 	newCount := currentCount + 1
 	updatedState[stateRateBasedWorkerCount] = int64(newCount)
 	updatedState[stateRateBasedLastScaleUpTimestamp] = nowMs
-	actions = append(actions, ScalingAction{Action: ActionTypeUpdateWorkerSetSize, Count: &newCount})
+	actions = append(actions, ScalingAction{Action: ActionTypeUpdateWorkerSetSize, Count: &newCount, PreviousCount: &currentCount})
 	actions = append(actions, deferredAction)
 
 	logger.Info("Rate-based Task Add Decision", "outcome", "scale_up", "count", currentCount)
@@ -531,7 +531,7 @@ func (a *scalingAlgorithmRateBased) ProcessMetricsPoll(
 				newCount = currentCount + addCount
 				updatedState[stateRateBasedWorkerCount] = int64(newCount)
 				updatedState[stateRateBasedLastScaleUpTimestamp] = nowMs
-				actions = append(actions, ScalingAction{Action: ActionTypeUpdateWorkerSetSize, Count: &newCount})
+				actions = append(actions, ScalingAction{Action: ActionTypeUpdateWorkerSetSize, Count: &newCount, PreviousCount: &currentCount})
 			} else {
 				scaleBlockReason = "max_count"
 			}
@@ -546,7 +546,7 @@ func (a *scalingAlgorithmRateBased) ProcessMetricsPoll(
 			if newCount != currentCount {
 				updatedState[stateRateBasedWorkerCount] = int64(newCount)
 				updatedState[stateRateBasedLastScaleDownTimestamp] = nowMs
-				actions = append(actions, ScalingAction{Action: ActionTypeUpdateWorkerSetSize, Count: &newCount})
+				actions = append(actions, ScalingAction{Action: ActionTypeUpdateWorkerSetSize, Count: &newCount, PreviousCount: &currentCount})
 			} else {
 				scaleBlockReason = "min_count"
 			}
