@@ -476,13 +476,13 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 		}).Get(ctx, &resp); err != nil {
 		d.logger.Warn("PullStats activity failed", "error", err)
 
-		d.recordOperation(wcimetrics.OperationTypePullStats, "", wcimetrics.ErrorTypeActivityError, classifyActivityErrorType(err), wcimetrics.SkippedReasonNone)
+		d.recordOperation(wcimetrics.OperationTypePullStats, noComputeProvider, wcimetrics.ErrorTypeActivityError, classifyActivityErrorType(err), wcimetrics.SkippedReasonNone)
 
 		return maxPollInterval
 	} else {
 		d.logger.Info("Completed PullStats", "action_count", len(resp.Actions), "next_poll_seconds", resp.NextPollSeconds)
 
-		d.recordOperation(wcimetrics.OperationTypePullStats, "", wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonNone)
+		d.recordOperation(wcimetrics.OperationTypePullStats, noComputeProvider, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonNone)
 
 		// Apply the updated status before handleActions for consistency between this
 		// and the no-sync-match path
@@ -512,7 +512,7 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 			Spec:           d.State.Spec,
 		},
 	).Get(ctx, nil); err != nil {
-		d.recordOperation(wcimetrics.OperationTypeValidateSpec, "", wcimetrics.ErrorTypeActivityError, classifyActivityErrorType(err), wcimetrics.SkippedReasonNone)
+		d.recordOperation(wcimetrics.OperationTypeValidateSpec, noComputeProvider, wcimetrics.ErrorTypeActivityError, classifyActivityErrorType(err), wcimetrics.SkippedReasonNone)
 
 		if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 			d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
@@ -524,7 +524,7 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 			d.logger.Warn("Periodic spec validation failed with transient error, leaving validation state unchanged", "error", err)
 		}
 	} else {
-		d.recordOperation(wcimetrics.OperationTypeValidateSpec, "", wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonNone)
+		d.recordOperation(wcimetrics.OperationTypeValidateSpec, noComputeProvider, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonNone)
 
 		d.State.ValidationStatus = iface.NewValidationStatusSuccess(now)
 		d.signalVersionWorkflow(ctx)
@@ -839,12 +839,17 @@ func (d *WorkflowRunner) recordUpdate(updateType string, errorType wcimetrics.Er
 	}).Counter(wcimetrics.Updates.Name()).Inc(1)
 }
 
+// noComputeProvider marks a metric emission that is not tied to a single scaling
+// group (so no one provider applies); computeProviderTagValue renders it as the
+// "none" sentinel. Prefer this over a bare "" at call sites for clarity.
+const noComputeProvider iface.ComputeProviderType = ""
+
 // recordOperation emits the Operations counter with its fixed tag schema:
 // operation + compute_provider + error_type + activity_error_type + skip_reason.
 // provider is the scaling group's compute provider for operations performed in the
-// context of one group (handleActions), or "" (→ "none") for all-groups operations
-// like pull_stats/validate_spec. Non-applicable dimensions take their sentinel value
-// so the tag set never varies.
+// context of one group (handleActions), or noComputeProvider (→ "none") for
+// all-groups operations like pull_stats/validate_spec. Non-applicable dimensions
+// take their sentinel value so the tag set never varies.
 func (d *WorkflowRunner) recordOperation(operation string, provider iface.ComputeProviderType, errorType wcimetrics.ErrorType, activityErrorType wcimetrics.ActivityErrorType, skipReason wcimetrics.SkippedReason) {
 	d.metrics.WithTags(map[string]string{
 		wcimetrics.OperationTagName:         operation,
