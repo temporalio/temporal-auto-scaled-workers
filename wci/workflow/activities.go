@@ -119,23 +119,34 @@ type (
 // function because RequestContext is an alias of a compute_provider type, so
 // methods can't be declared on it from this package.
 func metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetrics.ActivityType) sdkclient.MetricsHandler {
-	// compute_provider is always set (empty when the activity operates across all
-	// scaling groups, so no single provider applies) to keep the tag key-set
-	// stable. Per-group emissions override the value inside their loop.
+	// compute_provider is always set (the "none" sentinel when the activity
+	// operates across all scaling groups, so no single provider applies) to keep
+	// the tag key-set stable. Per-group emissions override the value inside their loop.
 	return activity.GetMetricsHandler(ctx).WithTags(map[string]string{
 		wcimetrics.NamespaceTag:               rc.NamespaceName,
 		wcimetrics.WorkerDeploymentNameTag:    rc.DeploymentName,
 		wcimetrics.WorkerDeploymentBuildIDTag: rc.DeploymentBuildID,
 		wcimetrics.ActivityTypeTag:            string(activityType),
-		wcimetrics.ComputeProviderTag:         string(rc.ComputeProvider),
+		wcimetrics.ComputeProviderTag:         computeProviderTagValue(rc.ComputeProvider),
 	})
 }
 
+// computeProviderTagValue maps a compute provider type to its compute_provider
+// tag value, using the "none" sentinel for the empty/unset case so the tag is
+// always a visible, queryable value (consistent with the error_type/skip_reason
+// "none" sentinels) rather than an empty string that some exporters drop.
+func computeProviderTagValue(provider iface.ComputeProviderType) string {
+	if provider == "" {
+		return wcimetrics.ComputeProviderNone
+	}
+	return string(provider)
+}
+
 // computeProviderMetrics returns h re-tagged with the given compute provider,
-// overriding the base (possibly empty) compute_provider tag. Used for emissions
-// made in the context of a single scaling group inside an all-groups activity.
+// overriding the base compute_provider tag. Used for emissions made in the
+// context of a single scaling group inside an all-groups activity.
 func computeProviderMetrics(h sdkclient.MetricsHandler, provider iface.ComputeProviderType) sdkclient.MetricsHandler {
-	return h.WithTags(map[string]string{wcimetrics.ComputeProviderTag: string(provider)})
+	return h.WithTags(map[string]string{wcimetrics.ComputeProviderTag: computeProviderTagValue(provider)})
 }
 
 func NewActivities(
