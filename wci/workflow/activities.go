@@ -28,7 +28,12 @@ const (
 	validateSpecTimeout           = 15 * time.Second
 	startNewWorkerInstanceTimeout = 60 * time.Second
 	updateWorkerSetSizeTimeout    = 60 * time.Second
+)
 
+// Min/max polling interval for PullStats. Constant in production, but a
+// test hook enables modifying these values during integration tests for
+// better coverage avoiding the 30s wait.
+var (
 	minPollInterval = 30 * time.Second
 	maxPollInterval = 5 * time.Minute
 )
