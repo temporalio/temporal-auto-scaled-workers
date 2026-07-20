@@ -64,6 +64,15 @@ var (
 		[][]GCPIAMServiceAccountRequest(nil),
 		`WorkerControllerGCPIntermediaryServiceAccounts defines the service account chaining to assume before assuming the per-provider role.`,
 	)
+	WorkerControllerGCPFirstDelegateAsBase = dynamicconfig.NewGlobalBoolSetting(
+		"workercontroller.compute_providers.gcp.first_delegate_as_base",
+		false,
+		`WorkerControllerGCPFirstDelegateAsBase controls how the first entry of the resolved GCP impersonation chain is treated. `+
+			`When true, the first delegate is the identity the pod's ambient Workload Identity can *directly* impersonate `+
+			`(roles/iam.workloadIdentityUser -> getAccessToken): it is used as the base credential of the chain, and the remaining `+
+			`delegates are passed as token-creator delegates to the target. When false, the entire chain is passed as token-creator `+
+			`delegates starting from the ambient ADC (default), which requires the ambient identity to hold implicitDelegation on the first delegate.`,
+	)
 	WorkerControllerEnabledScalingAlgorithms = dynamicconfig.NewGlobalTypedSetting(
 		"workercontroller.scaling_algorithms.enabled",
 		[]string(nil),

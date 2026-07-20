@@ -579,14 +579,22 @@ func newActivityRecorders(h sdkclient.MetricsHandler) (
 	recordSuccess func(),
 ) {
 	name := wcimetrics.Activities.Name()
+	// emit writes the fixed tag schema on every path; non-applicable dimensions
+	// take their sentinel value so the tag set never varies across call sites.
+	emit := func(errorType wcimetrics.ErrorType, reason wcimetrics.SkippedReason) {
+		h.WithTags(map[string]string{
+			wcimetrics.ErrorTypeTagName:  string(errorType),
+			wcimetrics.SkipReasonTagName: string(reason),
+		}).Counter(name).Inc(1)
+	}
 	recordError = func(errorType wcimetrics.ErrorType) {
-		h.WithTags(map[string]string{wcimetrics.ErrorTypeTagName: string(errorType)}).Counter(name).Inc(1)
+		emit(errorType, wcimetrics.SkippedReasonNone)
 	}
 	recordSkipped = func(reason wcimetrics.SkippedReason) {
-		h.WithTags(map[string]string{wcimetrics.SkipReasonTagName: string(reason)}).Counter(name).Inc(1)
+		emit(wcimetrics.ErrorTypeNone, reason)
 	}
 	recordSuccess = func() {
-		h.Counter(name).Inc(1)
+		emit(wcimetrics.ErrorTypeNone, wcimetrics.SkippedReasonNone)
 	}
 	return
 }
