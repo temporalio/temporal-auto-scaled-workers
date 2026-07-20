@@ -58,9 +58,7 @@ const (
 
 // ComputeProviderNone is the sentinel compute_provider tag value used when a
 // metric is not emitted in the context of a single scaling group (so no one
-// provider applies). Keeps the tag a visible, queryable value rather than an
-// empty string that some exporters drop — matching the ErrorTypeNone /
-// SkippedReasonNone / ActivityErrorTypeNone convention.
+// provider applies).
 const ComputeProviderNone = "none"
 
 // ErrorType is the bounded set of values for the `error_type` tag.
