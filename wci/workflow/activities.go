@@ -133,8 +133,7 @@ func metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetr
 
 // computeProviderTagValue maps a compute provider type to its compute_provider
 // tag value, using the "none" sentinel for the empty/unset case so the tag is
-// always a visible, queryable value (consistent with the error_type/skip_reason
-// "none" sentinels) rather than an empty string that some exporters drop.
+// always a visible.
 func computeProviderTagValue(provider iface.ComputeProviderType) string {
 	if provider == "" {
 		return wcimetrics.ComputeProviderNone
@@ -143,8 +142,7 @@ func computeProviderTagValue(provider iface.ComputeProviderType) string {
 }
 
 // computeProviderMetrics returns h re-tagged with the given compute provider,
-// overriding the base compute_provider tag. Used for emissions made in the
-// context of a single scaling group inside an all-groups activity.
+// overriding the base compute_provider tag.
 func computeProviderMetrics(h sdkclient.MetricsHandler, provider iface.ComputeProviderType) sdkclient.MetricsHandler {
 	return h.WithTags(map[string]string{wcimetrics.ComputeProviderTag: computeProviderTagValue(provider)})
 }

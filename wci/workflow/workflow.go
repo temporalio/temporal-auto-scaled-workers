@@ -596,9 +596,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 		}
 
 		// Every emission below is in the context of this single scaling group, so
-		// tag its provider. actionMetrics overrides the base "none" compute_provider
-		// tag on d.metrics; the dispatched activities derive it from their own request
-		// (ComputeConfig/ScalingGroupSpec).
+		// tag its provider.
 		actionMetrics := d.metrics.WithTags(map[string]string{
 			wcimetrics.ComputeProviderTag: computeProviderTagValue(spec.Compute.ProviderType),
 		})
@@ -840,7 +838,7 @@ func (d *WorkflowRunner) recordUpdate(updateType string, errorType wcimetrics.Er
 
 // noComputeProvider marks a metric emission that is not tied to a single scaling
 // group (so no one provider applies); computeProviderTagValue renders it as the
-// "none" sentinel. Prefer this over a bare "" at call sites for clarity.
+// "none" sentinel.
 const noComputeProvider iface.ComputeProviderType = ""
 
 // recordOperation emits the Operations counter with its fixed tag schema:
