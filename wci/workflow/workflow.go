@@ -597,12 +597,11 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 
 		// Every emission below is in the context of this single scaling group, so
 		// tag its provider. actionMetrics overrides the base "none" compute_provider
-		// tag on d.metrics; rc carries it to the dispatched activities' metrics.
+		// tag on d.metrics; the dispatched activities derive it from their own request
+		// (ComputeConfig/ScalingGroupSpec).
 		actionMetrics := d.metrics.WithTags(map[string]string{
 			wcimetrics.ComputeProviderTag: computeProviderTagValue(spec.Compute.ProviderType),
 		})
-		rc := d.requestContext()
-		rc.ComputeProvider = spec.Compute.ProviderType
 
 		switch action.Action {
 		case scalingalgorithm.ActionTypeDeferredScalingDecision:
@@ -624,7 +623,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: HandleDeferredScalingDecisionActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.HandleDeferredScalingDecision,
 				HandleDeferredScalingDecisionActivityRequest{
-					RequestContext: rc,
+					RequestContext: d.requestContext(),
 
 					Request:         *taskAddRequest,
 					ScalingGroupKey: action.ScalingGroupKey,
@@ -657,7 +656,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: InvokeWorkerActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.InvokeWorker,
 				InvokeWorkerActivityRequest{
-					RequestContext: rc,
+					RequestContext: d.requestContext(),
 					ComputeConfig:  &spec.Compute,
 				},
 			).Get(ctx, nil); err != nil {
@@ -691,7 +690,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: UpdateWorkerSetSizeActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 2}}),
 				d.a.UpdateWorkerSetSize,
 				UpdateWorkerSetSizeActivityRequest{
-					RequestContext: rc,
+					RequestContext: d.requestContext(),
 					ComputeConfig:  &spec.Compute,
 					UpdatedSize:    count,
 				},
