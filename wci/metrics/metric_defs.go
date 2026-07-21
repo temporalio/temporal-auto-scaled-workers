@@ -46,6 +46,7 @@ const (
 	ActivityTypeTag            = "activityType"
 	WorkerDeploymentNameTag    = "worker_deployment_name"
 	WorkerDeploymentBuildIDTag = "worker_build_id"
+	ComputeProviderTag         = "compute_provider"
 	SignalTypeTagName          = "signal_type"
 	UpdateTypeTagName          = "update_type"
 	OperationTagName           = metrics.OperationTagName
@@ -54,6 +55,10 @@ const (
 	SkipReasonTagName          = "skip_reason"
 	ActivityErrorTypeTagName   = "activity_error_type"
 )
+
+// ComputeProviderNone is the sentinel compute_provider tag value used when a
+// metric is not emitted.
+const ComputeProviderNone = "none"
 
 // ErrorType is the bounded set of values for the `error_type` tag.
 type ErrorType string
