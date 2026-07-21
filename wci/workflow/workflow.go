@@ -794,7 +794,7 @@ func (d *WorkflowRunner) recordScalingActionLatency(ctx workflow.Context, origin
 	}
 	// TODO: Add compute_provider when available from code currently in PR
 	d.metrics.WithTags(map[string]string{
-		wcimetrics.PathTagName:      wcimetrics.PathTaskAdd,
+		wcimetrics.PathTagName:      origin.path,
 		wcimetrics.OperationTagName: operation,
 	}).Timer(wcimetrics.ScalingActionLatency.Name()).Record(workflow.Now(ctx).Sub(origin.start))
 }
