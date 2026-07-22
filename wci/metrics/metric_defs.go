@@ -6,6 +6,9 @@ var (
 	BacklogCount = metrics.NewGaugeDef(
 		"worker_controller_instance_backlog_count",
 		metrics.WithDescription("The total detected backlog size for a worker controller instance."))
+	BacklogAge = metrics.NewGaugeDef(
+		"worker_controller_instance_backlog_age",
+		metrics.WithDescription("The max detected backlog age in seconds for a worker controller instance."))
 
 	ScaleUpCount = metrics.NewCounterDef(
 		"worker_controller_instance_scale_up_count",

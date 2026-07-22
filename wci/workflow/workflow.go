@@ -491,7 +491,7 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 		if resp.UpdatedScalingStatus != nil {
 			d.State.ScalingStatus = resp.UpdatedScalingStatus
 		}
-		d.handleActions(ctx, resp.Actions, nil, scalingActionLatencyOrigin{start: pollStart.Add(-resp.BacklogAge), path: wcimetrics.PathPullStats})
+		d.handleActions(ctx, resp.Actions, nil, scalingActionLatencyOrigin{start: pollStart, path: wcimetrics.PathPullStats})
 
 		return time.Duration(resp.NextPollSeconds) * time.Second
 	}

@@ -106,7 +106,6 @@ type (
 		UpdatedScalingStatus map[string]iface.ScalingAlgorithmStatus `json:"scaling_status"`
 		Actions              []scalingalgorithm.ScalingAction        `json:"actions,omitempty"`
 		NextPollSeconds      uint32                                  `json:"next_poll_seconds"`
-		BacklogAge           time.Duration                           `json:"backlog_age"`
 	}
 
 	InvokeWorkersToRegisterTaskQueuesRequest struct {
@@ -522,6 +521,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	)
 
 	metricsHandler.Gauge(wcimetrics.BacklogCount.Name()).Update(float64(totalBacklog))
+	metricsHandler.Gauge(wcimetrics.BacklogAge.Name()).Update(maxBacklogAge.Seconds())
 
 	actions := []scalingalgorithm.ScalingAction{}
 	updatedScalingStatus := map[string]iface.ScalingAlgorithmStatus{}
@@ -576,7 +576,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 
 	recordSuccess()
 
-	return &PullStatsActivityResponse{Actions: actions, UpdatedScalingStatus: updatedScalingStatus, NextPollSeconds: uint32(nextPoll.Seconds()), BacklogAge: maxBacklogAge}, nil
+	return &PullStatsActivityResponse{Actions: actions, UpdatedScalingStatus: updatedScalingStatus, NextPollSeconds: uint32(nextPoll.Seconds())}, nil
 }
 
 // getScalingAlgorithmAndConfig resolves the scaling algorithm and config for a ScalingGroupSpec entry.

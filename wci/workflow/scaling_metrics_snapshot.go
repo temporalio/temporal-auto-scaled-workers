@@ -51,12 +51,12 @@ func (a *Activities) pullScalingMetricsSnapshot(ctx context.Context, namespaceNa
 			metricsSnapshot.Activity.LastBacklogCount += versionedTaskQueue.Stats.ApproximateBacklogCount
 			metricsSnapshot.Activity.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
 			metricsSnapshot.Activity.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
-			metricsSnapshot.Workflow.LastBacklogAge = max(metricsSnapshot.Workflow.LastBacklogAge, versionedTaskQueue.Stats.GetApproximateBacklogAge().AsDuration())
+			metricsSnapshot.Activity.LastBacklogAge = max(metricsSnapshot.Activity.LastBacklogAge, versionedTaskQueue.Stats.GetApproximateBacklogAge().AsDuration())
 		case enumspb.TASK_QUEUE_TYPE_NEXUS:
 			metricsSnapshot.Nexus.LastBacklogCount += versionedTaskQueue.Stats.ApproximateBacklogCount
 			metricsSnapshot.Nexus.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
 			metricsSnapshot.Nexus.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
-			metricsSnapshot.Workflow.LastBacklogAge = max(metricsSnapshot.Workflow.LastBacklogAge, versionedTaskQueue.Stats.GetApproximateBacklogAge().AsDuration())
+			metricsSnapshot.Nexus.LastBacklogAge = max(metricsSnapshot.Nexus.LastBacklogAge, versionedTaskQueue.Stats.GetApproximateBacklogAge().AsDuration())
 		}
 	}
 
