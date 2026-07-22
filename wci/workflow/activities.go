@@ -118,23 +118,22 @@ type (
 // namespace/deployment identity and the supplied activity type. It is a free
 // function because RequestContext is an alias of a compute_provider type, so
 // methods can't be declared on it from this package.
-func metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetrics.ActivityType) sdkclient.MetricsHandler {
-	// compute_provider is always set (the "none" sentinel when the activity
-	// operates across all scaling groups, so no single provider applies) to keep
-	// the tag key-set stable. Per-group emissions override the value inside their loop.
+func metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetrics.ActivityType, provider iface.ComputeProviderType) sdkclient.MetricsHandler {
+	// compute_provider is the scaling group's provider for activities that operate on
+	// a single group, or the "none" sentinel (noComputeProvider) for all-groups
+	// activities. It is always set to keep the tag key-set stable.
 	return activity.GetMetricsHandler(ctx).WithTags(map[string]string{
 		wcimetrics.NamespaceTag:               rc.NamespaceName,
 		wcimetrics.WorkerDeploymentNameTag:    rc.DeploymentName,
 		wcimetrics.WorkerDeploymentBuildIDTag: rc.DeploymentBuildID,
 		wcimetrics.ActivityTypeTag:            string(activityType),
-		wcimetrics.ComputeProviderTag:         computeProviderTagValue(rc.ComputeProvider),
+		wcimetrics.ComputeProviderTag:         computeProviderTagValue(provider),
 	})
 }
 
 // computeProviderTagValue maps a compute provider type to its compute_provider
 // tag value, using the "none" sentinel for the empty/unset case so the tag is
-// always a visible, queryable value (consistent with the error_type/skip_reason
-// "none" sentinels) rather than an empty string that some exporters drop.
+// always a visible.
 func computeProviderTagValue(provider iface.ComputeProviderType) string {
 	if provider == "" {
 		return wcimetrics.ComputeProviderNone
@@ -143,8 +142,7 @@ func computeProviderTagValue(provider iface.ComputeProviderType) string {
 }
 
 // computeProviderMetrics returns h re-tagged with the given compute provider,
-// overriding the base compute_provider tag. Used for emissions made in the
-// context of a single scaling group inside an all-groups activity.
+// overriding the base compute_provider tag.
 func computeProviderMetrics(h sdkclient.MetricsHandler, provider iface.ComputeProviderType) sdkclient.MetricsHandler {
 	return h.WithTags(map[string]string{wcimetrics.ComputeProviderTag: computeProviderTagValue(provider)})
 }
@@ -173,7 +171,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeValidateSpec)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeValidateSpec, noComputeProvider)
 	_, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, validateSpecTimeout)
@@ -241,7 +239,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 		return temporal.NewApplicationError("Invalid activity request", "InternalError")
 	}
 
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorkersToRegisterTaskQueues)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorkersToRegisterTaskQueues, noComputeProvider)
 	_, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	for k, v := range req.ScalingGroupSpecs {
@@ -282,7 +280,7 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorker)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorker, req.ComputeConfig.ProviderType)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.namespace.Name().String(), a.dc)
@@ -320,7 +318,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeUpdateWorkerSetSize)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeUpdateWorkerSetSize, req.ComputeConfig.ProviderType)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.namespace.Name().String(), a.dc)
@@ -354,7 +352,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 
 func (a *Activities) HandleDeferredScalingDecision(ctx context.Context, req HandleDeferredScalingDecisionActivityRequest) (*HandleDeferredScalingDecisionActivityResponse, error) {
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleDeferredScalingDecision)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleDeferredScalingDecision, req.ScalingGroupSpec.Compute.ProviderType)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
 	scalingStatus := maps.Clone(req.ScalingStatus)
@@ -425,7 +423,7 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		updatedScalingStatus = map[string]iface.ScalingAlgorithmStatus{}
 	}
 
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleTaskAddSignal)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleTaskAddSignal, noComputeProvider)
 	// Base recorder (empty compute_provider) for skips emitted outside a matched group.
 	_, recordSkipped, _ := newActivityRecorders(metricsHandler)
 
@@ -494,7 +492,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypePullStats)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypePullStats, noComputeProvider)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
 	if !a.workerControllerEnabled() {
