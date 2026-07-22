@@ -16,6 +16,9 @@ var (
 	ScaleDownCount = metrics.NewCounterDef(
 		"worker_controller_instance_scale_down_count",
 		metrics.WithDescription("The number of times a scale down was performed for a worker controller instance. Only worker-set providers scale down."))
+	TargetWorkerCount = metrics.NewGaugeDef(
+		"worker_controller_instance_target_worker_count",
+		metrics.WithDescription("The target worker-set size the scaling algorithm applied for a worker controller instance."))
 	DeferredScalingDecisionCount = metrics.NewCounterDef(
 		"worker_controller_instance_deferred_scaling_decision_count",
 		metrics.WithDescription("The number of times a deferred scaling decision was dispatched for a worker controller instance."))
