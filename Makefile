@@ -16,11 +16,12 @@ clean: clean-bins clean-test-output
 COLOR := "\e[1;36m%s\e[0m\n"
 RED :=   "\e[1;31m%s\e[0m\n"
 
-ALL_SRC         := $(shell find . -name "*.go")
-ALL_SRC         += go.mod
-UNIT_TEST_DIRS  ?= ./...
-LINT_DIRS       ?= ./...
-MAIN_BRANCH     ?= main
+ALL_SRC          := $(shell find . -name "*.go")
+ALL_SRC          += go.mod
+UNIT_TEST_DIRS   ?= ./...
+LINT_DIRS        ?= ./...
+MAIN_BRANCH      ?= main
+TEST_OUTPUT_ROOT ?= $(CURDIR)/reports
 
 ##### Binaries #####
 clean-bins:
@@ -39,10 +40,15 @@ clean-test-output:
 
 unit-test: clean-test-output
 	@printf $(COLOR) "Run unit tests..."
-	@CGO_ENABLED=$(CGO_ENABLED) go test $(UNIT_TEST_FLAGS) $(UNIT_TEST_DIRS) $(COMPILED_TEST_ARGS) 2>&1 | tee -a test.log
-	@! grep -q "^--- FAIL" test.log
+	@mkdir -p $(TEST_OUTPUT_ROOT)
+	@bash -o pipefail -c "CGO_ENABLED=$(CGO_ENABLED) go test $(UNIT_TEST_FLAGS) $(UNIT_TEST_DIRS) $(COMPILED_TEST_ARGS) 2>&1 | tee -a $(TEST_OUTPUT_ROOT)/test.log"
 
-test: unit-test
+integration-test:
+	@printf $(COLOR) "Run integration tests..."
+	@mkdir -p $(TEST_OUTPUT_ROOT)
+	@bash -o pipefail -c "CGO_ENABLED=$(CGO_ENABLED) go test -C tests -tags=test_dep -timeout 300s ./integration/... 2>&1 | tee -a $(TEST_OUTPUT_ROOT)/integration-test.log"
+
+test: unit-test integration-test
 
 ##### Linting / formatting #####
 lint:
