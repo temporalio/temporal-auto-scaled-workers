@@ -41,8 +41,8 @@ var (
 		metrics.WithDescription("The number of times an activity was executed as part of a worker controller instance."))
 
 	ScalingActionLatency = metrics.NewTimerDef(
-		"worker_controller_instance_scaling_action_latency",
-		metrics.WithDescription("Latency from work detection to scaling-action completion, tagged by path and operation."))
+		"worker_controller_instance_scaling_action_processing_latency",
+		metrics.WithDescription("Latency of WCI's own processing — from trigger (task-add signal receipt / stats poll start) to scaling-action completion."))
 )
 
 // Tag key constants matching go.temporal.io/server/common/metrics/tags.go.
