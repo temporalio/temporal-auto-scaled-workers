@@ -40,7 +40,7 @@ var (
 		"worker_controller_instance_activities",
 		metrics.WithDescription("The number of times an activity was executed as part of a worker controller instance."))
 
-	ScalingActionLatency = metrics.NewTimerDef(
+	ScalingActionProcessingLatency = metrics.NewTimerDef(
 		"worker_controller_instance_scaling_action_processing_latency",
 		metrics.WithDescription("Latency of WCI's own processing — from trigger (task-add signal receipt / stats poll start) to scaling-action completion."))
 )

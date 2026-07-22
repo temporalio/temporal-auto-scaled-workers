@@ -680,7 +680,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			} else {
 				d.recordOperation(wcimetrics.OperationTypeInvokeWorker, spec.Compute.ProviderType, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonNone)
 
-				d.recordScalingActionLatency(ctx, spec.Compute.ProviderType, origin, wcimetrics.OperationTypeInvokeWorker)
+				d.recordScalingActionProcessingLatency(ctx, spec.Compute.ProviderType, origin, wcimetrics.OperationTypeInvokeWorker)
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
 		case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
@@ -715,7 +715,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				d.recordOperation(wcimetrics.OperationTypeUpdateWorkerSetSize, spec.Compute.ProviderType, wcimetrics.ErrorTypeActivityError, classifyActivityErrorType(err), wcimetrics.SkippedReasonNone)
 			} else {
 				d.recordOperation(wcimetrics.OperationTypeUpdateWorkerSetSize, spec.Compute.ProviderType, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonNone)
-				d.recordScalingActionLatency(ctx, spec.Compute.ProviderType, origin, wcimetrics.OperationTypeUpdateWorkerSetSize)
+				d.recordScalingActionProcessingLatency(ctx, spec.Compute.ProviderType, origin, wcimetrics.OperationTypeUpdateWorkerSetSize)
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
 		default:
@@ -797,7 +797,7 @@ func (d *WorkflowRunner) updateMemo(ctx workflow.Context) error {
 	})
 }
 
-func (d *WorkflowRunner) recordScalingActionLatency(ctx workflow.Context, provider iface.ComputeProviderType, origin scalingActionLatencyOrigin, operation string) {
+func (d *WorkflowRunner) recordScalingActionProcessingLatency(ctx workflow.Context, provider iface.ComputeProviderType, origin scalingActionLatencyOrigin, operation string) {
 	if origin.start.IsZero() {
 		return
 	}
@@ -805,7 +805,7 @@ func (d *WorkflowRunner) recordScalingActionLatency(ctx workflow.Context, provid
 		wcimetrics.PathTagName:        origin.path,
 		wcimetrics.OperationTagName:   operation,
 		wcimetrics.ComputeProviderTag: computeProviderTagValue(provider),
-	}).Timer(wcimetrics.ScalingActionLatency.Name()).Record(workflow.Now(ctx).Sub(origin.start))
+	}).Timer(wcimetrics.ScalingActionProcessingLatency.Name()).Record(workflow.Now(ctx).Sub(origin.start))
 }
 
 func getWorkflowVersion(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion) WorkerControllerInstanceWorkflowVersion {
