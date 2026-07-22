@@ -687,7 +687,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			}
 
 			// A larger target than the algorithm's previous size is a scale-up, a smaller one
-			// a scale-down. PreviousCount is always set for UpdateWorkerSetSize actions.
+			// a scale-down. PreviousCount should be set for every UpdateWorkerSetSize action; guard defensively.
 			if action.PreviousCount == nil {
 				d.logger.Error("UpdateWorkerSetSize action missing PreviousCount; scale direction not recorded", "scaling_group_key", action.ScalingGroupKey, "count", count)
 			} else {
