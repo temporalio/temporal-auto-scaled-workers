@@ -491,7 +491,7 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 		if resp.UpdatedScalingStatus != nil {
 			d.State.ScalingStatus = resp.UpdatedScalingStatus
 		}
-		d.handleActions(ctx, resp.Actions, nil, scalingActionLatencyOrigin{start: pollStart, path: wcimetrics.PathPullStats})
+		d.handleActions(ctx, resp.Actions, nil, scalingActionProcessingLatencyOrigin{start: pollStart, path: wcimetrics.PathPullStats})
 
 		return time.Duration(resp.NextPollSeconds) * time.Second
 	}
@@ -569,13 +569,13 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 		if resp.UpdatedScalingStatus != nil {
 			d.State.ScalingStatus = resp.UpdatedScalingStatus
 		}
-		d.handleActions(ctx, resp.Actions, req, scalingActionLatencyOrigin{start: signalReceiptTime, path: wcimetrics.PathTaskAdd})
+		d.handleActions(ctx, resp.Actions, req, scalingActionProcessingLatencyOrigin{start: signalReceiptTime, path: wcimetrics.PathTaskAdd})
 	}
 }
 
-// scalingActionLatencyOrigin carries where the latency clock started and which path
+// scalingActionProcessingLatencyOrigin carries where the latency clock started and which path
 // produced the action. A zero start means "do not record".
-type scalingActionLatencyOrigin struct {
+type scalingActionProcessingLatencyOrigin struct {
 	start time.Time
 	path  string
 }
@@ -588,7 +588,7 @@ type scalingActionLatencyOrigin struct {
 // follow-up activity and so must see the freshly-computed status. If a
 // dispatched action subsequently fails, the persisted status is not rolled
 // back.
-func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingalgorithm.ScalingAction, taskAddRequest *iface.SignalTaskAddRequest, origin scalingActionLatencyOrigin) {
+func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingalgorithm.ScalingAction, taskAddRequest *iface.SignalTaskAddRequest, origin scalingActionProcessingLatencyOrigin) {
 	if d.State == nil || d.State.Spec == nil {
 		return
 	}
@@ -797,7 +797,7 @@ func (d *WorkflowRunner) updateMemo(ctx workflow.Context) error {
 	})
 }
 
-func (d *WorkflowRunner) recordScalingActionProcessingLatency(ctx workflow.Context, provider iface.ComputeProviderType, origin scalingActionLatencyOrigin, operation string) {
+func (d *WorkflowRunner) recordScalingActionProcessingLatency(ctx workflow.Context, provider iface.ComputeProviderType, origin scalingActionProcessingLatencyOrigin, operation string) {
 	if origin.start.IsZero() {
 		return
 	}

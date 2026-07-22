@@ -430,7 +430,7 @@ func TestHandleActionsProcessesDeferredScalingDecision(t *testing.T) {
 			logger:                               sdkworkflow.GetLogger(ctx),
 			metrics:                              sdkworkflow.GetMetricsHandler(ctx),
 		}
-		runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, &event, scalingActionLatencyOrigin{path: wcimetrics.PathTaskAdd, start: time.Time{}})
+		runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, &event, scalingActionProcessingLatencyOrigin{path: wcimetrics.PathTaskAdd, start: time.Time{}})
 		return runner.State.ScalingStatus, nil
 	}
 
@@ -527,7 +527,7 @@ func TestHandleActionsDropsDeferredActionGuards(t *testing.T) {
 					logger:                               sdkworkflow.GetLogger(ctx),
 					metrics:                              sdkworkflow.GetMetricsHandler(ctx),
 				}
-				runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, taskAddRequest, scalingActionLatencyOrigin{path: wcimetrics.PathTaskAdd, start: time.Time{}})
+				runner.handleActions(ctx, []scalingalgorithm.ScalingAction{action}, taskAddRequest, scalingActionProcessingLatencyOrigin{path: wcimetrics.PathTaskAdd, start: time.Time{}})
 				return nil
 			}
 
