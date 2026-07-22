@@ -514,7 +514,14 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 		metricsSnapshot.Activity.LastBacklogCount +
 		metricsSnapshot.Nexus.LastBacklogCount
 
+	maxBacklogAge := max(
+		metricsSnapshot.Workflow.LastBacklogAge,
+		metricsSnapshot.Activity.LastBacklogAge,
+		metricsSnapshot.Nexus.LastBacklogAge,
+	)
+
 	metricsHandler.Gauge(wcimetrics.BacklogCount.Name()).Update(float64(totalBacklog))
+	metricsHandler.Gauge(wcimetrics.BacklogAge.Name()).Update(maxBacklogAge.Seconds())
 
 	actions := []scalingalgorithm.ScalingAction{}
 	updatedScalingStatus := map[string]iface.ScalingAlgorithmStatus{}

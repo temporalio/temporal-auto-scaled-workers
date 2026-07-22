@@ -6,6 +6,9 @@ var (
 	BacklogCount = metrics.NewGaugeDef(
 		"worker_controller_instance_backlog_count",
 		metrics.WithDescription("The total detected backlog size for a worker controller instance."))
+	BacklogAge = metrics.NewGaugeDef(
+		"worker_controller_instance_backlog_age",
+		metrics.WithDescription("The max detected backlog age in seconds for a worker controller instance."))
 
 	ScaleUpCount = metrics.NewCounterDef(
 		"worker_controller_instance_scale_up_count",
@@ -36,6 +39,10 @@ var (
 	Activities = metrics.NewCounterDef(
 		"worker_controller_instance_activities",
 		metrics.WithDescription("The number of times an activity was executed as part of a worker controller instance."))
+
+	ScalingActionProcessingLatency = metrics.NewTimerDef(
+		"worker_controller_instance_scaling_action_processing_latency",
+		metrics.WithDescription("Latency of WCI's own processing — from trigger (task-add signal receipt / stats poll start) to scaling-action completion."))
 )
 
 // Tag key constants matching go.temporal.io/server/common/metrics/tags.go.
@@ -54,6 +61,7 @@ const (
 	ScaleUpTriggerTagName      = "scale_up_trigger"
 	SkipReasonTagName          = "skip_reason"
 	ActivityErrorTypeTagName   = "activity_error_type"
+	PathTagName                = "path"
 )
 
 // ComputeProviderNone is the sentinel compute_provider tag value used when a
@@ -139,4 +147,6 @@ const (
 	OperationTypeDeferredScalingDecision = "deferred_scaling_decision"
 	ScaleUpTriggerTypeMetricsPoll        = "metrics_poll"
 	ScaleUpTriggerTypeTaskAdd            = "task_add"
+	PathTaskAdd                          = "task_add"
+	PathPullStats                        = "pull_stats"
 )
