@@ -465,6 +465,8 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 		return maxPollInterval
 	}
 
+	pollStart := workflow.Now(ctx)
+
 	var resp PullStatsActivityResponse
 	if err := workflow.ExecuteActivity(
 		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: PullStatsActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
@@ -489,7 +491,7 @@ func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration 
 		if resp.UpdatedScalingStatus != nil {
 			d.State.ScalingStatus = resp.UpdatedScalingStatus
 		}
-		d.handleActions(ctx, resp.Actions, nil)
+		d.handleActions(ctx, resp.Actions, nil, scalingActionProcessingLatencyOrigin{start: pollStart, path: wcimetrics.PathPullStats})
 
 		return time.Duration(resp.NextPollSeconds) * time.Second
 	}
@@ -534,6 +536,7 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 }
 
 func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *iface.SignalTaskAddRequest) {
+	signalReceiptTime := workflow.Now(ctx)
 	if req == nil {
 		d.logger.Warn("Received nil task-add signal request; dropping")
 		d.recordSignal(wcimetrics.SignalTypeTaskAdd, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonInvalidRequest)
@@ -566,8 +569,15 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 		if resp.UpdatedScalingStatus != nil {
 			d.State.ScalingStatus = resp.UpdatedScalingStatus
 		}
-		d.handleActions(ctx, resp.Actions, req)
+		d.handleActions(ctx, resp.Actions, req, scalingActionProcessingLatencyOrigin{start: signalReceiptTime, path: wcimetrics.PathTaskAdd})
 	}
+}
+
+// scalingActionProcessingLatencyOrigin carries where the latency clock started and which path
+// produced the action. A zero start means "do not record".
+type scalingActionProcessingLatencyOrigin struct {
+	start time.Time
+	path  string
 }
 
 // handleActions dispatches scaling actions returned by the scaling algorithm.
@@ -578,7 +588,7 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 // follow-up activity and so must see the freshly-computed status. If a
 // dispatched action subsequently fails, the persisted status is not rolled
 // back.
-func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingalgorithm.ScalingAction, taskAddRequest *iface.SignalTaskAddRequest) {
+func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingalgorithm.ScalingAction, taskAddRequest *iface.SignalTaskAddRequest, origin scalingActionProcessingLatencyOrigin) {
 	if d.State == nil || d.State.Spec == nil {
 		return
 	}
@@ -638,7 +648,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				if resp.UpdatedScalingStatus != nil {
 					d.State.ScalingStatus[action.ScalingGroupKey] = resp.UpdatedScalingStatus
 				}
-				d.handleActions(ctx, resp.Actions, nil)
+				d.handleActions(ctx, resp.Actions, nil, origin)
 				d.recordOperation(wcimetrics.OperationTypeDeferredScalingDecision, spec.Compute.ProviderType, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonNone)
 			}
 
@@ -670,6 +680,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 			} else {
 				d.recordOperation(wcimetrics.OperationTypeInvokeWorker, spec.Compute.ProviderType, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonNone)
 
+				d.recordScalingActionProcessingLatency(ctx, spec.Compute.ProviderType, origin, wcimetrics.OperationTypeInvokeWorker)
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
 		case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
@@ -706,6 +717,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				d.recordOperation(wcimetrics.OperationTypeUpdateWorkerSetSize, spec.Compute.ProviderType, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonNone)
 				// Record the target worker-set size once the update was applied successfully.
 				actionMetrics.Gauge(wcimetrics.TargetWorkerCount.Name()).Update(float64(count))
+				d.recordScalingActionProcessingLatency(ctx, spec.Compute.ProviderType, origin, wcimetrics.OperationTypeUpdateWorkerSetSize)
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
 		default:
@@ -785,6 +797,17 @@ func (d *WorkflowRunner) updateMemo(ctx workflow.Context) error {
 			CreateTime:     d.State.CreateTime,
 		},
 	})
+}
+
+func (d *WorkflowRunner) recordScalingActionProcessingLatency(ctx workflow.Context, provider iface.ComputeProviderType, origin scalingActionProcessingLatencyOrigin, operation string) {
+	if origin.start.IsZero() {
+		return
+	}
+	d.metrics.WithTags(map[string]string{
+		wcimetrics.PathTagName:        origin.path,
+		wcimetrics.OperationTagName:   operation,
+		wcimetrics.ComputeProviderTag: computeProviderTagValue(provider),
+	}).Timer(wcimetrics.ScalingActionProcessingLatency.Name()).Record(workflow.Now(ctx).Sub(origin.start))
 }
 
 func getWorkflowVersion(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion) WorkerControllerInstanceWorkflowVersion {
