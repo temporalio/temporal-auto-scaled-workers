@@ -81,6 +81,10 @@ jobs:
 
       - name: Run Integration Tests
         working-directory: tests
+        # Server testcore writes to $TEMPORAL_ROOT/.testoutput; default resolves into
+        # the read-only module cache when server is a dependency.
+        env:
+          TEMPORAL_ROOT: ${{ github.workspace }}
         run: go test -tags=test_dep -timeout 300s ./integration/...
 
   integration-test-server-main:
@@ -103,4 +107,6 @@ jobs:
 
       - name: Run Integration Tests
         working-directory: tests
+        env:
+          TEMPORAL_ROOT: ${{ github.workspace }}
         run: go test -tags=test_dep -timeout 300s ./integration/...
