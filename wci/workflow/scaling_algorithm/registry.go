@@ -22,9 +22,6 @@ type (
 		ScalingGroupKey string     `json:"scaling_group_key"`
 		Action          ActionType `json:"action"`
 		Count           *int32     `json:"count,omitempty"`
-		// PreviousCount is the worker-set size before this change, set only for
-		// ActionTypeUpdateWorkerSetSize (nil otherwise) to help derive the scale direction downstream.
-		PreviousCount *int32 `json:"previous_count,omitempty"`
 	}
 
 	ScalingMetricsSnapshot struct {
