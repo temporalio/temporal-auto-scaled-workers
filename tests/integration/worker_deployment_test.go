@@ -292,18 +292,6 @@ func TestWCIListWorkerDeploymentsEmpty(t *testing.T) {
 	require.Empty(t, got)
 }
 
-func createWorkerDeployment(t *testing.T, env *testcore.TestEnv, deploymentName string) {
-	t.Helper()
-	_, err := env.SdkClient().WorkflowService().CreateWorkerDeployment(env.Context(),
-		&workflowservice.CreateWorkerDeploymentRequest{
-			Namespace:      env.Namespace().String(),
-			DeploymentName: deploymentName,
-			Identity:       "test-identity",
-			RequestId:      uuid.NewString(),
-		})
-	require.NoError(t, err)
-}
-
 func createVersion(t *testing.T, env *testcore.TestEnv, deploymentName, buildID string) *deploymentpb.WorkerDeploymentVersion {
 	t.Helper()
 	version := &deploymentpb.WorkerDeploymentVersion{
