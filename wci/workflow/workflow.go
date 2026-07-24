@@ -715,6 +715,8 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				d.recordOperation(wcimetrics.OperationTypeUpdateWorkerSetSize, spec.Compute.ProviderType, wcimetrics.ErrorTypeActivityError, classifyActivityErrorType(err), wcimetrics.SkippedReasonNone)
 			} else {
 				d.recordOperation(wcimetrics.OperationTypeUpdateWorkerSetSize, spec.Compute.ProviderType, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonNone)
+				// Record the target worker-set size once the update was applied successfully.
+				actionMetrics.Gauge(wcimetrics.TargetWorkerCount.Name()).Update(float64(count))
 				d.recordScalingActionProcessingLatency(ctx, spec.Compute.ProviderType, origin, wcimetrics.OperationTypeUpdateWorkerSetSize)
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
