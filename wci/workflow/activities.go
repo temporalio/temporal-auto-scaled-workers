@@ -36,6 +36,11 @@ const (
 var (
 	minPollInterval = 30 * time.Second
 	maxPollInterval = 5 * time.Minute
+
+	// registerTaskQueueWorkerSetSize is the instance count a worker-set provider is
+	// scaled to so a single worker comes up and registers the task queue. The scaling
+	// algorithm resizes the set from there.
+	registerTaskQueueWorkerSetSize int32 = 1
 )
 
 type (
@@ -261,14 +266,22 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 			return temporal.NewApplicationError(fmt.Sprintf("%s: '%s' is an unknown compute provider", k, v.Compute.ProviderType), "InvalidArgument")
 		}
 
-		if provider.LaunchStrategy() == computeprovider.LaunchStrategyInvoke {
-			config := map[string]any{}
-			if err := sdk.PreferProtoDataConverter.FromPayload(v.Compute.Config, &config); err != nil {
-				recordError(wcimetrics.ErrorTypeInvalidRequest)
-				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
-			}
+		config := map[string]any{}
+		if err := sdk.PreferProtoDataConverter.FromPayload(v.Compute.Config, &config); err != nil {
+			recordError(wcimetrics.ErrorTypeInvalidRequest)
+			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
+		}
 
+		switch provider.LaunchStrategy() {
+		case computeprovider.LaunchStrategyInvoke:
+			// Invoke a single worker; it registers the task queue then exits.
 			if err := provider.InvokeWorker(ctx, req.RequestContext, config); err != nil {
+				recordError(wcimetrics.ErrorTypeComputeProviderFailed)
+				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed", err)
+			}
+		case computeprovider.LaunchStrategyWorkerSet:
+			// Scale the set up so a worker comes up and registers the task queue.
+			if err := provider.UpdateWorkerSetSize(ctx, req.RequestContext, config, registerTaskQueueWorkerSetSize); err != nil {
 				recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed", err)
 			}
