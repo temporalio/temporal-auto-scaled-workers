@@ -42,6 +42,10 @@ unit-test: clean-test-output
 	@CGO_ENABLED=$(CGO_ENABLED) go test $(UNIT_TEST_FLAGS) $(UNIT_TEST_DIRS) $(COMPILED_TEST_ARGS) 2>&1 | tee -a test.log
 	@! grep -q "^--- FAIL" test.log
 
+unit-test-report: clean-test-output
+	@printf $(COLOR) "Run unit tests..."
+	@CGO_ENABLED=$(CGO_ENABLED) go test -v -json -cover -coverprofile=coverage.out $(UNIT_TEST_DIRS) $(COMPILED_TEST_ARGS) 2>&1 > report.json
+
 test: unit-test
 
 ##### Linting / formatting #####
