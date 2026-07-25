@@ -259,13 +259,9 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 }
 
 func (d *WorkflowRunner) validateValidateSpec(args *iface.ValidateSpecRequest) error {
-	if err := d.ensureNotDeleted(); err != nil {
-		return err
-	}
-	if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
-		return temporal.NewApplicationError("no change found", iface.ErrFailedPrecondition)
-	}
-	return nil
+	// Unlike validateUpdateInstance, an empty request is valid here.
+	// It allows validating the current configuration rather than a dry-run of changes.
+	return d.ensureNotDeleted()
 }
 
 // handleValidateSpec is the handler for the validateSpec update request. It implements a dry-run for any submitted changes,
