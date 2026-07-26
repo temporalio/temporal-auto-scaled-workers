@@ -53,6 +53,16 @@ type (
 		NextPoll *time.Duration
 	}
 
+	TaskQueueRegistrationResponse struct {
+		// Actions contains the scaling actions that bring a group's worker set up enough to
+		// register its task queues (an UpdateWorkerSetSize for worker-set algorithms, an
+		// InvokeWorker for invoke-only ones).
+		Actions []ScalingAction
+		// Status is the reconciled status to persist, so a later decision does not see a
+		// phantom count for a resize made on the registration path.
+		Status iface.ScalingAlgorithmStatus
+	}
+
 	ScalingAlgorithm interface {
 		// CompatibleLaunchStrategies returns the list of launch strategies the scaling algorithm can work with
 		CompatibleLaunchStrategies() []computeprovider.LaunchStrategy
@@ -90,6 +100,14 @@ type (
 		//
 		// The returned Actions MUST NOT contain ActionTypeDeferredScalingDecision as it is not supported.
 		ProcessMetricsPoll(ctx context.Context, config iface.ScalingAlgorithmConfig, priorStatus iface.ScalingAlgorithmStatus, metricsSnapshot ScalingMetricsSnapshot) (*MetricsPollResponse, error)
+
+		// TaskQueueRegistrationActions returns the actions that bring a group's worker set up enough to
+		// register its task queues, plus the reconciled status. The algorithm owns both the size
+		// and the launch strategy: worker-set algorithms emit an UpdateWorkerSetSize sized to
+		// their floor/initial count (at least 1) and fold that count into the returned Status;
+		// invoke-only algorithms emit an InvokeWorker and leave Status untouched. The caller
+		// applies the actions and persists the Status.
+		TaskQueueRegistrationActions(ctx context.Context, config iface.ScalingAlgorithmConfig, status iface.ScalingAlgorithmStatus) (*TaskQueueRegistrationResponse, error)
 	}
 )
 

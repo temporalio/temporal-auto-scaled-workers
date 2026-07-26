@@ -9,8 +9,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	computepb "go.temporal.io/api/compute/v1"
 	deploymentpb "go.temporal.io/api/deployment/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	wciworkflow "go.temporal.io/auto-scaled-workers/wci/workflow"
@@ -164,12 +167,18 @@ func TestWCIWorkerSetScaleUpPastOne(t *testing.T) {
 	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
 	events := spy.events
 
+	// Fast poll cadence so the post-registration idle scale-down (poll-driven) fires within
+	// the test's deadline rather than at the 5-minute production default.
+	t.Cleanup(wciworkflow.SetPollIntervalsForTest(2*time.Second, 1*time.Second))
+
 	createWorkerDeployment(t, env, deploymentName)
 	createWorkerSetVersion(t, ctx, cli, namespace, version,
 		rateBasedScaler(map[string]string{"scale_up_cooldown_ms": "0"}))
 
 	registerVersionTaskQueue(t, ctx, cli, namespace, deploymentName, buildID, taskQueue)
-	drainEvents(t, events)
+	// Registration reconciles the scaler's model to 1; sync on the idle scale-down back to 0
+	// so the first backlog scale-up below is the expected 0->1 rather than a 1->2 step.
+	awaitWorkerSetSize(t, events, 0, 60*time.Second, "idle scale-down before backlog")
 
 	// First backlog workflow → first scale-up (0 -> 1).
 	submitPinnedWorkflow(t, ctx, cli, taskQueue, deploymentName, buildID)
@@ -295,8 +304,15 @@ func TestWCIWorkerSetMultipleVersionsScaleIndependently(t *testing.T) {
 
 	registerVersionTaskQueue(t, ctx, cli, namespace, deploymentName, buildID1, taskQueue)
 	registerVersionTaskQueue(t, ctx, cli, namespace, deploymentName, buildID2, taskQueue)
-	drainEvents(t, events1)
-	drainEvents(t, events2)
+
+	// Registration brings each worker set up to (and reconciles the scaler's model to) a
+	// non-zero size, after which the idle poll scales back to 0. Sync on that 0 so the
+	// backlog scale-up below is observed from a known-idle state — otherwise a version whose
+	// cap equals the registration size (v2, cap 1) already sits at cap and emits no scale-up
+	// event. awaitWorkerSetSize logs-and-skips the intervening registration events, so it also
+	// subsumes the drain.
+	awaitWorkerSetSize(t, events1, 0, 60*time.Second, "v1 idle scale-down before backlog")
+	awaitWorkerSetSize(t, events2, 0, 60*time.Second, "v2 idle scale-down before backlog")
 
 	// Backlog both versions (no pollers). v1 scales up to its cap of 2, v2 to 1 —
 	// each observed on its own observer, confirming independent, differently-sized
@@ -316,6 +332,171 @@ func TestWCIWorkerSetMultipleVersionsScaleIndependently(t *testing.T) {
 
 	awaitWorkerSetSize(t, events1, 0, 90*time.Second, "v1 scale-down to 0")
 	awaitWorkerSetSize(t, events2, 0, 90*time.Second, "v2 scale-down to 0")
+}
+
+// TestWCIWorkerSetUpdateDoesNotShrinkLiveSet is the regression guard for the core fix: a
+// compute-config update on a live worker set must never collapse it to 1. This group is a
+// catch-all (no declared task types), so the existence check does not skip it, but the
+// registration resize is sized to the algorithm's planned count — re-asserting the current
+// size (2) rather than the pre-fix bare 1. The set therefore never shrinks.
+func TestWCIWorkerSetUpdateDoesNotShrinkLiveSet(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	taskQueue := "workerset-noshrink-tq-" + deploymentName
+	version := &deploymentpb.WorkerDeploymentVersion{DeploymentName: deploymentName, BuildId: buildID}
+
+	spy := &invokeSpy{events: make(chan string, 16)}
+	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
+	events := spy.events
+
+	createWorkerDeployment(t, env, deploymentName)
+	createWorkerSetVersion(t, ctx, cli, namespace, version, cappedRateBasedScaler(2))
+
+	registerVersionTaskQueue(t, ctx, cli, namespace, deploymentName, buildID, taskQueue)
+	drainEvents(t, events)
+
+	// Backlog with no poller drives the set up to its cap of 2 via the no-sync-match path.
+	submitPinnedWorkflow(t, ctx, cli, taskQueue, deploymentName, buildID)
+	submitPinnedWorkflow(t, ctx, cli, taskQueue, deploymentName, buildID)
+	awaitWorkerSetSize(t, events, 2, 60*time.Second, "scale-up to cap 2")
+	drainEvents(t, events)
+
+	// Update the (registered, live) version's scaler. handleUpdateInstance always runs
+	// InvokeWorkersToRegisterTaskQueues; the resize it issues must be sized to the planned
+	// count (2), so the set must never drop below 2 (the pre-fix bug collapsed it to 1).
+	updateWorkerSetScaler(t, ctx, cli, namespace, version, cappedRateBasedScaler(2))
+	assertNoWorkerSetShrink(t, events, 2, 6*time.Second, "updating a registered, live worker set")
+}
+
+// TestWCIWorkerSetUpdateOnRegisteredVersionSkipsResize verifies the existence-check skip on the
+// update path: when the group declares exactly the task type its worker registers (workflow),
+// an update to the already-registered version emits no registration resize at all (only a
+// validate). Under the pre-fix behavior the update would resize the set to 1.
+func TestWCIWorkerSetUpdateOnRegisteredVersionSkipsResize(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	taskQueue := "workerset-skip-tq-" + deploymentName
+	version := &deploymentpb.WorkerDeploymentVersion{DeploymentName: deploymentName, BuildId: buildID}
+
+	spy := &invokeSpy{events: make(chan string, 16)}
+	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
+	events := spy.events
+
+	createWorkerDeployment(t, env, deploymentName)
+	// Declare task_queue_types=[workflow] so the group's effective types exactly match what the
+	// workflow-only test worker registers — otherwise a catch-all group also expects activity/nexus
+	// (never registered) and the "all registered" gate can never be satisfied.
+	cc := workerSetConfigWithScaler(cappedRateBasedScaler(2))
+	cc.GetScalingGroups()["default"].TaskQueueTypes = []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW}
+	_, err := cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     cc,
+			RequestId:         uuid.NewString(),
+		})
+	require.NoError(t, err)
+
+	registerVersionTaskQueue(t, ctx, cli, namespace, deploymentName, buildID, taskQueue)
+	drainEvents(t, events)
+
+	// scaler.details-only update leaves task_queue_types intact, so the group's [workflow] is still
+	// fully registered → InvokeWorkersToRegisterTaskQueues skips → no resize event.
+	updateWorkerSetScaler(t, ctx, cli, namespace, version, cappedRateBasedScaler(2))
+	assertNoWorkerSetResize(t, events, 6*time.Second, "updating a registered, idle worker set")
+}
+
+// TestWCIWorkerSetRegistrationHonorsInitialCount verifies the registration resize is sized to
+// the scaler's planned count (initial_count), not a bare 1.
+func TestWCIWorkerSetRegistrationHonorsInitialCount(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	buildID := uuid.NewString()
+	version := &deploymentpb.WorkerDeploymentVersion{DeploymentName: deploymentName, BuildId: buildID}
+
+	spy := &invokeSpy{events: make(chan string, 16)}
+	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
+	events := spy.events
+
+	createWorkerDeployment(t, env, deploymentName)
+	// initial_count=3 with headroom (max_count=5); registration should size the set to 3.
+	createWorkerSetVersion(t, ctx, cli, namespace, version,
+		rateBasedScaler(map[string]string{"initial_count": "3", "max_count": "5"}))
+
+	awaitWorkerSetSize(t, events, 3, 60*time.Second, "registration sizes to initial_count")
+}
+
+// updateWorkerSetScaler updates the "default" scaling group's scaler details on an existing
+// worker-set version, driving the WCI update path.
+func updateWorkerSetScaler(t *testing.T, ctx context.Context, cli sdkclient.Client, namespace string, version *deploymentpb.WorkerDeploymentVersion, scaler *computepb.ComputeScaler) {
+	t.Helper()
+	updated := workerSetConfigWithScaler(scaler)
+	_, err := cli.WorkflowService().UpdateWorkerDeploymentVersionComputeConfig(ctx,
+		&workflowservice.UpdateWorkerDeploymentVersionComputeConfigRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			RequestId:         uuid.NewString(),
+			ComputeConfigScalingGroups: map[string]*computepb.ComputeConfigScalingGroupUpdate{
+				"default": {
+					ScalingGroup: updated.GetScalingGroups()["default"],
+					UpdateMask:   &fieldmaskpb.FieldMask{Paths: []string{"scaler.details"}},
+				},
+			},
+		})
+	require.NoError(t, err)
+}
+
+// assertNoWorkerSetResize fails if any "update-worker-set-size" action is observed within the
+// window. Other provider actions (e.g. "validate") are logged and ignored.
+func assertNoWorkerSetResize(t *testing.T, events <-chan string, window time.Duration, desc string) {
+	t.Helper()
+	deadline := time.After(window)
+	for {
+		select {
+		case action := <-events:
+			if strings.HasPrefix(action, "update-worker-set-size") {
+				t.Fatalf("unexpected worker-set resize while %s: %s", desc, action)
+			}
+			t.Logf("ignoring provider action while %s: %s", desc, action)
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// assertNoWorkerSetShrink fails if any "update-worker-set-size-N" with N < floor is observed
+// within the window. A resize that re-asserts the current size (N >= floor) is allowed; only a
+// shrink below floor fails. Non-resize actions (e.g. "validate") are ignored.
+func assertNoWorkerSetShrink(t *testing.T, events <-chan string, floor int, window time.Duration, desc string) {
+	t.Helper()
+	deadline := time.After(window)
+	for {
+		select {
+		case action := <-events:
+			if strings.HasPrefix(action, "update-worker-set-size") && parseWorkerSetCount(t, action) < floor {
+				t.Fatalf("unexpected worker-set shrink below %d while %s: %s", floor, desc, action)
+			}
+			t.Logf("provider action while %s: %s", desc, action)
+		case <-deadline:
+			return
+		}
+	}
 }
 
 // workerSetComputeConfig is the worker-set analog of testComputeConfig: the
