@@ -1,0 +1,89 @@
+name: Release
+
+# Validates a tagged commit and publishes a GitHub Release for it.
+#
+# Two entry points:
+#   - workflow_call: invoked by release-auto-tag.yml right after it pushes a new
+#     v1.<serverBuild>.<wciRev> tag (a tag pushed with GITHUB_TOKEN does NOT fire
+#     the `push: tags` trigger below, so the auto-tag workflow chains here directly).
+#   - push a `v*` tag by hand (with a human/PAT credential) → this runs directly.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.135.0)'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)publish a release for'
+        required: true
+        type: string
+
+permissions:
+  contents: write # create the GitHub Release
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12
+
+  unit-test:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+      - name: Run unit tests
+        env:
+          UNIT_TEST_FLAGS: -v -cover
+        run: make unit-test
+
+  release:
+    needs: [lint, unit-test]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+(\.[0-9]+)+$ ]]; then
+            echo "Tag '${TAG}' is not a vMAJOR.MINOR.PATCH-<serverVersion> module tag" >&2
+            exit 1
+          fi
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists, skipping"
+            exit 0
+          fi
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            --verify-tag
