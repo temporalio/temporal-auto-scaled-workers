@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 )
@@ -23,6 +24,63 @@ func newRateBased() *scalingAlgorithmRateBased {
 
 func oldMs() int64 {
 	return time.Now().Add(-time.Hour).UnixMilli()
+}
+
+func TestRateBasedTaskQueueRegistrationActions(t *testing.T) {
+	a := newRateBased()
+
+	// regSize runs TaskQueueRegistrationActions and asserts it emits exactly one UpdateWorkerSetSize
+	// whose count is folded back into the returned status; it returns that count.
+	regSize := func(t *testing.T, config iface.ScalingAlgorithmConfig, status iface.ScalingAlgorithmStatus) int32 {
+		t.Helper()
+		resp, err := a.TaskQueueRegistrationActions(t.Context(), config, status)
+		require.NoError(t, err)
+		require.Len(t, resp.Actions, 1)
+		require.Equal(t, ActionTypeUpdateWorkerSetSize, resp.Actions[0].Action)
+		require.NotNil(t, resp.Actions[0].Count)
+		assert.Equal(t, int64(*resp.Actions[0].Count), resp.Status.GetInt64Field(stateRateBasedWorkerCount, -1),
+			"the resize target must be folded back into the status")
+		return *resp.Actions[0].Count
+	}
+
+	t.Run("unset status resizes to initial_count", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedInitialCountKey: int64(5)}
+		assert.Equal(t, int32(5), regSize(t, config, nil))
+	})
+
+	t.Run("no status and no initial_count floors to 1 (default initial_count is 0)", func(t *testing.T) {
+		require.Equal(t, int64(0), configRateBasedInitialCountDefault)
+		assert.Equal(t, int32(1), regSize(t, iface.ScalingAlgorithmConfig{}, iface.ScalingAlgorithmStatus{}))
+	})
+
+	t.Run("stored worker_count wins over initial_count", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedInitialCountKey: int64(5)}
+		status := iface.ScalingAlgorithmStatus{stateRateBasedWorkerCount: int64(3)}
+		assert.Equal(t, int32(3), regSize(t, config, status))
+	})
+
+	t.Run("garbage stored worker_count is dropped, falls back to initial_count", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedInitialCountKey: int64(5)}
+		status := iface.ScalingAlgorithmStatus{stateRateBasedWorkerCount: "not-a-number"}
+		assert.Equal(t, int32(5), regSize(t, config, status))
+	})
+
+	t.Run("stored count above max_count is clamped to max_count", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedMaxCountKey: int64(5)}
+		status := iface.ScalingAlgorithmStatus{stateRateBasedWorkerCount: int64(10)}
+		assert.Equal(t, int32(5), regSize(t, config, status))
+	})
+
+	t.Run("stored count below min_count is clamped to min_count", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedMinCountKey: int64(3)}
+		status := iface.ScalingAlgorithmStatus{stateRateBasedWorkerCount: int64(1)}
+		assert.Equal(t, int32(3), regSize(t, config, status))
+	})
+
+	t.Run("initial_count 0 still resizes to at least 1", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedInitialCountKey: int64(0)}
+		assert.Equal(t, int32(1), regSize(t, config, nil))
+	})
 }
 
 func staticMetricsSnapshotGetter(snapshot ScalingMetricsSnapshot, callCount *int) ScalingMetricsSnapshotGetter {

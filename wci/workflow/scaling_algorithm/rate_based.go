@@ -785,6 +785,24 @@ func currentRateBasedPlannedCount(config iface.ScalingAlgorithmConfig, state ifa
 	return int32(config.GetInt64Field(configRateBasedInitialCountKey, configRateBasedInitialCountDefault))
 }
 
+func (a *scalingAlgorithmRateBased) TaskQueueRegistrationActions(ctx context.Context, config iface.ScalingAlgorithmConfig, status iface.ScalingAlgorithmStatus) (*TaskQueueRegistrationResponse, error) {
+	updatedState := cleanRateBasedState(ctx, status)
+	planned := currentRateBasedPlannedCount(config, updatedState)
+	// Clamp to the configured bounds: a stored count can outlive a config change that
+	// lowered max_count, and the algorithm would never actually run outside [min, max].
+	minCount := int32(config.GetInt64Field(configRateBasedMinCountKey, configRateBasedMinCountDefault))
+	maxCount := int32(config.GetInt64Field(configRateBasedMaxCountKey, configRateBasedMaxCountDefault))
+	// At least 1 so a worker comes up to register the queue; fold the size back into the
+	// state so the next decision reconciles with the resize (closes the initial_count==0
+	// orphan where the registration worker would otherwise never scale to 0).
+	size := max(int32(1), min(max(planned, minCount), maxCount))
+	updatedState[stateRateBasedWorkerCount] = int64(size)
+	return &TaskQueueRegistrationResponse{
+		Actions: []ScalingAction{{Action: ActionTypeUpdateWorkerSetSize, Count: &size}},
+		Status:  updatedState,
+	}, nil
+}
+
 func estimatedRateBasedPerConsumerCapacity(config iface.ScalingAlgorithmConfig, state iface.ScalingAlgorithmStatus) float64 {
 	fallback := config.GetFloat64Field(configRateBasedInitialPerConsumerCapacityKey, configRateBasedInitialPerConsumerCapacityDefault)
 	if estimate, ok := state[stateRateBasedEWMAPerConsumerCapacity].(float64); ok && isPositiveFinite(estimate) {

@@ -23,6 +23,14 @@ LINT_DIRS        ?= ./...
 MAIN_BRANCH      ?= main
 TEST_OUTPUT_ROOT ?= $(CURDIR)/reports
 
+# REPORT=true switches test output to `go test -json` plus a coverage profile,
+# written under TEST_OUTPUT_ROOT for CI to pick up.
+REPORT                      ?= false
+UNIT_REPORT_FLAGS           := $(if $(filter true,$(REPORT)),-v -json -coverprofile=$(TEST_OUTPUT_ROOT)/unit-coverage.out)
+UNIT_REPORT_REDIRECT        := $(if $(filter true,$(REPORT)),> $(TEST_OUTPUT_ROOT)/unit-report.json)
+INTEGRATION_REPORT_FLAGS    := $(if $(filter true,$(REPORT)),-v -json -coverprofile=$(TEST_OUTPUT_ROOT)/integration-coverage.out)
+INTEGRATION_REPORT_REDIRECT := $(if $(filter true,$(REPORT)),> $(TEST_OUTPUT_ROOT)/integration-report.json)
+
 ##### Binaries #####
 clean-bins:
 	@printf $(COLOR) "Delete old binaries..."
@@ -41,12 +49,12 @@ clean-test-output:
 unit-test: clean-test-output
 	@printf $(COLOR) "Run unit tests..."
 	@mkdir -p $(TEST_OUTPUT_ROOT)
-	@bash -o pipefail -c "CGO_ENABLED=$(CGO_ENABLED) go test $(UNIT_TEST_FLAGS) $(UNIT_TEST_DIRS) $(COMPILED_TEST_ARGS) 2>&1 | tee -a $(TEST_OUTPUT_ROOT)/test.log"
+	@CGO_ENABLED=$(CGO_ENABLED) go test $(UNIT_TEST_FLAGS) $(UNIT_REPORT_FLAGS) $(UNIT_TEST_DIRS) $(COMPILED_TEST_ARGS) $(UNIT_REPORT_REDIRECT)
 
 integration-test:
 	@printf $(COLOR) "Run integration tests..."
 	@mkdir -p $(TEST_OUTPUT_ROOT)
-	@bash -o pipefail -c "CGO_ENABLED=$(CGO_ENABLED) go test -C tests -tags=test_dep -timeout 300s ./integration/... 2>&1 | tee -a $(TEST_OUTPUT_ROOT)/integration-test.log"
+	@CGO_ENABLED=$(CGO_ENABLED) go test -C tests -tags=test_dep -timeout 300s ./integration/... $(INTEGRATION_TEST_FLAGS) $(INTEGRATION_REPORT_FLAGS) $(INTEGRATION_REPORT_REDIRECT)
 
 test: unit-test integration-test
 
