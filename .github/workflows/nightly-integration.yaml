@@ -1,0 +1,29 @@
+name: Continuous Integration
+on:
+  schedule:
+    - cron: "0 2 * * *"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  integration-test-server-main:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "tests/go.mod"
+
+      - name: Update server to main
+        working-directory: tests
+        run: |
+          go get go.temporal.io/server@main
+          go mod tidy
+
+      - name: Run Integration Tests
+        run: make integration-test

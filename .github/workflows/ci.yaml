@@ -55,6 +55,8 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-24.04-arm
+    env:
+      TEST_OUTPUT_ROOT: ${{ github.workspace }}/reports
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,21 +67,23 @@ jobs:
           go-version-file: "go.mod"
 
       - name: Run Unit Tests
-        run: make unit-test-report
+        env:
+          REPORT: "true"
+        run: make unit-test
 
       - name: Unit Test Report
         uses: dorny/test-reporter@v3
         if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }} # Prevent running in fork PRs due to `checks: write`
         with:
           name: Unit Tests
-          path: ./report.json
+          path: ${{ env.TEST_OUTPUT_ROOT }}/unit-report.json
           reporter: golang-json
 
       - name: Archive code coverage results
         uses: actions/upload-artifact@v4
         with:
           name: unit-code-coverage
-          path: coverage.out
+          path: ${{ env.TEST_OUTPUT_ROOT }}/unit-coverage.out
 
   unit-code-coverage:
     name: "Unit test coverage report"
@@ -94,10 +98,15 @@ jobs:
       - uses: fgrosse/go-coverage-report@v1.3.0
         with:
           coverage-artifact-name: "unit-code-coverage"
-          coverage-file-name: "coverage.out"
+          coverage-file-name: "unit-coverage.out"
 
   integration-test:
     runs-on: ubuntu-24.04-arm
+    env:
+      TEST_OUTPUT_ROOT: ${{ github.workspace }}/reports
+      # Server testcore writes to $TEMPORAL_ROOT/.testoutput; default resolves into
+      # the read-only module cache when server is a dependency.
+      TEMPORAL_ROOT: ${{ github.workspace }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -108,26 +117,23 @@ jobs:
           go-version-file: "tests/go.mod"
 
       - name: Run Integration Tests
-        working-directory: tests
-        # Server testcore writes to $TEMPORAL_ROOT/.testoutput; default resolves into
-        # the read-only module cache when server is a dependency.
         env:
-          TEMPORAL_ROOT: ${{ github.workspace }}
-        run: go test -v -json -cover -coverprofile=../coverage.out -tags=test_dep -timeout 300s ./integration/... > ../integ-report.json
+          REPORT: "true"
+        run: make integration-test
 
       - name: Integration Test Report
         uses: dorny/test-reporter@v3
         if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
         with:
           name: Integration Tests
-          path: ./integ-report.json
+          path: ${{ env.TEST_OUTPUT_ROOT }}/integration-report.json
           reporter: golang-json
 
       - name: Archive code coverage results
         uses: actions/upload-artifact@v4
         with:
           name: integ-code-coverage
-          path: coverage.out
+          path: ${{ env.TEST_OUTPUT_ROOT }}/integration-coverage.out
 
   integ-code-coverage:
     name: "Integration test coverage report"
@@ -142,11 +148,14 @@ jobs:
       - uses: fgrosse/go-coverage-report@v1.3.0
         with:
           coverage-artifact-name: "integ-code-coverage"
-          coverage-file-name: "coverage.out"
+          coverage-file-name: "integration-coverage.out"
 
   integration-test-server-main:
     continue-on-error: true
     runs-on: ubuntu-24.04-arm
+    env:
+      TEST_OUTPUT_ROOT: ${{ github.workspace }}/reports
+      TEMPORAL_ROOT: ${{ github.workspace }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -163,7 +172,4 @@ jobs:
           go mod tidy
 
       - name: Run Integration Tests
-        working-directory: tests
-        env:
-          TEMPORAL_ROOT: ${{ github.workspace }}
-        run: go test -tags=test_dep -timeout 300s ./integration/...
+        run: make integration-test
