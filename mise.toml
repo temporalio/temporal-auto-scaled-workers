@@ -1,2 +1,16 @@
 [tools]
+go = "1.26.4"
 golangci-lint = "2.12.2"
+
+# Integration tests live in the ./tests module and require the test_dep build tag
+# (compute-observer spy hooks). TEMPORAL_ROOT keeps testcore's .testoutput out of the
+# read-only module cache. Extra args are appended, e.g. `mise run integration -- -run TestWCIWorkerSet`.
+[tasks.integration]
+description = "Run WCI integration tests (in-process Temporal server)"
+dir = "tests"
+env = { TEMPORAL_ROOT = "{{config_root}}" }
+run = "go test -tags=test_dep -timeout 300s ./integration/..."
+
+[tasks.lint-branch]
+description = "Lint changes since the merge-base with main"
+run = "make lint-branch"

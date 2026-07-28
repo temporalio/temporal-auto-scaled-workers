@@ -6,6 +6,9 @@ import (
 	"errors"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
@@ -15,7 +18,6 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 	worker_versioning "go.temporal.io/server/common/worker_versioning"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -394,24 +396,32 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		}
 
 		// we need to scale up each of the groups for a moment to get them to register the task queues
+		var regResp InvokeWorkersToRegisterTaskQueuesResponse
 		if err := workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: RegisterTaskQueuesViaWorkersActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.InvokeWorkersToRegisterTaskQueues,
 			&InvokeWorkersToRegisterTaskQueuesRequest{
 				RequestContext:               d.requestContext(),
 				WorkerControllerInstanceSpec: *updatedSpec,
+				ScalingStatus:                d.State.ScalingStatus,
 			},
-		).Get(ctx, nil); err != nil {
+		).Get(ctx, &regResp); err != nil {
 			d.recordUpdate(wcimetrics.UpdateTypeUpdateInstance, wcimetrics.ErrorTypeActivityError, classifyActivityErrorType(err))
 
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
-				if appErr.Type() == "InvalidArgument" {
+				switch appErr.Type() {
+				case "InvalidArgument":
 					return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
+				case "ResourceExhausted":
+					// no need to pass through the cause as the client will strip that before returning
+					return nil, serviceerror.NewResourceExhausted(enumspb.RESOURCE_EXHAUSTED_CAUSE_UNSPECIFIED, appErr.Message())
 				}
 				return nil, serviceerror.NewFailedPreconditionf("%s", appErr.Message())
 			}
 			return nil, err
 		}
+
+		d.State.ScalingStatus = regResp.UpdatedScalingStatus
 
 		d.State.ValidationStatus = iface.NewValidationStatusSuccess(validationTime)
 		d.signalVersionWorkflow(ctx)
