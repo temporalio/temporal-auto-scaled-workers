@@ -72,7 +72,7 @@ jobs:
         run: make unit-test
 
       - name: Unit Test Report
-        uses: dorny/test-reporter@v3
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
         if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }} # Prevent running in fork PRs due to `checks: write`
         with:
           name: Unit Tests
@@ -80,7 +80,7 @@ jobs:
           reporter: golang-json
 
       - name: Archive code coverage results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unit-code-coverage
           path: ${{ env.TEST_OUTPUT_ROOT }}/unit-coverage.out
@@ -95,7 +95,7 @@ jobs:
       actions: read
       pull-requests: write
     steps:
-      - uses: fgrosse/go-coverage-report@v1.3.0
+      - uses: fgrosse/go-coverage-report@e432de98ee94a276e8f666d25bfd76347665f75b # v1.3.1
         with:
           coverage-artifact-name: "unit-code-coverage"
           coverage-file-name: "unit-coverage.out"
@@ -122,7 +122,7 @@ jobs:
         run: make integration-test
 
       - name: Integration Test Report
-        uses: dorny/test-reporter@v3
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
         if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
         with:
           name: Integration Tests
@@ -130,7 +130,7 @@ jobs:
           reporter: golang-json
 
       - name: Archive code coverage results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: integ-code-coverage
           path: ${{ env.TEST_OUTPUT_ROOT }}/integration-coverage.out
@@ -145,7 +145,7 @@ jobs:
       actions: read
       pull-requests: write # write permission needed to comment on PR
     steps:
-      - uses: fgrosse/go-coverage-report@v1.3.0
+      - uses: fgrosse/go-coverage-report@e432de98ee94a276e8f666d25bfd76347665f75b # v1.3.1
         with:
           coverage-artifact-name: "integ-code-coverage"
           coverage-file-name: "integration-coverage.out"
