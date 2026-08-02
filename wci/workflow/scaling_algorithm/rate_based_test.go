@@ -423,7 +423,6 @@ func TestRateBasedProcessTaskAdd(t *testing.T) {
 		assert.NotContains(t, resp.Status, stateRateBasedEWMADispatchRate, "wrong-typed dispatch slot must not survive into persisted state")
 		assert.NotContains(t, resp.Status, stateRateBasedEWMAPerConsumerCapacity, "non-finite capacity slot must not survive into persisted state")
 	})
-
 }
 
 func TestRateBasedProcessDeferredScalingDecision(t *testing.T) {

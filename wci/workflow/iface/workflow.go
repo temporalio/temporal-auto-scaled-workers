@@ -63,6 +63,7 @@ type (
 		LastBacklogCount   int64   `json:"last_backlog_count"`
 		LastArrivalRate    float32 `json:"last_arrival_rate"`
 		LastProcessingRate float32 `json:"last_processing_rate"`
+		RateLimitingActive bool    `json:"rate_limiting_active,omitempty"`
 	}
 
 	ValidateWorkerControllerInstanceSpecWorkflowArgs struct {

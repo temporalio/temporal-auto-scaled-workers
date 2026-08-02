@@ -46,14 +46,17 @@ func (a *Activities) pullScalingMetricsSnapshot(ctx context.Context, namespaceNa
 			metricsSnapshot.Workflow.LastBacklogCount += versionedTaskQueue.Stats.ApproximateBacklogCount
 			metricsSnapshot.Workflow.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
 			metricsSnapshot.Workflow.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
+			metricsSnapshot.Workflow.RateLimitingActive = metricsSnapshot.Workflow.RateLimitingActive || versionedTaskQueue.Stats.RateLimitingActive
 		case enumspb.TASK_QUEUE_TYPE_ACTIVITY:
 			metricsSnapshot.Activity.LastBacklogCount += versionedTaskQueue.Stats.ApproximateBacklogCount
 			metricsSnapshot.Activity.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
 			metricsSnapshot.Activity.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
+			metricsSnapshot.Activity.RateLimitingActive = metricsSnapshot.Activity.RateLimitingActive || versionedTaskQueue.Stats.RateLimitingActive
 		case enumspb.TASK_QUEUE_TYPE_NEXUS:
 			metricsSnapshot.Nexus.LastBacklogCount += versionedTaskQueue.Stats.ApproximateBacklogCount
 			metricsSnapshot.Nexus.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
 			metricsSnapshot.Nexus.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
+			metricsSnapshot.Nexus.RateLimitingActive = metricsSnapshot.Nexus.RateLimitingActive || versionedTaskQueue.Stats.RateLimitingActive
 		}
 	}
 
