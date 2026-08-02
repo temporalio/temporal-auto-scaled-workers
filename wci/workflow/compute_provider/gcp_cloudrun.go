@@ -9,12 +9,14 @@ import (
 
 	run "cloud.google.com/go/run/apiv2"
 	runpb "cloud.google.com/go/run/apiv2/runpb"
-	"go.temporal.io/auto-scaled-workers/wci/client"
-	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
-	"go.temporal.io/server/common/dynamicconfig"
+	"golang.org/x/oauth2"
 	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"go.temporal.io/auto-scaled-workers/wci/client"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/server/common/dynamicconfig"
 )
 
 const (
@@ -26,6 +28,17 @@ const (
 
 type gcpCloudRunComputeProvider struct {
 	intermediaryServiceAccounts [][]client.GCPIAMServiceAccountRequest
+	// firstDelegateAsBase controls whether delegates[0] is consumed as the chain
+	// base (direct impersonation) or passed as an ordinary token-creator delegate.
+	// See client.WorkerControllerGCPFirstDelegateAsBase.
+	firstDelegateAsBase bool
+}
+
+// impersonateTokenSourceFn is the seam over impersonate.CredentialsTokenSource so
+// tests can assert how the impersonation chain is constructed (base vs. delegates)
+// without real GCP auth.
+var impersonateTokenSourceFn = func(ctx context.Context, cfg impersonate.CredentialsConfig, opts ...option.ClientOption) (oauth2.TokenSource, error) {
+	return impersonate.CredentialsTokenSource(ctx, cfg, opts...)
 }
 
 func init() {
@@ -34,12 +47,15 @@ func init() {
 
 func NewGCPCloudRunComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (ComputeProvider, error) {
 	var intermediaryServiceAccounts [][]client.GCPIAMServiceAccountRequest
+	firstDelegateAsBase := false
 	if dc != nil {
 		intermediaryServiceAccounts = client.WorkerControllerGCPIntermediaryServiceAccounts.Get(dc)()
+		firstDelegateAsBase = client.WorkerControllerGCPFirstDelegateAsBase.Get(dc)()
 	}
 
 	return &gcpCloudRunComputeProvider{
 		intermediaryServiceAccounts: intermediaryServiceAccounts,
+		firstDelegateAsBase:         firstDelegateAsBase,
 	}, nil
 }
 
@@ -71,16 +87,28 @@ func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, rc
 	}
 	defer client.Close()
 
-	if _, err = client.UpdateWorkerPool(ctx, &runpb.UpdateWorkerPoolRequest{
+	if _, err = client.UpdateWorkerPool(ctx, buildUpdateWorkerPoolRequest(name, count)); err != nil {
+		return fmt.Errorf("failed to update worker pool %q: %w", name, err)
+	}
+	return nil
+}
+
+// scalingInstanceCountMaskPath is the update-mask path for WorkerPoolScaling.manual_instance_count.
+// It MUST be the proto field name (snake_case): the Cloud Run client speaks gRPC, which transmits
+// FieldMask paths verbatim (no camelCase→snake_case conversion — that only happens on the JSON/REST
+// transport). A camelCase path fails to resolve server-side, yielding a silent no-op update.
+const scalingInstanceCountMaskPath = "scaling.manual_instance_count"
+
+// buildUpdateWorkerPoolRequest constructs the request that sets the worker pool's manual instance
+// count. Extracted so tests can assert the update mask resolves against the WorkerPool descriptor.
+func buildUpdateWorkerPoolRequest(name string, count int32) *runpb.UpdateWorkerPoolRequest {
+	return &runpb.UpdateWorkerPoolRequest{
 		WorkerPool: &runpb.WorkerPool{
 			Name:    name,
 			Scaling: &runpb.WorkerPoolScaling{ManualInstanceCount: &count},
 		},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"scaling.manualInstanceCount"}},
-	}); err != nil {
-		return fmt.Errorf("failed to update worker pool %q: %w", name, err)
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{scalingInstanceCountMaskPath}},
 	}
-	return nil
 }
 
 // buildClientAndParams creates a Cloud Run WorkerPoolsClient and constructs the fully-qualified worker pool name.
@@ -109,11 +137,35 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 			return nil, "", fmt.Errorf("failed to resolve impersonation chain: %w", err)
 		}
 
-		ts, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
+		scopes := []string{"https://www.googleapis.com/auth/cloud-platform"}
+
+		// When firstDelegateAsBase is set, delegates[0] is the identity the
+		// pool's ambient Workload Identity can *directly* impersonate
+		// (workloadIdentityUser → getAccessToken). It must be the base of the
+		// chain, not a Delegates entry: the ambient SA holds no implicitDelegation
+		// through it. Remaining entries are genuine token-creator delegates to the
+		// customer target SA. When unset, the whole chain is passed as delegates
+		// from the ambient ADC (requires implicitDelegation on delegates[0]).
+		// Controlled by client.WorkerControllerGCPFirstDelegateAsBase.
+		var baseOpts []option.ClientOption
+		chainDelegates := delegates
+		if p.firstDelegateAsBase && len(chainDelegates) > 0 {
+			baseTS, err := impersonateTokenSourceFn(ctx, impersonate.CredentialsConfig{
+				TargetPrincipal: chainDelegates[0],
+				Scopes:          scopes,
+			})
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to impersonate global service account %q: %w", chainDelegates[0], err)
+			}
+			baseOpts = []option.ClientOption{option.WithTokenSource(baseTS)}
+			chainDelegates = chainDelegates[1:]
+		}
+
+		ts, err := impersonateTokenSourceFn(ctx, impersonate.CredentialsConfig{
 			TargetPrincipal: serviceAccount,
-			Scopes:          []string{"https://www.googleapis.com/auth/cloud-platform"},
-			Delegates:       delegates,
-		})
+			Scopes:          scopes,
+			Delegates:       chainDelegates,
+		}, baseOpts...)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to create impersonated credentials for %q: %w", serviceAccount, err)
 		}

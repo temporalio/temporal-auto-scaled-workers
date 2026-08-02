@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -9,7 +10,9 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
@@ -28,7 +31,12 @@ const (
 	validateSpecTimeout           = 15 * time.Second
 	startNewWorkerInstanceTimeout = 60 * time.Second
 	updateWorkerSetSizeTimeout    = 60 * time.Second
+)
 
+// Min/max polling interval for PullStats. Constant in production, but a
+// test hook enables modifying these values during integration tests for
+// better coverage avoiding the 30s wait.
+var (
 	minPollInterval = 30 * time.Second
 	maxPollInterval = 5 * time.Minute
 )
@@ -111,6 +119,17 @@ type (
 	InvokeWorkersToRegisterTaskQueuesRequest struct {
 		RequestContext
 		iface.WorkerControllerInstanceSpec
+
+		// ScalingStatus is the per-group scaling status, used to size a worker-set
+		// registration resize to the algorithm's planned count.
+		ScalingStatus map[string]iface.ScalingAlgorithmStatus `json:"scaling_status,omitempty"`
+	}
+
+	InvokeWorkersToRegisterTaskQueuesResponse struct {
+		// UpdatedScalingStatus is the complete next-state scaling status for every group in
+		// the spec: resized groups carry their reconciled count, skipped (already-registered)
+		// groups carry their prior status forward. The workflow assigns it wholesale.
+		UpdatedScalingStatus map[string]iface.ScalingAlgorithmStatus `json:"scaling_status,omitempty"`
 	}
 )
 
@@ -118,13 +137,33 @@ type (
 // namespace/deployment identity and the supplied activity type. It is a free
 // function because RequestContext is an alias of a compute_provider type, so
 // methods can't be declared on it from this package.
-func metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetrics.ActivityType) sdkclient.MetricsHandler {
+func metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetrics.ActivityType, provider iface.ComputeProviderType) sdkclient.MetricsHandler {
+	// compute_provider is the scaling group's provider for activities that operate on
+	// a single group, or the "none" sentinel (noComputeProvider) for all-groups
+	// activities. It is always set to keep the tag key-set stable.
 	return activity.GetMetricsHandler(ctx).WithTags(map[string]string{
 		wcimetrics.NamespaceTag:               rc.NamespaceName,
 		wcimetrics.WorkerDeploymentNameTag:    rc.DeploymentName,
 		wcimetrics.WorkerDeploymentBuildIDTag: rc.DeploymentBuildID,
 		wcimetrics.ActivityTypeTag:            string(activityType),
+		wcimetrics.ComputeProviderTag:         computeProviderTagValue(provider),
 	})
+}
+
+// computeProviderTagValue maps a compute provider type to its compute_provider
+// tag value, using the "none" sentinel for the empty/unset case so the tag is
+// always a visible.
+func computeProviderTagValue(provider iface.ComputeProviderType) string {
+	if provider == "" {
+		return wcimetrics.ComputeProviderNone
+	}
+	return string(provider)
+}
+
+// computeProviderMetrics returns h re-tagged with the given compute provider,
+// overriding the base compute_provider tag.
+func computeProviderMetrics(h sdkclient.MetricsHandler, provider iface.ComputeProviderType) sdkclient.MetricsHandler {
+	return h.WithTags(map[string]string{wcimetrics.ComputeProviderTag: computeProviderTagValue(provider)})
 }
 
 func NewActivities(
@@ -151,13 +190,16 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeValidateSpec)
-	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeValidateSpec, noComputeProvider)
+	_, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, validateSpecTimeout)
 	defer cancel()
 
 	for key, entry := range req.Spec.ScalingGroupSpecs {
+		// Errors here are attributable to this specific scaling group's provider.
+		recordError, _, _ := newActivityRecorders(computeProviderMetrics(metricsHandler, entry.Compute.ProviderType))
+
 		provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.namespace.Name().String(), a.dc)
 		if err != nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderFailed)
@@ -211,41 +253,109 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	return nil
 }
 
-func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req *InvokeWorkersToRegisterTaskQueuesRequest) error {
+func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req *InvokeWorkersToRegisterTaskQueuesRequest) (*InvokeWorkersToRegisterTaskQueuesResponse, error) {
 	if req == nil {
-		return temporal.NewApplicationError("Invalid activity request", "InternalError")
+		return nil, temporal.NewApplicationError("Invalid activity request", "InternalError")
 	}
 
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorkersToRegisterTaskQueues)
+	logger := activity.GetLogger(ctx)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorkersToRegisterTaskQueues, noComputeProvider)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
+	// A task queue type is registered once a worker has polled it under this version;
+	// the association is durable for the version's lifetime, so there's no need for a
+	// worker invocation. Fail open (empty set results in a worker invocation) so a describe hiccup
+	// cannot block an update.
+	registered, err := a.registeredTaskQueueTypes(ctx, req.NamespaceName, req.DeploymentName, req.DeploymentBuildID)
+	if err != nil {
+		// Exception: on rate limiting, don't fail open. Powering through invokes a worker for every
+		// group, resulting in extra load that worsens the throttling. Abort so the
+		// caller backs off and retries once capacity returns.
+		var rateLimited *serviceerror.ResourceExhausted
+		if stderrors.As(err, &rateLimited) {
+			recordError(wcimetrics.ErrorTypeDescribeWorkerDeploymentVersionFailed)
+			return nil, temporal.NewApplicationErrorWithCause(err.Error(), "ResourceExhausted", err)
+		}
+		logger.Warn("Could not determine registered task queues; invoking workers unconditionally", "error", err)
+	}
+
+	updatedScalingStatus := map[string]iface.ScalingAlgorithmStatus{}
+
 	for k, v := range req.ScalingGroupSpecs {
+		// Errors here are attributable to this specific scaling group's provider.
+		recordError, _, _ := newActivityRecorders(computeProviderMetrics(metricsHandler, v.Compute.ProviderType))
+
+		if prior := req.ScalingStatus[k]; prior != nil {
+			updatedScalingStatus[k] = prior
+		}
+
+		// Skip groups whose task types are all already registered: a worker of that type
+		// has polled before, so the queue exists and any live worker set must not be disturbed.
+		if taskTypesAllRegistered(req.EffectiveTaskTypesForGroup(k), registered) {
+			logger.Debug("Task queues already registered; skipping worker invocation", "scaling_group_key", k)
+			continue
+		}
+
 		provider, err := computeprovider.GetComputeProvider(ctx, v.Compute.ProviderType, a.namespace.Name().String(), a.dc)
 		if err != nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderFailed)
-			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
+			return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
 		}
 		if provider == nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderUnavailable)
-			return temporal.NewApplicationError(fmt.Sprintf("%s: '%s' is an unknown compute provider", k, v.Compute.ProviderType), "InvalidArgument")
+			return nil, temporal.NewApplicationError(fmt.Sprintf("%s: '%s' is an unknown compute provider", k, v.Compute.ProviderType), "InvalidArgument")
 		}
 
-		if provider.LaunchStrategy() == computeprovider.LaunchStrategyInvoke {
-			config := map[string]any{}
-			if err := sdk.PreferProtoDataConverter.FromPayload(v.Compute.Config, &config); err != nil {
-				recordError(wcimetrics.ErrorTypeInvalidRequest)
-				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
-			}
+		config := map[string]any{}
+		if err := sdk.PreferProtoDataConverter.FromPayload(v.Compute.Config, &config); err != nil {
+			recordError(wcimetrics.ErrorTypeInvalidRequest)
+			return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
+		}
 
-			if err := provider.InvokeWorker(ctx, req.RequestContext, config); err != nil {
-				recordError(wcimetrics.ErrorTypeComputeProviderFailed)
-				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed", err)
+		// The algorithm decides both the launch strategy and the resize target: it returns an
+		// InvokeWorker (invoke-only) or an UpdateWorkerSetSize sized to its floor/initial count,
+		// plus the reconciled status to persist. This keeps the count inside the algorithm rather
+		// than the activity reading/writing it out of band.
+		algo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, v)
+		if err != nil {
+			recordError(wcimetrics.ErrorTypeAlgorithmFailed)
+			return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
+		}
+		regResp, err := algo.TaskQueueRegistrationActions(ctx, scalingConfig, req.ScalingStatus[k])
+		if err != nil {
+			recordError(wcimetrics.ErrorTypeAlgorithmFailed)
+			return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "AlgorithmFailed", err)
+		}
+
+		for _, action := range regResp.Actions {
+			switch action.Action {
+			case scalingalgorithm.ActionTypeInvokeWorker:
+				if err := provider.InvokeWorker(ctx, req.RequestContext, config); err != nil {
+					recordError(wcimetrics.ErrorTypeComputeProviderFailed)
+					return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed", err)
+				}
+			case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
+				if action.Count == nil {
+					recordError(wcimetrics.ErrorTypeInvalidRequest)
+					return nil, temporal.NewApplicationError(fmt.Sprintf("%s: registration action %q missing count", k, action.Action), "InternalError")
+				}
+				if err := provider.UpdateWorkerSetSize(ctx, req.RequestContext, config, *action.Count); err != nil {
+					recordError(wcimetrics.ErrorTypeComputeProviderFailed)
+					return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed", err)
+				}
+			default:
+				recordError(wcimetrics.ErrorTypeInvalidRequest)
+				return nil, temporal.NewApplicationError(fmt.Sprintf("%s: unexpected registration action %q", k, action.Action), "InternalError")
 			}
+		}
+
+		if regResp.Status != nil {
+			updatedScalingStatus[k] = regResp.Status
 		}
 	}
 
 	recordSuccess()
-	return nil
+	return &InvokeWorkersToRegisterTaskQueuesResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 }
 
 func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivityRequest) error {
@@ -254,7 +364,7 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorker)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorker, req.ComputeConfig.ProviderType)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.namespace.Name().String(), a.dc)
@@ -292,7 +402,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeUpdateWorkerSetSize)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeUpdateWorkerSetSize, req.ComputeConfig.ProviderType)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.namespace.Name().String(), a.dc)
@@ -326,7 +436,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 
 func (a *Activities) HandleDeferredScalingDecision(ctx context.Context, req HandleDeferredScalingDecisionActivityRequest) (*HandleDeferredScalingDecisionActivityResponse, error) {
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleDeferredScalingDecision)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleDeferredScalingDecision, req.ScalingGroupSpec.Compute.ProviderType)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
 	scalingStatus := maps.Clone(req.ScalingStatus)
@@ -397,8 +507,9 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		updatedScalingStatus = map[string]iface.ScalingAlgorithmStatus{}
 	}
 
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleTaskAddSignal)
-	_, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleTaskAddSignal, noComputeProvider)
+	// Base recorder (empty compute_provider) for skips emitted outside a matched group.
+	_, recordSkipped, _ := newActivityRecorders(metricsHandler)
 
 	if req.Spec == nil {
 		logger.Error("Did not receive a spec")
@@ -413,10 +524,14 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 			continue
 		}
 
+		// This task-add matched this scaling group; attribute its metrics to the group's provider.
+		groupMetrics := computeProviderMetrics(metricsHandler, entry.Compute.ProviderType)
+		_, recordSkippedForGroup, recordSuccess := newActivityRecorders(groupMetrics)
+
 		scalingAlgo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, entry)
 		if err != nil {
 			logger.Error("failed to get scaling algorithm", "error", err)
-			recordSkipped(wcimetrics.SkippedReasonAlgorithmUnavailable)
+			recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmUnavailable)
 			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 		}
 
@@ -425,12 +540,12 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		response, err := scalingAlgo.ProcessTaskAdd(ctx, scalingConfig, scalingStatus, req.Request)
 		if err != nil {
 			logger.Error("failed to process task add", "error", err)
-			recordSkipped(wcimetrics.SkippedReasonAlgorithmFailed)
+			recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmFailed)
 			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 		}
 		if response == nil {
 			logger.Error("task-add scaling algorithm returned nil response", "scaling_group_key", key)
-			recordSkipped(wcimetrics.SkippedReasonAlgorithmFailed)
+			recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmFailed)
 			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 		}
 
@@ -442,7 +557,7 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		}
 
 		if response.ThrottledCount > 0 {
-			metricsHandler.Counter(wcimetrics.ScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
+			groupMetrics.Counter(wcimetrics.ScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
 		}
 
 		if req.Request.RateLimitedSignalsSinceLast > 0 {
@@ -465,7 +580,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypePullStats)
+	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypePullStats, noComputeProvider)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
 	if !a.workerControllerEnabled() {
@@ -487,7 +602,14 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 		metricsSnapshot.Activity.LastBacklogCount +
 		metricsSnapshot.Nexus.LastBacklogCount
 
+	maxBacklogAge := max(
+		metricsSnapshot.Workflow.LastBacklogAge,
+		metricsSnapshot.Activity.LastBacklogAge,
+		metricsSnapshot.Nexus.LastBacklogAge,
+	)
+
 	metricsHandler.Gauge(wcimetrics.BacklogCount.Name()).Update(float64(totalBacklog))
+	metricsHandler.Gauge(wcimetrics.BacklogAge.Name()).Update(maxBacklogAge.Seconds())
 
 	actions := []scalingalgorithm.ScalingAction{}
 	updatedScalingStatus := map[string]iface.ScalingAlgorithmStatus{}
@@ -583,14 +705,22 @@ func newActivityRecorders(h sdkclient.MetricsHandler) (
 	recordSuccess func(),
 ) {
 	name := wcimetrics.Activities.Name()
+	// emit writes the fixed tag schema on every path; non-applicable dimensions
+	// take their sentinel value so the tag set never varies across call sites.
+	emit := func(errorType wcimetrics.ErrorType, reason wcimetrics.SkippedReason) {
+		h.WithTags(map[string]string{
+			wcimetrics.ErrorTypeTagName:  string(errorType),
+			wcimetrics.SkipReasonTagName: string(reason),
+		}).Counter(name).Inc(1)
+	}
 	recordError = func(errorType wcimetrics.ErrorType) {
-		h.WithTags(map[string]string{wcimetrics.ErrorTypeTagName: string(errorType)}).Counter(name).Inc(1)
+		emit(errorType, wcimetrics.SkippedReasonNone)
 	}
 	recordSkipped = func(reason wcimetrics.SkippedReason) {
-		h.WithTags(map[string]string{wcimetrics.SkipReasonTagName: string(reason)}).Counter(name).Inc(1)
+		emit(wcimetrics.ErrorTypeNone, reason)
 	}
 	recordSuccess = func() {
-		h.Counter(name).Inc(1)
+		emit(wcimetrics.ErrorTypeNone, wcimetrics.SkippedReasonNone)
 	}
 	return
 }

@@ -6,6 +6,9 @@ var (
 	BacklogCount = metrics.NewGaugeDef(
 		"worker_controller_instance_backlog_count",
 		metrics.WithDescription("The total detected backlog size for a worker controller instance."))
+	BacklogAge = metrics.NewGaugeDef(
+		"worker_controller_instance_backlog_age",
+		metrics.WithDescription("The max detected backlog age in seconds for a worker controller instance."))
 
 	ScaleUpCount = metrics.NewCounterDef(
 		"worker_controller_instance_scale_up_count",
@@ -13,6 +16,9 @@ var (
 	ScaleUpThrottledCount = metrics.NewCounterDef(
 		"worker_controller_instance_scale_up_throttled_count",
 		metrics.WithDescription("The number of times a scale up was throttled for a worker controller instance."))
+	TargetWorkerCount = metrics.NewGaugeDef(
+		"worker_controller_instance_target_worker_count",
+		metrics.WithDescription("The target worker-set size the scaling algorithm requested."))
 	RateLimitedTaskCount = metrics.NewCounterDef(
 		"worker_controller_instance_rate_limited_task_count",
 		metrics.WithDescription("The number of rate-limited task-add events observed by a worker controller instance where scale-up was suppressed."))
@@ -39,6 +45,10 @@ var (
 	Activities = metrics.NewCounterDef(
 		"worker_controller_instance_activities",
 		metrics.WithDescription("The number of times an activity was executed as part of a worker controller instance."))
+
+	ScalingActionProcessingLatency = metrics.NewTimerDef(
+		"worker_controller_instance_scaling_action_processing_latency",
+		metrics.WithDescription("Latency of WCI's own processing — from trigger (task-add signal receipt / stats poll start) to scaling-action completion."))
 )
 
 // Tag key constants matching go.temporal.io/server/common/metrics/tags.go.
@@ -49,6 +59,7 @@ const (
 	ActivityTypeTag            = "activityType"
 	WorkerDeploymentNameTag    = "worker_deployment_name"
 	WorkerDeploymentBuildIDTag = "worker_build_id"
+	ComputeProviderTag         = "compute_provider"
 	SignalTypeTagName          = "signal_type"
 	UpdateTypeTagName          = "update_type"
 	OperationTagName           = metrics.OperationTagName
@@ -56,7 +67,12 @@ const (
 	ScaleUpTriggerTagName      = "scale_up_trigger"
 	SkipReasonTagName          = "skip_reason"
 	ActivityErrorTypeTagName   = "activity_error_type"
+	PathTagName                = "path"
 )
+
+// ComputeProviderNone is the sentinel compute_provider tag value used when a
+// metric is not emitted.
+const ComputeProviderNone = "none"
 
 // ErrorType is the bounded set of values for the `error_type` tag.
 type ErrorType string
@@ -83,6 +99,9 @@ const (
 	ErrorTypeAlgorithmFailed            ErrorType = "algorithm_failed"
 	ErrorTypeComputeProviderUnavailable ErrorType = "compute_provider_unavailable"
 	ErrorTypeComputeProviderFailed      ErrorType = "compute_provider_failed"
+	// ErrorTypeNone is the sentinel used when a metric's fixed tag schema requires the
+	// error_type tag on a non-error path.
+	ErrorTypeNone ErrorType = "none"
 )
 
 const (
@@ -95,6 +114,9 @@ const (
 	SkippedReasonInvalidCount         SkippedReason = "invalid_count"
 	SkippedReasonNoSourceRequest      SkippedReason = "no_source_request"
 	SkippedReasonTaskTypeMismatch     SkippedReason = "task_type_mismatch"
+	// SkippedReasonNone is the sentinel used when a metric's fixed tag schema requires the
+	// skip_reason tag on a non-skip path.
+	SkippedReasonNone SkippedReason = "none"
 )
 
 const (
@@ -104,6 +126,9 @@ const (
 	ActivityErrorTypePanic       ActivityErrorType = "panic"
 	ActivityErrorTypeTerminated  ActivityErrorType = "terminated"
 	ActivityErrorTypeOther       ActivityErrorType = "other"
+	// ActivityErrorTypeNone is the sentinel used when a metric's fixed tag schema requires
+	// the activity_error_type tag on a path that is not an activity error.
+	ActivityErrorTypeNone ActivityErrorType = "none"
 )
 
 const (
@@ -128,4 +153,6 @@ const (
 	OperationTypeDeferredScalingDecision = "deferred_scaling_decision"
 	ScaleUpTriggerTypeMetricsPoll        = "metrics_poll"
 	ScaleUpTriggerTypeTaskAdd            = "task_add"
+	PathTaskAdd                          = "task_add"
+	PathPullStats                        = "pull_stats"
 )

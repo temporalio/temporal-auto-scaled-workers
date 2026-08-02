@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	computepb "go.temporal.io/api/compute/v1"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
@@ -65,31 +64,6 @@ func (p *testInvokeComputeProvider) UpdateWorkerSetSize(
 	_ int32,
 ) error {
 	return errors.ErrUnsupported
-}
-
-// InvokeObserver observes actions taken by the test-invoke provider. It is an
-// extension point for integration tests; observers can only be installed under
-// the test_dep build tag (see SetInvokeObserver), so it is inert otherwise.
-type InvokeObserver interface {
-	ObserveProviderInvoke(rc RequestContext, action string)
-}
-
-var (
-	invokeObserverMu sync.RWMutex
-	// invokeObservers maps a deployment build ID to the observer watching it,
-	// so concurrent tests each observe only their own build's actions.
-	invokeObservers = map[string]InvokeObserver{}
-)
-
-// emitProviderEvent reports an action to the observer registered for the
-// request's deployment build, if any.
-func emitProviderEvent(rc RequestContext, action string) {
-	invokeObserverMu.RLock()
-	o := invokeObservers[rc.DeploymentBuildID]
-	invokeObserverMu.RUnlock()
-	if o != nil {
-		o.ObserveProviderInvoke(rc, action)
-	}
 }
 
 // TestInvokeComputeProviderValidComputeProvider provides an example valid config for testing code to use

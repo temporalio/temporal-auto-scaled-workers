@@ -5,10 +5,10 @@ go 1.26.4
 require (
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
-	go.temporal.io/api v1.63.4-0.20260720155646-7a3ca3626ec2
+	go.temporal.io/api v1.63.5-0.20260730203810-e7387ebd980e
 	go.temporal.io/auto-scaled-workers v0.0.0
-	go.temporal.io/sdk v1.41.1
-	go.temporal.io/server v1.29.0-135.0.0.20260720172935-768cd1f81135
+	go.temporal.io/sdk v1.44.0
+	go.temporal.io/server v1.29.0-135.0.0.20260731184756-3d83c43109b4
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -57,6 +57,7 @@ require (
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/cactus/go-statsd-client/statsd v0.0.0-20200423205355-cb0885a1018c // indirect
 	github.com/cactus/go-statsd-client/v5 v5.1.0 // indirect
+	github.com/caio/go-tdigest/v5 v5.0.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
@@ -145,9 +146,9 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
-	github.com/temporalio/ringpop-go v0.0.0-20250130211428-b97329e994f7 // indirect
-	github.com/temporalio/sqlparser v0.0.0-20231115171017-f4060bcfa6cb // indirect
-	github.com/temporalio/tchannel-go v1.22.1-0.20260129151045-8706a1ab5f61 // indirect
+	github.com/temporalio/ringpop-go v0.1.0 // indirect
+	github.com/temporalio/sqlparser v0.0.0-20260722001706-17d16cfe1da5 // indirect
+	github.com/temporalio/tchannel-go v1.22.1 // indirect
 	github.com/tidwall/btree v1.8.1 // indirect
 	github.com/twmb/murmur3 v1.1.8 // indirect
 	github.com/uber-common/bark v1.3.0 // indirect
@@ -164,6 +165,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/prometheus v0.56.0 // indirect
+	go.opentelemetry.io/otel/log v0.20.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.43.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.43.0 // indirect
@@ -190,7 +192,7 @@ require (
 	google.golang.org/genproto v0.0.0-20260420184626-e10c466a9529 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260420184626-e10c466a9529 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260420184626-e10c466a9529 // indirect
-	google.golang.org/grpc v1.80.0 // indirect
+	google.golang.org/grpc v1.82.1 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/validator.v2 v2.0.1 // indirect

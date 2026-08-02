@@ -85,6 +85,15 @@ func (a *scalingAlgorithmNoSync) CompatibleLaunchStrategies() []computeprovider.
 	return []computeprovider.LaunchStrategy{computeprovider.LaunchStrategyInvoke}
 }
 
+// TaskQueueRegistrationActions registers by invoking a single worker (no-sync is invoke-only); there is
+// no worker set to size, so the status is returned unchanged.
+func (a *scalingAlgorithmNoSync) TaskQueueRegistrationActions(_ context.Context, _ iface.ScalingAlgorithmConfig, status iface.ScalingAlgorithmStatus) (*TaskQueueRegistrationResponse, error) {
+	return &TaskQueueRegistrationResponse{
+		Actions: []ScalingAction{{Action: ActionTypeInvokeWorker}},
+		Status:  status,
+	}, nil
+}
+
 func (a *scalingAlgorithmNoSync) ValidateConfig(ctx context.Context, config iface.ScalingAlgorithmConfig) error {
 	if config == nil {
 		return nil
