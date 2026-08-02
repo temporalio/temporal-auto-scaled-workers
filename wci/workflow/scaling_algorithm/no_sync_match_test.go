@@ -212,7 +212,6 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 0)
 		assert.Equal(t, 0, resp.ThrottledCount)
-		assert.Equal(t, 3, resp.RateLimitedCount)
 		assert.NotContains(t, resp.Status, stateLastScaleUpTimestampKey, "rate-limited events must not update the scale-up timestamp")
 	})
 
@@ -223,7 +222,6 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 0)
 		assert.Equal(t, 0, resp.ThrottledCount)
-		assert.Equal(t, 2, resp.RateLimitedCount)
 		assert.Equal(t, int64(0), resp.Status.GetInt64Field(stateLastScaleUpTimestampKey, 0), "scale-up timestamp must not change")
 	})
 
@@ -238,7 +236,6 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 		assert.Len(t, resp.Actions, 1)
 		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
 		assert.Equal(t, 0, resp.ThrottledCount)
-		assert.Equal(t, 1, resp.RateLimitedCount)
 	})
 
 	t.Run("mixed no-sync and rate-limited cooloff not elapsed throttles and reports both counts", func(t *testing.T) {
@@ -254,7 +251,6 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 0)
 		assert.Equal(t, 1, resp.ThrottledCount)
-		assert.Equal(t, 2, resp.RateLimitedCount)
 	})
 }
 

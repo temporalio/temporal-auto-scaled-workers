@@ -163,18 +163,16 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 		}
 	}
 
-	rateLimitedCount := 0
 	if event.RateLimitedSignalsSinceLast > 0 {
-		// No scale-up action is taken for rate-limited events — workers are already polling,
-		// the bottleneck is the task queue dispatch rate limit. Record the count for the
-		// worker_controller_instance_rate_limited_task_count metric only; ProcessMetricsPoll
-		// suppresses backlog-driven scale-up independently via TaskQueueStats.RateLimitingActive.
+		// No scale-up action is taken for rate-limited events — a worker was available, so the
+		// bottleneck is the task queue dispatch rate limit and more workers cannot clear it.
+		// ProcessMetricsPoll suppresses backlog-driven scale-up independently via
+		// TaskQueueStats.RateLimitingActive.
 		logger.Info("Task queue dispatch rate limiting observed, suppressing scale-up",
 			"rate_limited_count", event.RateLimitedSignalsSinceLast)
-		rateLimitedCount = event.RateLimitedSignalsSinceLast
 	}
 
-	return &TaskAddResponse{Actions: actions, Status: updatedState, ThrottledCount: throttledCount, RateLimitedCount: rateLimitedCount}, nil
+	return &TaskAddResponse{Actions: actions, Status: updatedState, ThrottledCount: throttledCount}, nil
 }
 
 func (a *scalingAlgorithmNoSync) ProcessDeferredScalingDecision(_ context.Context, _ iface.ScalingAlgorithmConfig, priorState iface.ScalingAlgorithmStatus, _ iface.SignalTaskAddRequest, _ ScalingMetricsSnapshotGetter) (*TaskAddResponse, error) {

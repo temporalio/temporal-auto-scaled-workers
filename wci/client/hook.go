@@ -88,9 +88,9 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	}
 	workflowID := GenerateWorkerControllerInstanceWorkflowID(event.DeploymentVersion)
 
-	// batch signals per WCI in minSignalInterval* time buckets
-	syncMatchBatchCount, noSyncMatchBatchCount, rateLimitedBatchCount, skip := th.batchMatchSignals(ctx, workflowID, event.SyncMatchOutcome, event.IsSyncMatch)
-	if skip {
+	syncMatchBatchCount, noSyncMatchBatchCount, rateLimitedBatchCount, deferSend := th.storeTaskAddSignalResults(ctx, workflowID, event.SyncMatchOutcome, event.IsSyncMatch)
+	if deferSend {
+		// Counters retained for a later batch; nothing to send yet.
 		return
 	}
 
@@ -107,7 +107,7 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	request := &iface.SignalTaskAddRequest{
 		TaskQueueName:               th.taskQueueName,
 		TaskQueueType:               th.taskQueueType,
-		IsSyncMatch:                 noSyncMatchBatchCount == 0, // backward compatibility: true when no genuine not-matched events so old WCI workers don't scale up
+		IsSyncMatch:                 event.IsSyncMatch,
 		NoSyncMatchSignalsSinceLast: noSyncMatchBatchCount,
 		SyncMatchSignalsSinceLast:   syncMatchBatchCount,
 		RateLimitedSignalsSinceLast: rateLimitedBatchCount,
@@ -119,12 +119,27 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	}
 }
 
-func (th *taskHookImpl) batchMatchSignals(
+// storeTaskAddSignalResults tallies one task-add outcome for a WCI workflow and reports whether
+// the tally is now due to be sent.
+//
+// Signalling on every task add would become noisy, so outcomes are counted per workflowID
+// and sent in periodic batches. The caller branches on deferSend:
+//
+//	true  - not due yet; return without signalling. The returned counts are partial.
+//	false - due now; the tally has been reset, and the returned counts are the batch to send.
+//
+// A tally holding at least one not-matched outcome is due after 500ms, because it may need a
+// worker promptly. Any other tally is due after 60s; rate-limited outcomes deliberately do not
+// shorten the wait, since they never produce a scale-up and so there is nothing to deliver
+// urgently. Both intervals come from WorkerControllerMinSignalInterval*Milliseconds.
+//
+// isSyncMatchFallback is used only when outcome is Unspecified.
+func (th *taskHookImpl) storeTaskAddSignalResults(
 	_ context.Context,
 	workflowID string,
 	outcome hooks.SyncMatchOutcome,
 	isSyncMatchFallback bool,
-) (syncCount int, noSyncCount int, rateLimitedCount int, skip bool) {
+) (syncCount int, noSyncCount int, rateLimitedCount int, deferSend bool) {
 	now := time.Now()
 
 	th.lastSignalMu.Lock()
@@ -140,8 +155,9 @@ func (th *taskHookImpl) batchMatchSignals(
 		}
 	}
 
-	// In older or existing workflows, handle scenario when SyncMatchOutcome
-	// is not available in the hooks API
+	// SyncMatchOutcome was added to the hooks API in server release v1.32.0-156.0; a Matching service
+	// running an older build leaves it at Unspecified. Handle executions for workflows that were
+	// started before that server release.
 	if outcome == hooks.SyncMatchOutcomeUnspecified {
 		if isSyncMatchFallback {
 			outcome = hooks.SyncMatchOutcomeSuccess

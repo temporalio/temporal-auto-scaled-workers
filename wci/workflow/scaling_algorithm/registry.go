@@ -42,8 +42,6 @@ type (
 		Status iface.ScalingAlgorithmStatus
 		// The number of task-add events that were throttled
 		ThrottledCount int
-		// The number of rate-limited task-add events observed where scale-up was suppressed
-		RateLimitedCount int
 	}
 
 	MetricsPollResponse struct {
