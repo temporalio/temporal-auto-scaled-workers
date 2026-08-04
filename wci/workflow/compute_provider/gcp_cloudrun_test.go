@@ -257,7 +257,7 @@ func TestUpdateWorkerPoolMaskResolvesAgainstDescriptor(t *testing.T) {
 
 func TestNoopGCPImpersonationChainProvider_MultiCandidatePickFromSet(t *testing.T) {
 	candidates := []string{"a", "b", "c"}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		delegates, err := (NoopGCPImpersonationChainProvider{}).ResolveChain(t.Context(), ResolveChainInput{
 			GlobalSACandidates: [][]string{candidates},
 		})
