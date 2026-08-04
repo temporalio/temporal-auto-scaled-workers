@@ -213,10 +213,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		// Read once at run start. Dynamic config changes take effect at the next
 		// ContinueAsNew. The interval defaults to 6h and is
 		// unlikely to change frequently, so waiting for a CaN boundary is acceptable.
-		validationInterval := d.unsafePeriodicValidationInterval()
-		if validationInterval < time.Minute {
-			validationInterval = time.Minute
-		}
+		validationInterval := max(d.unsafePeriodicValidationInterval(), time.Minute)
 
 		var addPeriodicValidationTimer func()
 		addPeriodicValidationTimer = func() {
