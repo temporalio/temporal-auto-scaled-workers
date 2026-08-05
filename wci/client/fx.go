@@ -1,13 +1,13 @@
 package client
 
 import (
-	"go.temporal.io/server/common/primitives"
 	"go.uber.org/fx"
 
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/persistence/visibility/manager"
+	"go.temporal.io/server/common/primitives"
 	"go.temporal.io/server/common/resource"
 	"go.temporal.io/server/common/testing/testhooks"
 	"go.temporal.io/server/service/matching/hooks"

@@ -149,23 +149,18 @@ type (
 		TaskQueueName string                `json:"task_queue_name"`
 		TaskQueueType enumspb.TaskQueueType `json:"task_queue_type"`
 
-		// (Deprecated): use NoSyncMatchSignalsSinceLast / RateLimitedSignalsSinceLast instead.
-		// Kept for backward compat with older WCI workflow instances still running during
-		// rolling deploys. Set to true only when noSyncMatchBatchCount == 0.
-		// Neither scaling algorithm reads this field for decisions after this change.
+		// (Deprecated): use the per-outcome counts below. Describes only the single event that
+		// flushed the batch, so it cannot express a rate-limited batch; still read by rate_based.
 		IsSyncMatch bool `json:"is_sync_match"`
 
-		// The count of tasks in this batch that were handed off
-		// to a waiting worker.
+		// The count of tasks in this batch that were handed off to a waiting worker.
 		SyncMatchSignalsSinceLast int `json:"sync_match_signals_batched,omitempty"`
 
-		// The count of tasks in this batch that found no worker
-		// to hand off to.
+		// The count of tasks in this batch that found no worker to hand off to.
 		NoSyncMatchSignalsSinceLast int `json:"no_sync_match_signals_batched,omitempty"`
 
-		// The count of tasks in this batch that the task queue's
-		// dispatch rate limit blocked. Adding workers does not clear these — the rate limit,
-		// not worker count, is the bottleneck.
+		// The count of tasks in this batch blocked by the task queue's dispatch rate limit.
+		// Adding workers does not clear these — the rate limit, not worker count, is the bottleneck.
 		RateLimitedSignalsSinceLast int `json:"rate_limited_signals_batched,omitempty"`
 	}
 

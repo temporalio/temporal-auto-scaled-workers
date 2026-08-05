@@ -173,10 +173,8 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 	}
 
 	if event.RateLimitedSignalsSinceLast > 0 {
-		// No scale-up action is taken for rate-limited events — a worker was available, so the
-		// bottleneck is the task queue dispatch rate limit and more workers cannot clear it.
-		// ProcessMetricsPoll suppresses backlog-driven scale-up independently via
-		// TaskQueueStats.RateLimitingActive.
+		// A worker was available, so the dispatch rate limit is the bottleneck, not worker count;
+		// ProcessMetricsPoll separately suppresses backlog-driven scale-up via RateLimitingActive.
 		logger.Info("Task queue dispatch rate limiting observed, suppressing scale-up",
 			"rate_limited_count", event.RateLimitedSignalsSinceLast)
 	}
@@ -189,6 +187,8 @@ func (a *scalingAlgorithmNoSync) ProcessDeferredScalingDecision(_ context.Contex
 }
 
 func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config iface.ScalingAlgorithmConfig, priorState iface.ScalingAlgorithmStatus, metricsSnapshot ScalingMetricsSnapshot) (*MetricsPollResponse, error) {
+	logger := safeActivityLogger(ctx)
+
 	updatedState := maps.Clone(priorState)
 	actions := []ScalingAction{}
 
@@ -243,7 +243,11 @@ func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config 
 			perTypeScaleUp = true
 		}
 		if perTypeScaleUp && q.metrics.RateLimitingActive {
-			// The rate limiter, not worker count, is the bottleneck for this queue type.
+			logger.Info("Scale-up suppressed by task queue dispatch rate limiting",
+				"queue_type", q.qName,
+				"backlog", backlog,
+				"dispatch_rate", currentRate,
+				"elapsed_since_scale_up_ms", elapsedSinceScaleUp)
 			perTypeScaleUp = false
 		}
 		if perTypeScaleUp && epsilon > 0 && lastRate >= 0 && math.Abs(currentRate-lastRate) <= epsilon {

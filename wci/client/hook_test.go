@@ -1,12 +1,12 @@
 package client
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
@@ -46,7 +46,7 @@ const testWorkflowID = "test-wf-id"
 // TestStoreTaskAddSignalResults_Bucketing verifies that each SyncMatchOutcome increments
 // the correct internal counter and is reflected in the returned counts.
 func TestStoreTaskAddSignalResults_Bucketing(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("success increments sync count", func(t *testing.T) {
 		th := newHookForTest()
@@ -98,7 +98,7 @@ func TestStoreTaskAddSignalResults_Bucketing(t *testing.T) {
 // TestStoreTaskAddSignalResults_Unspecified verifies the backward-compatibility fallback
 // for matching service nodes that predate PR #10045.
 func TestStoreTaskAddSignalResults_Unspecified(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("unspecified with isSyncMatch=true routes as success", func(t *testing.T) {
 		th := newHookForTest()
@@ -122,7 +122,7 @@ func TestStoreTaskAddSignalResults_Unspecified(t *testing.T) {
 // TestStoreTaskAddSignalResults_Interval verifies that rate-limited events use the slow
 // (sync-match) interval and never accelerate the batch to the fast interval.
 func TestStoreTaskAddSignalResults_Interval(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// The noopCollection returns the configured defaults:
 	//   sync interval  = 60 000 ms
@@ -177,7 +177,7 @@ func TestStoreTaskAddSignalResults_Interval(t *testing.T) {
 
 // TestStoreTaskAddSignalResults_Skip verifies the deferSend=true / deferSend=false boundary.
 func TestStoreTaskAddSignalResults_Skip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("first call always fires epoch timestamp", func(t *testing.T) {
 		th := newHookForTest()

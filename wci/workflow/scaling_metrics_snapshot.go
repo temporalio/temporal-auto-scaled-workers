@@ -63,7 +63,13 @@ func (a *Activities) pullScalingMetricsSnapshot(ctx context.Context, namespaceNa
 		}
 	}
 
-	logger.Info("Pulled scaling metrics snapshot", "workflow_count", metricsSnapshot.Workflow.LastBacklogCount, "activity_count", metricsSnapshot.Activity.LastBacklogCount, "nexus_count", metricsSnapshot.Nexus.LastBacklogCount)
+	logger.Info("Pulled scaling metrics snapshot",
+		"workflow_count", metricsSnapshot.Workflow.LastBacklogCount,
+		"activity_count", metricsSnapshot.Activity.LastBacklogCount,
+		"nexus_count", metricsSnapshot.Nexus.LastBacklogCount,
+		"workflow_rate_limiting_active", metricsSnapshot.Workflow.RateLimitingActive,
+		"activity_rate_limiting_active", metricsSnapshot.Activity.RateLimitingActive,
+		"nexus_rate_limiting_active", metricsSnapshot.Nexus.RateLimitingActive)
 
 	return &metricsSnapshot, nil
 }

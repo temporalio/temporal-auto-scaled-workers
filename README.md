@@ -15,7 +15,7 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 
 ### Task queue dispatch rate limiting
 
-When a task queue's dispatch rate is capped, adding more workers doesn't help — they poll but can't receive tasks any faster than the rate limit allows. The `no-sync` algorithm automatically suppresses backlog-driven scale-up for any queue type the Matching Service reports as currently rate-limited (`TaskQueueStats.rate_limiting_active`), independently per queue type — a rate-limited workflow queue does not block scale-up for a genuinely backlogged, non-rate-limited activity queue. No configuration is required.
+When a task queue's dispatch rate is limited, adding more workers doesn't help; they poll but can't receive tasks any faster than the rate limit allows. The `no-sync` algorithm automatically suppresses backlog-driven scale-up for any queue type the Matching Service reports as currently rate-limited (`TaskQueueStats.rate_limiting_active`).
 
 ## Supported Compute Providers
 

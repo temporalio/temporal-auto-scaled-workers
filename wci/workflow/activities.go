@@ -561,7 +561,7 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		}
 
 		if req.Request.RateLimitedSignalsSinceLast > 0 {
-			metricsHandler.Counter(wcimetrics.RateLimitedTaskCount.Name()).Inc(int64(req.Request.RateLimitedSignalsSinceLast))
+			groupMetrics.Counter(wcimetrics.RateLimitedTaskCount.Name()).Inc(int64(req.Request.RateLimitedSignalsSinceLast))
 		}
 
 		recordSuccess()

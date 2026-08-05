@@ -21,7 +21,7 @@ var (
 		metrics.WithDescription("The target worker-set size the scaling algorithm requested."))
 	RateLimitedTaskCount = metrics.NewCounterDef(
 		"worker_controller_instance_rate_limited_task_count",
-		metrics.WithDescription("The number of rate-limited task-add events observed by a worker controller instance where scale-up was suppressed."))
+		metrics.WithDescription("The number of rate-limited task-add events observed by a worker controller instance."))
 	DeferredScalingDecisionCount = metrics.NewCounterDef(
 		"worker_controller_instance_deferred_scaling_decision_count",
 		metrics.WithDescription("The number of times a deferred scaling decision was dispatched for a worker controller instance."))
