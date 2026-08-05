@@ -30,6 +30,8 @@ const (
 	RegisterTaskQueuesViaWorkersActivityTimeout  = 30 * time.Second
 
 	periodicValidationInterval = 6 * time.Hour
+
+	taskAddSignalQueueProcessingPatch = "taskAddSignalQueueProcessing"
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -178,8 +180,11 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		return err
 	}
 
-	// Process the signals from the prior run (pre-CaN)
-	d.processPendingTaskAddSignals(ctx)
+	useQueuedTaskAddSignals := workflow.GetVersion(ctx, taskAddSignalQueueProcessingPatch, workflow.DefaultVersion, 1) > workflow.DefaultVersion
+	if !useQueuedTaskAddSignals {
+		// Process the signals from the prior run (pre-CaN)
+		d.processPendingTaskAddSignals(ctx)
+	}
 
 	// Setup the signal handler for the two signals we are dealing with
 	d.signalHandler.taskAddSignalChannel = workflow.GetSignalChannel(ctx, iface.SignalTaskAdd)
@@ -187,7 +192,11 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		var req *iface.SignalTaskAddRequest
 		c.Receive(ctx, &req)
 
-		d.handleNoSyncMatchSignal(ctx, req)
+		if useQueuedTaskAddSignals {
+			d.queueTaskAddSignal(req)
+		} else {
+			d.handleNoSyncMatchSignal(ctx, req)
+		}
 	})
 
 	var addStatsPullTimer func(nextPoll time.Duration)
@@ -232,8 +241,21 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		addPeriodicValidationTimer()
 	}
 
+	// before we start processing, we quickly drain the task add signals into the queue to make sure
+	// they get processed in this workflow task and not further queued for the next one. This makes
+	// it easier to debug the resulting queue.
+	if useQueuedTaskAddSignals {
+		d.drainTaskAddSignalChannelToQueue()
+	}
+
 	// Keep waiting for signals, when it's time to CaN the main goroutine will exit.
-	for !d.deleteInstance && !d.forceCAN && !d.stateChanged && !workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
+	for !d.shouldContinueAsNew(ctx) {
+		if useQueuedTaskAddSignals && d.processNextQueuedTaskAddSignal(ctx) {
+			continue
+		}
+
+		// process signals after the queue, as any signals that don't go into the queue
+		// are background processes and so should only be done if there is no more urgent work
 		d.signalHandler.signalSelector.Select(ctx)
 	}
 
@@ -252,7 +274,9 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	// we pass the current state as input to the next workflow execution, resulting in a new
 	// workflow history with just two initial events. This minimizes the risk of NDE (Non-Deterministic Execution)
 	// errors during server rollbacks.
-	d.drainPendingTaskAddSignals()
+	if !useQueuedTaskAddSignals {
+		d.drainPendingTaskAddSignals()
+	}
 
 	return workflow.NewContinueAsNewError(ctx, iface.WorkerControllerInstanceWorkflowType, d.WorkerControllerInstanceWorkflowArgs)
 }
@@ -741,6 +765,45 @@ func (d *WorkflowRunner) processPendingTaskAddSignals(ctx workflow.Context) {
 	}
 }
 
+func (d *WorkflowRunner) queueTaskAddSignal(req *iface.SignalTaskAddRequest) {
+	if req == nil {
+		d.logger.Warn("Received nil task-add signal request; dropping")
+		d.recordSignal(wcimetrics.SignalTypeTaskAdd, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonInvalidRequest)
+		return
+	}
+	if d.State == nil {
+		d.State = &iface.WorkerControllerInstanceLocalState{}
+	}
+	d.State.PendingTaskAddSignals = append(d.State.PendingTaskAddSignals, req)
+}
+
+func (d *WorkflowRunner) processNextQueuedTaskAddSignal(ctx workflow.Context) bool {
+	if d.State == nil || len(d.State.PendingTaskAddSignals) == 0 {
+		return false
+	}
+
+	req := d.State.PendingTaskAddSignals[0]
+	d.State.PendingTaskAddSignals[0] = nil
+	d.State.PendingTaskAddSignals = d.State.PendingTaskAddSignals[1:]
+
+	d.handleNoSyncMatchSignal(ctx, req)
+	return true
+}
+
+func (d *WorkflowRunner) drainTaskAddSignalChannelToQueue() {
+	if d.signalHandler == nil || d.signalHandler.taskAddSignalChannel == nil {
+		return
+	}
+
+	for {
+		var req *iface.SignalTaskAddRequest
+		if !d.signalHandler.taskAddSignalChannel.ReceiveAsync(&req) {
+			return
+		}
+		d.queueTaskAddSignal(req)
+	}
+}
+
 func (d *WorkflowRunner) drainPendingTaskAddSignals() {
 	if d.State == nil || d.signalHandler == nil || d.signalHandler.taskAddSignalChannel == nil {
 		return
@@ -757,6 +820,10 @@ func (d *WorkflowRunner) drainPendingTaskAddSignals() {
 		d.State.PendingTaskAddSignals = append(d.State.PendingTaskAddSignals, req)
 		d.stateChanged = true
 	}
+}
+
+func (d *WorkflowRunner) shouldContinueAsNew(ctx workflow.Context) bool {
+	return d.deleteInstance || d.forceCAN || d.stateChanged || workflow.GetInfo(ctx).GetContinueAsNewSuggested()
 }
 
 func (d *WorkflowRunner) hasMinVersion(version WorkerControllerInstanceWorkflowVersion) bool {
