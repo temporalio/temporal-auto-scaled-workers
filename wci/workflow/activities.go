@@ -388,7 +388,7 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 	timeoutCtx, cancel := context.WithTimeout(ctx, startNewWorkerInstanceTimeout)
 	defer cancel()
 	if err := provider.InvokeWorker(timeoutCtx, req.RequestContext, config); err != nil {
-		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
+		recordError(computeProviderErrorType(err))
 		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
 
@@ -426,7 +426,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 	timeoutCtx, cancel := context.WithTimeout(ctx, updateWorkerSetSizeTimeout)
 	defer cancel()
 	if err := provider.UpdateWorkerSetSize(timeoutCtx, req.RequestContext, config, req.UpdatedSize); err != nil {
-		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
+		recordError(computeProviderErrorType(err))
 		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
 
@@ -690,6 +690,28 @@ func (a *Activities) getScalingAlgorithmAndConfig(ctx context.Context, entry ifa
 		}
 	}
 	return scalingAlgo, scalingConfig, nil
+}
+
+// computeProviderErrorType maps a compute provider's failure classification onto an
+// error_type tag value. Providers classify their own SDK's errors; the metrics
+// vocabulary stays out of the compute provider package.
+func computeProviderErrorType(err error) wcimetrics.ErrorType {
+	var pErr *computeprovider.ProviderError
+	if !stderrors.As(err, &pErr) {
+		return wcimetrics.ErrorTypeComputeProviderFailed
+	}
+	switch pErr.Class {
+	case computeprovider.FailureMisconfigured:
+		return wcimetrics.ErrorTypeComputeProviderMisconfigured
+	case computeprovider.FailureUnavailable:
+		return wcimetrics.ErrorTypeComputeProviderServiceUnavailable
+	case computeprovider.FailureThrottled:
+		return wcimetrics.ErrorTypeComputeProviderThrottled
+	case computeprovider.FailureInternal:
+		return wcimetrics.ErrorTypeInternal
+	default:
+		return wcimetrics.ErrorTypeComputeProviderFailed
+	}
 }
 
 // newActivityRecorders returns three closures that increment the Activities counter

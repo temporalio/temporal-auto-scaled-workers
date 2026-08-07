@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"testing"
 	"time"
@@ -1053,6 +1054,31 @@ func TestInvokeWorkersToRegisterTaskQueues_RateLimitFailsClosed(t *testing.T) {
 			require.ErrorAs(t, err, &appErr)
 			assert.Equal(t, "ResourceExhausted", appErr.Type(),
 				"rate limiting must abort with a ResourceExhausted error rather than fail open and add load")
+		})
+	}
+}
+
+func TestComputeProviderErrorType(t *testing.T) {
+	cause := errors.New("boom")
+	cases := []struct {
+		name string
+		err  error
+		want wcimetrics.ErrorType
+	}{
+		{"misconfigured", computeprovider.NewProviderError(computeprovider.FailureMisconfigured, cause), wcimetrics.ErrorTypeComputeProviderMisconfigured},
+		{"unavailable", computeprovider.NewProviderError(computeprovider.FailureUnavailable, cause), wcimetrics.ErrorTypeComputeProviderServiceUnavailable},
+		{"throttled", computeprovider.NewProviderError(computeprovider.FailureThrottled, cause), wcimetrics.ErrorTypeComputeProviderThrottled},
+		{"internal", computeprovider.NewProviderError(computeprovider.FailureInternal, cause), wcimetrics.ErrorTypeInternal},
+		{"unclassified", computeprovider.NewProviderError(computeprovider.FailureUnclassified, cause), wcimetrics.ErrorTypeComputeProviderFailed},
+		// A provider that doesn't classify falls back rather than being misattributed.
+		{"unwrapped", cause, wcimetrics.ErrorTypeComputeProviderFailed},
+		{"wrapped in temporal error", fmt.Errorf("activity failed: %w",
+			computeprovider.NewProviderError(computeprovider.FailureThrottled, cause)), wcimetrics.ErrorTypeComputeProviderThrottled},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, computeProviderErrorType(tc.err))
 		})
 	}
 }

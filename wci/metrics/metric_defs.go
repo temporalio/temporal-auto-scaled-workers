@@ -95,7 +95,23 @@ const (
 	ErrorTypeAlgorithmUnavailable       ErrorType = "algorithm_unavailable"
 	ErrorTypeAlgorithmFailed            ErrorType = "algorithm_failed"
 	ErrorTypeComputeProviderUnavailable ErrorType = "compute_provider_unavailable"
-	ErrorTypeComputeProviderFailed      ErrorType = "compute_provider_failed"
+	// ErrorTypeComputeProviderFailed is the fallback for a compute provider failure
+	// the provider did not classify. The values below are the classified subsets.
+	ErrorTypeComputeProviderFailed ErrorType = "compute_provider_failed"
+	// ErrorTypeComputeProviderMisconfigured means the provider rejected the
+	// customer's config: a resource that does not exist, or no permission to it.
+	ErrorTypeComputeProviderMisconfigured ErrorType = "compute_provider_misconfigured"
+	// ErrorTypeComputeProviderServiceUnavailable means the provider's API was
+	// unreachable or returned a server-side error. Distinct from
+	// ErrorTypeComputeProviderUnavailable, which means the provider is not enabled
+	// for the namespace or not registered.
+	ErrorTypeComputeProviderServiceUnavailable ErrorType = "compute_provider_service_unavailable"
+	// ErrorTypeComputeProviderThrottled means the provider rate- or
+	// concurrency-limited the request.
+	ErrorTypeComputeProviderThrottled ErrorType = "compute_provider_throttled"
+	// ErrorTypeInternal means the failure is attributable to worker-controller-instances's own
+	// configuration or credentials rather than the customer's.
+	ErrorTypeInternal ErrorType = "internal"
 	// ErrorTypeNone is the sentinel used when a metric's fixed tag schema requires the
 	// error_type tag on a non-error path.
 	ErrorTypeNone ErrorType = "none"

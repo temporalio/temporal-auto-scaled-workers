@@ -93,6 +93,11 @@ func (p *awsECSComputeProvider) InvokeWorker(_ context.Context, _ RequestContext
 }
 
 func (p *awsECSComputeProvider) UpdateWorkerSetSize(ctx context.Context, _ RequestContext, cfg ComputeProviderConfig, size int32) error {
+	err := p.updateWorkerSetSize(ctx, cfg, size)
+	return NewProviderError(classifyAWSFailure(err), err)
+}
+
+func (p *awsECSComputeProvider) updateWorkerSetSize(ctx context.Context, cfg ComputeProviderConfig, size int32) error {
 	ecsClient, cluster, service, err := p.getECSClientAndParams(ctx, cfg)
 	if err != nil {
 		return err
