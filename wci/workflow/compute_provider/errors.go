@@ -9,9 +9,16 @@ const (
 	// FailureUnclassified is the zero value, used when a provider has no
 	// classification for an error.
 	FailureUnclassified FailureClass = iota
-	// FailureMisconfigured means the provider rejected the customer's configuration:
-	// a resource that does not exist, or credentials that lack permission to it.
-	FailureMisconfigured
+	// FailureRejected means the provider rejected a request made against the
+	// customer's configuration, for a reason the provider could not narrow further.
+	// The two values below are the narrowed cases.
+	FailureRejected
+	// FailureNotFound means the compute resource named by the customer's
+	// configuration does not exist.
+	FailureNotFound
+	// FailureAccessDenied means the resource exists but the role we assumed lacks
+	// permission to act on it.
+	FailureAccessDenied
 	// FailureUnavailable means the provider's API was unreachable or returned a
 	// server-side error.
 	FailureUnavailable

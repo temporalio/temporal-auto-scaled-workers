@@ -1065,10 +1065,12 @@ func TestComputeProviderErrorType(t *testing.T) {
 		err  error
 		want wcimetrics.ErrorType
 	}{
-		{"misconfigured", computeprovider.NewProviderError(computeprovider.FailureMisconfigured, cause), wcimetrics.ErrorTypeComputeProviderMisconfigured},
+		{"rejected", computeprovider.NewProviderError(computeprovider.FailureRejected, cause), wcimetrics.ErrorTypeComputeProviderRejected},
+		{"not found", computeprovider.NewProviderError(computeprovider.FailureNotFound, cause), wcimetrics.ErrorTypeComputeProviderRejectedNotFound},
+		{"access denied", computeprovider.NewProviderError(computeprovider.FailureAccessDenied, cause), wcimetrics.ErrorTypeComputeProviderRejectedAccessDenied},
 		{"unavailable", computeprovider.NewProviderError(computeprovider.FailureUnavailable, cause), wcimetrics.ErrorTypeComputeProviderServiceUnavailable},
 		{"throttled", computeprovider.NewProviderError(computeprovider.FailureThrottled, cause), wcimetrics.ErrorTypeComputeProviderThrottled},
-		{"internal", computeprovider.NewProviderError(computeprovider.FailureInternal, cause), wcimetrics.ErrorTypeInternal},
+		{"internal", computeprovider.NewProviderError(computeprovider.FailureInternal, cause), wcimetrics.ErrorTypeComputeProviderInternal},
 		{"unclassified", computeprovider.NewProviderError(computeprovider.FailureUnclassified, cause), wcimetrics.ErrorTypeComputeProviderFailed},
 		// A provider that doesn't classify falls back rather than being misattributed.
 		{"unwrapped", cause, wcimetrics.ErrorTypeComputeProviderFailed},

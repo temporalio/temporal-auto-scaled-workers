@@ -46,15 +46,16 @@ func classifyAWSFailure(err error) FailureClass {
 		return FailureUnclassified
 	}
 
-	// Ownership only separates the two client-fault buckets. A throttled or
+	// Ownership separates client-fault from WCI-fault errors. A throttled or
 	// server-side failure is the provider's regardless of whose config we used.
-	ownerFault := FailureMisconfigured
-	if errors.Is(err, errWCIOwned) {
+	wciOwned := errors.Is(err, errWCIOwned)
+	ownerFault := FailureRejected
+	if wciOwned {
 		ownerFault = FailureInternal
 	}
 
 	// Throttles are modelled as client faults, so they must be checked before the
-	// fault split or every one of them lands in the misconfiguration bucket.
+	// fault split or every one of them lands in the rejected bucket.
 	if awsThrottleCheck.IsErrorThrottle(err) == aws.TrueTernary {
 		return FailureThrottled
 	}
@@ -64,7 +65,12 @@ func classifyAWSFailure(err error) FailureClass {
 		if apiErr.ErrorFault() == smithy.FaultServer {
 			return FailureUnavailable
 		}
-		return ownerFault
+		// Our own missing resources and denied permissions page the same on-call in
+		// the same way, so there is nothing to gain from narrowing them.
+		if wciOwned {
+			return FailureInternal
+		}
+		return classifyAWSRejection(apiErr.ErrorCode())
 	}
 
 	// No modelled API error: the request either failed in transport or never left
@@ -73,6 +79,22 @@ func classifyAWSFailure(err error) FailureClass {
 		return FailureUnavailable
 	}
 	return ownerFault
+}
+
+// classifyAWSRejection narrows a customer-caused client fault by error code. AWS
+// names these consistently across services -- a missing resource carries NotFound,
+// a permissions failure carries AccessDenied -- so matching the convention covers
+// services we have not integrated yet, where an explicit code list would not.
+// Anything unrecognized stays in the unnarrowed bucket rather than being guessed.
+func classifyAWSRejection(code string) FailureClass {
+	switch {
+	case strings.Contains(code, "NotFound"):
+		return FailureNotFound
+	case strings.Contains(code, "AccessDenied"):
+		return FailureAccessDenied
+	default:
+		return FailureRejected
+	}
 }
 
 // buildBaseAWSConfig loads default AWS config and applies any intermediary roles.
