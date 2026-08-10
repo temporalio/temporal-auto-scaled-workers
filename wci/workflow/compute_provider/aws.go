@@ -126,7 +126,7 @@ func buildBaseAWSConfig(ctx context.Context, region string, intermediaryRoles []
 
 		awsConfig, err = assumeRoleWithRequest(ctx, awsConfig, &req)
 		if err != nil {
-			return aws.Config{}, fmt.Errorf("%w: %w", errWCIOwned, err)
+			return aws.Config{}, fmt.Errorf("%w: error assuming intermediary role: %w", errWCIOwned, err)
 		}
 	}
 	return awsConfig, nil
