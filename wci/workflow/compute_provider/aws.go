@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -20,11 +21,89 @@ type stsAPI interface {
 	AssumeRole(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error)
 }
 
+// errWCIOwned marks a failure as attributable to worker-controller's own AWS setup
+// (base credentials, intermediary role chain) rather than the customer's config.
+// This has to be marked where it happens: intermediary and customer role
+// assumptions go through the same helper and fail indistinguishably.
+var errWCIOwned = errors.New("worker-controller AWS configuration error")
+
+var (
+	awsThrottleCheck   = retry.ThrottleErrorCode{Codes: retry.DefaultThrottleErrorCodes}
+	awsConnectionCheck = retry.RetryableConnectionError{}
+)
+
+// classifyAWSFailure maps an AWS SDK error onto a FailureClass along two axes:
+// what kind of failure it was, read from the smithy error model, and whose config
+// caused it, read from errWCIOwned.
+func classifyAWSFailure(err error) FailureClass {
+	if err == nil {
+		return FailureUnclassified
+	}
+
+	// A cancelled request tells us nothing about either axis; don't blame it on
+	// whoever's config happened to be in play.
+	if errors.Is(err, context.Canceled) {
+		return FailureUnclassified
+	}
+
+	// Ownership separates client-fault from WCI-fault errors. A throttled or
+	// server-side failure is the provider's regardless of whose config we used.
+	wciOwned := errors.Is(err, errWCIOwned)
+	ownerFault := FailureRejected
+	if wciOwned {
+		ownerFault = FailureInternal
+	}
+
+	// Throttles are modelled as client faults, so they must be checked before the
+	// fault split or every one of them lands in the rejected bucket.
+	if awsThrottleCheck.IsErrorThrottle(err) == aws.TrueTernary {
+		return FailureThrottled
+	}
+
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.ErrorFault() == smithy.FaultServer {
+			return FailureUnavailable
+		}
+		// Our own missing resources and denied permissions page the same on-call in
+		// the same way, so there is nothing to gain from narrowing them.
+		if wciOwned {
+			return FailureInternal
+		}
+		return classifyAWSRejection(apiErr.ErrorCode())
+	}
+
+	// No modelled API error: the request either failed in transport or never left
+	// the process. Local validation failures fall through to ownerFault.
+	if awsConnectionCheck.IsErrorRetryable(err) == aws.TrueTernary || errors.Is(err, context.DeadlineExceeded) {
+		return FailureUnavailable
+	}
+	return ownerFault
+}
+
+// classifyAWSRejection narrows a customer-caused client fault by error code. AWS
+// names these consistently across services -- a missing resource carries NotFound,
+// a permissions failure carries AccessDenied -- so matching the convention covers
+// services we have not integrated yet, where an explicit code list would not.
+// Anything unrecognized stays in the unnarrowed bucket rather than being guessed.
+func classifyAWSRejection(code string) FailureClass {
+	switch {
+	case strings.Contains(code, "NotFound"):
+		return FailureNotFound
+	case strings.Contains(code, "AccessDenied"):
+		return FailureAccessDenied
+	default:
+		return FailureRejected
+	}
+}
+
 // buildBaseAWSConfig loads default AWS config and applies any intermediary roles.
+// Every input here comes from worker-controller's own configuration, so all of its
+// failures are marked errWCIOwned.
 func buildBaseAWSConfig(ctx context.Context, region string, intermediaryRoles [][]client.AWSIAMRoleRequest) (aws.Config, error) {
 	awsConfig, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
-		return aws.Config{}, fmt.Errorf("failed to load AWS config: %w", err)
+		return aws.Config{}, fmt.Errorf("%w: failed to load AWS config: %w", errWCIOwned, err)
 	}
 
 	// the AWS compute providers support role chaining to enable abstracting the role the temporal server has
@@ -39,15 +118,15 @@ func buildBaseAWSConfig(ctx context.Context, region string, intermediaryRoles []
 		// requests across roles/accounts and reduces the impact of any of these accounts failing (until it is removed from the config).
 		req := step[rand.Intn(len(step))]
 		if err = validateRoleARN(req.RoleARN); err != nil {
-			return aws.Config{}, err
+			return aws.Config{}, fmt.Errorf("%w: invalid intermediary role: %w", errWCIOwned, err)
 		}
 		if req.RoleSessionName == "" {
-			return aws.Config{}, fmt.Errorf("empty role session name for intermediary role")
+			return aws.Config{}, fmt.Errorf("%w: empty role session name for intermediary role", errWCIOwned)
 		}
 
 		awsConfig, err = assumeRoleWithRequest(ctx, awsConfig, &req)
 		if err != nil {
-			return aws.Config{}, err
+			return aws.Config{}, fmt.Errorf("%w: error assuming intermediary role: %w", errWCIOwned, err)
 		}
 	}
 	return awsConfig, nil

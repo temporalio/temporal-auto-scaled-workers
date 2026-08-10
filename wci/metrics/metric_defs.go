@@ -90,12 +90,35 @@ const (
 	ErrorTypeInvalidSpec                           ErrorType = "invalid_spec"
 	// ErrorTypeActivityError is the coarse bucket used at workflow-side activity-execution failure sites, paired with
 	// the activity_error_type tag for sub-classification.
-	ErrorTypeActivityError              ErrorType = "activity_error"
-	ErrorTypeInvalidRequest             ErrorType = "invalid_request"
-	ErrorTypeAlgorithmUnavailable       ErrorType = "algorithm_unavailable"
-	ErrorTypeAlgorithmFailed            ErrorType = "algorithm_failed"
-	ErrorTypeComputeProviderUnavailable ErrorType = "compute_provider_unavailable"
-	ErrorTypeComputeProviderFailed      ErrorType = "compute_provider_failed"
+	ErrorTypeActivityError        ErrorType = "activity_error"
+	ErrorTypeInvalidRequest       ErrorType = "invalid_request"
+	ErrorTypeAlgorithmUnavailable ErrorType = "algorithm_unavailable"
+	ErrorTypeAlgorithmFailed      ErrorType = "algorithm_failed"
+	// ErrorTypeComputeProviderNotEnabled means no compute provider is enabled for the
+	// namespace, or the one the spec names is not registered. Nothing was attempted.
+	ErrorTypeComputeProviderNotEnabled ErrorType = "compute_provider_not_enabled"
+	// ErrorTypeComputeProviderFailed is the fallback for a compute provider failure
+	// the provider did not classify. The values below are the classified subsets.
+	ErrorTypeComputeProviderFailed ErrorType = "compute_provider_failed"
+	// ErrorTypeComputeProviderRejected means the provider rejected a request made
+	// against the customer's config for a reason we could not narrow further.
+	ErrorTypeComputeProviderRejected ErrorType = "compute_provider_rejected"
+	// ErrorTypeComputeProviderRejectedNotFound means the compute resource named by
+	// the customer's config does not exist.
+	ErrorTypeComputeProviderRejectedNotFound ErrorType = "compute_provider_rejected_not_found"
+	// ErrorTypeComputeProviderRejectedAccessDenied means the resource exists but the
+	// role we assumed lacks permission to act on it.
+	ErrorTypeComputeProviderRejectedAccessDenied ErrorType = "compute_provider_rejected_access_denied"
+	// ErrorTypeComputeProviderServiceUnavailable means the provider's API was
+	// unreachable or returned a server-side error.
+	ErrorTypeComputeProviderServiceUnavailable ErrorType = "compute_provider_service_unavailable"
+	// ErrorTypeComputeProviderThrottled means the provider rate- or
+	// concurrency-limited the request.
+	ErrorTypeComputeProviderThrottled ErrorType = "compute_provider_throttled"
+	// ErrorTypeComputeProviderInternal means the compute provider call failed on
+	// worker-controller-instances's own configuration or credentials rather than the
+	// customer's.
+	ErrorTypeComputeProviderInternal ErrorType = "compute_provider_internal"
 	// ErrorTypeNone is the sentinel used when a metric's fixed tag schema requires the
 	// error_type tag on a non-error path.
 	ErrorTypeNone ErrorType = "none"

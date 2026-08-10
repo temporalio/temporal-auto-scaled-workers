@@ -81,6 +81,11 @@ func (p *awsLambdaComputeProvider) ValidateConfig(ctx context.Context, _ Request
 }
 
 func (p *awsLambdaComputeProvider) InvokeWorker(ctx context.Context, _ RequestContext, cfg ComputeProviderConfig) error {
+	err := p.invokeWorker(ctx, cfg)
+	return NewProviderError(classifyAWSFailure(err), err)
+}
+
+func (p *awsLambdaComputeProvider) invokeWorker(ctx context.Context, cfg ComputeProviderConfig) error {
 	lambdaClient, arn, err := p.getLambdaClientAndARN(ctx, cfg)
 	if err != nil {
 		return err

@@ -206,7 +206,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
 		if provider == nil {
-			recordError(wcimetrics.ErrorTypeComputeProviderUnavailable)
+			recordError(wcimetrics.ErrorTypeComputeProviderNotEnabled)
 			return temporal.NewApplicationError(fmt.Sprintf("%s: Could not instantiate compute provider with type '%s'", key, entry.Compute.ProviderType), "InvalidArgument")
 		}
 		logger.Debug("Validating compute provider", "scaling_group_name", key, "compute_provider_type", entry.Compute.ProviderType)
@@ -302,7 +302,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 			return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvalidArgument", err)
 		}
 		if provider == nil {
-			recordError(wcimetrics.ErrorTypeComputeProviderUnavailable)
+			recordError(wcimetrics.ErrorTypeComputeProviderNotEnabled)
 			return nil, temporal.NewApplicationError(fmt.Sprintf("%s: '%s' is an unknown compute provider", k, v.Compute.ProviderType), "InvalidArgument")
 		}
 
@@ -373,7 +373,7 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 		return err
 	}
 	if provider == nil {
-		recordError(wcimetrics.ErrorTypeComputeProviderUnavailable)
+		recordError(wcimetrics.ErrorTypeComputeProviderNotEnabled)
 		return temporal.NewApplicationError(fmt.Sprintf("Could not instantiate compute provider with type '%s'", req.ComputeConfig.ProviderType), "InvalidArgument")
 	}
 
@@ -388,7 +388,7 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 	timeoutCtx, cancel := context.WithTimeout(ctx, startNewWorkerInstanceTimeout)
 	defer cancel()
 	if err := provider.InvokeWorker(timeoutCtx, req.RequestContext, config); err != nil {
-		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
+		recordError(computeProviderErrorType(err))
 		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
 
@@ -411,7 +411,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 		return err
 	}
 	if provider == nil {
-		recordError(wcimetrics.ErrorTypeComputeProviderUnavailable)
+		recordError(wcimetrics.ErrorTypeComputeProviderNotEnabled)
 		return errors.Errorf("Could not instantiate compute provider with type '%s'", req.ComputeConfig.ProviderType)
 	}
 
@@ -426,7 +426,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 	timeoutCtx, cancel := context.WithTimeout(ctx, updateWorkerSetSizeTimeout)
 	defer cancel()
 	if err := provider.UpdateWorkerSetSize(timeoutCtx, req.RequestContext, config, req.UpdatedSize); err != nil {
-		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
+		recordError(computeProviderErrorType(err))
 		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
 
@@ -690,6 +690,32 @@ func (a *Activities) getScalingAlgorithmAndConfig(ctx context.Context, entry ifa
 		}
 	}
 	return scalingAlgo, scalingConfig, nil
+}
+
+// computeProviderErrorType maps a compute provider's failure classification onto an
+// error_type tag value. Providers classify their own SDK's errors; the metrics
+// vocabulary stays out of the compute provider package.
+func computeProviderErrorType(err error) wcimetrics.ErrorType {
+	var pErr *computeprovider.ProviderError
+	if !stderrors.As(err, &pErr) {
+		return wcimetrics.ErrorTypeComputeProviderFailed
+	}
+	switch pErr.Class {
+	case computeprovider.FailureRejected:
+		return wcimetrics.ErrorTypeComputeProviderRejected
+	case computeprovider.FailureNotFound:
+		return wcimetrics.ErrorTypeComputeProviderRejectedNotFound
+	case computeprovider.FailureAccessDenied:
+		return wcimetrics.ErrorTypeComputeProviderRejectedAccessDenied
+	case computeprovider.FailureUnavailable:
+		return wcimetrics.ErrorTypeComputeProviderServiceUnavailable
+	case computeprovider.FailureThrottled:
+		return wcimetrics.ErrorTypeComputeProviderThrottled
+	case computeprovider.FailureInternal:
+		return wcimetrics.ErrorTypeComputeProviderInternal
+	default:
+		return wcimetrics.ErrorTypeComputeProviderFailed
+	}
 }
 
 // newActivityRecorders returns three closures that increment the Activities counter
