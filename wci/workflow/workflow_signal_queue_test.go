@@ -164,3 +164,31 @@ func TestQueueTaskAddSignalDropsNilRequests(t *testing.T) {
 	require.NoError(t, env.GetWorkflowResult(&remaining))
 	assert.Equal(t, []string{"valid"}, remaining)
 }
+
+func TestQueueTaskAddSignalDropsWhenQueueFull(t *testing.T) {
+	activities := NewActivities(nil, nil, nil)
+	pending := make([]*iface.SignalTaskAddRequest, maxPendingTaskAddSignals)
+	for i := range pending {
+		pending[i] = namedTaskAddSignal("queued")
+	}
+	args := newSignalQueueTestArgs(pending...)
+
+	testWorkflow := func(ctx sdkworkflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) (int, error) {
+		runner := newSignalQueueTestRunner(ctx, args, activities)
+		runner.limitPendingTaskAddSignals = true
+		runner.queueTaskAddSignal(namedTaskAddSignal("dropped"))
+		return len(runner.State.PendingTaskAddSignals), nil
+	}
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(testWorkflow)
+
+	env.ExecuteWorkflow(testWorkflow, args)
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+
+	var remainingCount int
+	require.NoError(t, env.GetWorkflowResult(&remainingCount))
+	assert.Equal(t, maxPendingTaskAddSignals, remainingCount)
+}
