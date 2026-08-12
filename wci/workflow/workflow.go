@@ -30,8 +30,10 @@ const (
 	RegisterTaskQueuesViaWorkersActivityTimeout  = 30 * time.Second
 
 	periodicValidationInterval = 6 * time.Hour
+	maxPendingTaskAddSignals   = 4000
 
 	taskAddSignalQueueProcessingPatch = "taskAddSignalQueueProcessing"
+	taskAddSignalQueueLimitPatch      = "taskAddSignalQueueLimit"
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -76,6 +78,8 @@ type (
 		stateChanged  bool
 		signalHandler *SignalHandler
 		forceCAN      bool
+
+		limitPendingTaskAddSignals bool
 
 		// workflowVersion is set at workflow start based on the dynamic config of the worker
 		// that completes the first task. It remains constant for the lifetime of the run and
@@ -181,6 +185,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	}
 
 	useQueuedTaskAddSignals := workflow.GetVersion(ctx, taskAddSignalQueueProcessingPatch, workflow.DefaultVersion, 1) > workflow.DefaultVersion
+	d.limitPendingTaskAddSignals = workflow.GetVersion(ctx, taskAddSignalQueueLimitPatch, workflow.DefaultVersion, 1) > workflow.DefaultVersion
 	if !useQueuedTaskAddSignals {
 		// Process the signals from the prior run (pre-CaN)
 		d.processPendingTaskAddSignals(ctx)
@@ -773,6 +778,20 @@ func (d *WorkflowRunner) queueTaskAddSignal(req *iface.SignalTaskAddRequest) {
 	}
 	if d.State == nil {
 		d.State = &iface.WorkerControllerInstanceLocalState{}
+	}
+	if d.limitPendingTaskAddSignals && len(d.State.PendingTaskAddSignals) >= maxPendingTaskAddSignals {
+		d.logger.Warn(
+			"Dropping task-add signal because pending signal queue is full",
+			"queue_size", len(d.State.PendingTaskAddSignals),
+			"max_queue_size", maxPendingTaskAddSignals,
+			"task_queue", req.TaskQueueName,
+			"task_queue_type", req.TaskQueueType.String(),
+			"sync_match", req.IsSyncMatch,
+			"sync_match_batch", req.SyncMatchSignalsSinceLast,
+			"no_sync_match_batch", req.NoSyncMatchSignalsSinceLast,
+		)
+		d.recordSignal(wcimetrics.SignalTypeTaskAdd, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonQueueFull)
+		return
 	}
 	d.State.PendingTaskAddSignals = append(d.State.PendingTaskAddSignals, req)
 }
