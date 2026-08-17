@@ -69,6 +69,8 @@ type (
 		unsafeMaxVersion                 func() int
 		unsafePeriodicValidationInterval func() time.Duration
 
+		cancelTimerTasks workflow.CancelFunc
+
 		// stateChanged is used to track if the state of the workflow has undergone a local state change since the last signal/update.
 		// This prevents a workflow from continuing-as-new if the state has not changed.
 		stateChanged  bool
@@ -125,6 +127,11 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 
 func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	var err error
+
+	// Create a Context to use for periodic background tasks.
+	// This allows us to cancel these tasks when the WCI is deleted.
+	timerCtx, cancelTimerTasks := workflow.WithCancel(ctx)
+	d.cancelTimerTasks = cancelTimerTasks
 
 	// make sure we got all fields we want
 	if d.State == nil {
@@ -192,15 +199,15 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 
 	var addStatsPullTimer func(nextPoll time.Duration)
 	addStatsPullTimer = func(nextPoll time.Duration) {
-		timerFuture := workflow.NewTimer(ctx, nextPoll)
+		timerFuture := workflow.NewTimer(timerCtx, nextPoll)
 		d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
-			if err = f.Get(ctx, nil); err != nil {
+			if err = f.Get(timerCtx, nil); err != nil {
 				d.logger.Debug("Periodic stats timer cancelled, not re-arming", "error", err)
 
 				// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
 				return
 			}
-			nextPollDuration := d.pullStatsAndUpdate(ctx)
+			nextPollDuration := d.pullStatsAndUpdate(timerCtx)
 
 			// for now we don't want to mark things as dirty to avoid excessive CaN
 			// d.stateChanged = true
@@ -217,15 +224,15 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 
 		var addPeriodicValidationTimer func()
 		addPeriodicValidationTimer = func() {
-			timerFuture := workflow.NewTimer(ctx, validationInterval)
+			timerFuture := workflow.NewTimer(timerCtx, validationInterval)
 			d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
-				if err = f.Get(ctx, nil); err != nil {
+				if err = f.Get(timerCtx, nil); err != nil {
 					d.logger.Debug("Periodic validation timer cancelled, not re-arming", "error", err)
 
 					// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
 					return
 				}
-				d.periodicValidateSpec(ctx)
+				d.periodicValidateSpec(timerCtx)
 				addPeriodicValidationTimer()
 			})
 		}
@@ -360,7 +367,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		// if there are no scaling groups after the update, it is seen as implicit delete
 		// that way no orphaned workflows stick around and waste cycles
 		if len(updatedSpec.ScalingGroupSpecs) == 0 {
-			d.deleteInstance = true
+			d.markDeleted()
 			d.State.ConflictToken = args.ConflictToken
 			d.State.Spec = updatedSpec
 
@@ -438,6 +445,13 @@ func (d *WorkflowRunner) validateDeleteInstance(args *iface.DeleteWorkerControll
 	return nil
 }
 
+// markDeleted sets the deleteInstance flag to true as well as cancelling the background
+// task context - so that any further tasks will abort on next invocation.
+func (d *WorkflowRunner) markDeleted() {
+	d.deleteInstance = true
+	d.cancelTimerTasks()
+}
+
 func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.DeleteWorkerControllerInstanceRequest) (*iface.DeleteWorkerControllerInstanceResponse, error) {
 	if err := d.preUpdateChecks(ctx); err != nil {
 		return &iface.DeleteWorkerControllerInstanceResponse{}, err
@@ -456,7 +470,7 @@ func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.
 		d.lock.Unlock()
 	}()
 
-	d.deleteInstance = true
+	d.markDeleted()
 
 	d.recordUpdate(wcimetrics.UpdateTypeDeleteInstance, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone)
 
