@@ -26,6 +26,8 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 **Invoke** providers are called once per scaling event to start a short-lived worker.
 **Worker-set** providers manage a persistent pool whose size is adjusted up or down.
 
+The development-only subprocess provider accepts an optional positive Go duration string as `config.timeout` (for example, `"30m"` or `"1h"`). It defaults to `"1m"`.
+
 ## Supported Scaling Algorithms
 
 | Algorithm | Type string | Description |

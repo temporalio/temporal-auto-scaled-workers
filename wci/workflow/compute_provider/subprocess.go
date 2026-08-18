@@ -8,17 +8,19 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
 )
 
 const (
-	// subprocessTimeoutArg is the argument passed to the timeout(1) command (GNU coreutils).
-	subprocessTimeoutArg = "1m"
+	// defaultSubprocessTimeoutArg is the default argument passed to timeout(1) (GNU coreutils).
+	defaultSubprocessTimeoutArg = "1m"
 
 	configSubprocessCommand = "command"
 	configSubprocessArgs    = "args"
+	configSubprocessTimeout = "timeout"
 )
 
 type subprocessComputeProvider struct{}
@@ -39,6 +41,9 @@ func (p *subprocessComputeProvider) ValidateConfig(_ context.Context, _ RequestC
 	command, ok := config[configSubprocessCommand].(string)
 	if !ok || strings.TrimSpace(command) == "" {
 		return fmt.Errorf("command not found in config")
+	}
+	if _, err := getSubprocessTimeoutArg(config); err != nil {
+		return err
 	}
 
 	if _, err := exec.LookPath("timeout"); err != nil {
@@ -62,10 +67,14 @@ func (p *subprocessComputeProvider) InvokeWorker(_ context.Context, _ RequestCon
 	if argsVal, ok := config[configSubprocessArgs].(string); ok {
 		args = splitOptionalArgs(argsVal)
 	}
+	timeoutArg, err := getSubprocessTimeoutArg(config)
+	if err != nil {
+		return err
+	}
 
-	// Use timeout(1) to limit the child to 1 minute; do not wait for completion.
+	// Use timeout(1) to limit the child; do not wait for completion.
 	// Use context.Background() so the subprocess is not killed when the activity returns.
-	timeoutArgs := append([]string{subprocessTimeoutArg, command}, args...)
+	timeoutArgs := append([]string{timeoutArg, command}, args...)
 	cmd := exec.CommandContext(context.Background(), "timeout", timeoutArgs...)
 
 	if err := cmd.Start(); err != nil {
@@ -84,6 +93,20 @@ func (p *subprocessComputeProvider) InvokeWorker(_ context.Context, _ RequestCon
 
 func (p *subprocessComputeProvider) UpdateWorkerSetSize(_ context.Context, _ RequestContext, _ ComputeProviderConfig, _ int32) error {
 	return errors.ErrUnsupported
+}
+
+func getSubprocessTimeoutArg(config ComputeProviderConfig) (string, error) {
+	value, ok := config[configSubprocessTimeout]
+	if !ok {
+		return defaultSubprocessTimeoutArg, nil
+	}
+
+	timeout, ok := value.(string)
+	duration, err := time.ParseDuration(timeout)
+	if !ok || err != nil || duration <= 0 {
+		return "", fmt.Errorf("timeout must be a positive duration string")
+	}
+	return fmt.Sprintf("%.9fs", duration.Seconds()), nil
 }
 
 func splitOptionalArgs(s string) []string {
