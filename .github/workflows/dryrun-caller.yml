@@ -39,3 +39,12 @@ jobs:
       actions: read
       checks: write
       pull-requests: write
+
+  # Confirms the conditional `args` resolves to empty off a pull_request event, so a
+  # release gate lints the whole tree instead of passing a bare `--new-from-rev=`.
+  lint:
+    uses: ./.github/workflows/golangci-lint.yaml
+    with:
+      ref: ${{ github.sha }}
+    permissions:
+      contents: read
