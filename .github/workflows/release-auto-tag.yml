@@ -1,0 +1,186 @@
+name: Auto-tag Release
+
+# A WCI module release is tagged v<wciMajor>.<wciMinor>.<wciPatch>-<serverBuild>.<serverRev>:
+# WCI owns the semver core; the server suffix is the earliest go.temporal.io/server
+# release that actually contains the commit go.mod builds against (resolved by
+# scripts/resolve-server-suffix.sh). Push to release/v<major>.<minor> and this
+# checks the pin, runs the release gates, computes the next patch, appends the
+# server suffix, pushes the tag, then chains release-tag.yml to publish it.
+#
+# Design notes:
+#   - Tags are bare vX.Y.Z-<build>.<rev> (the module is at the repo root), e.g.
+#     v1.0.0-158.0.
+#   - The server release is a `-` prerelease suffix, not `+` build metadata: Go
+#     rejects build metadata for module versions (only +incompatible is legal), and
+#     downstream release-dependency checks allow only a -[0-9.]+ suffix.
+#   - Gates run *before* the tag push: a published tag is immediately resolvable by
+#     `go get` and the module proxy caches it immutably, so a tag that fails lint or
+#     tests cannot be retracted — only superseded.
+#   - The tag is pushed with GITHUB_TOKEN, so release-tag.yml is invoked via
+#     workflow_call rather than its push-tag trigger (a GITHUB_TOKEN tag push does
+#     not fire other workflows). It is told to skip the gates, which already ran
+#     here on this exact commit.
+on:
+  push:
+    branches:
+      - 'release/v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the tag
+
+concurrency: # serialize so back-to-back pushes always tag off the previous tag
+  group: release-auto-tag-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # Seconds, and the most likely failure on a fresh release branch — so it runs
+  # before the multi-minute gates rather than alongside them.
+  check-pin:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      # A release must depend on a server build-tag release, not a loose commit.
+      # On a pseudo-version, resolve the earliest build tag containing the commit and
+      # suggest it as the exact repin target.
+      - name: Require a tagged server release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Numeric identifiers reject leading zeros: the pin is flattened into the WCI
+          # tag's prerelease, where a zero-padded component is invalid semver.
+          NUM='(0|[1-9][0-9]*)'
+          VER=$(grep 'go\.temporal\.io/server ' go.mod | awk '{print $2}')
+          if [[ "$VER" =~ ^v${NUM}[.]${NUM}[.]${NUM}-${NUM}[.]${NUM}$ ]]; then
+            echo "server pin OK: ${VER}"
+            exit 0
+          fi
+          echo "go.mod pins go.temporal.io/server at '${VER}' — not a build-tag release." >&2
+          if SUGGESTED=$(EMIT=tag bash scripts/resolve-server-suffix.sh 2>/dev/null); then
+            echo "Repin to the earliest server build tag containing that commit:" >&2
+            echo "  go get go.temporal.io/server@${SUGGESTED} && go mod tidy" >&2
+          else
+            echo "Could not resolve a containing build tag — the commit may not be in any" >&2
+            echo "server release yet. Repin to a released build tag:" >&2
+            echo "  go get go.temporal.io/server@<vX.Y.Z-BUILD.REV> && go mod tidy" >&2
+          fi
+          exit 1
+
+  # The release gates are the same workflows PRs run — go.mod sync, unit and
+  # integration tests, lint — called here so they block the tag push rather than
+  # racing it. `pull-requests: write` is for ci.yaml's coverage-report jobs; they
+  # skip off a pull_request event, but a called workflow can only narrow the
+  # permissions its caller grants, so the grant has to cover them.
+  ci:
+    needs: check-pin
+    uses: ./.github/workflows/ci.yaml
+    with:
+      ref: ${{ github.sha }}
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: write
+
+  lint:
+    needs: check-pin
+    uses: ./.github/workflows/golangci-lint.yaml
+    with:
+      ref: ${{ github.sha }}
+    permissions:
+      contents: read
+
+  auto-tag:
+    needs: [ci, lint]
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      tag: ${{ steps.compute.outputs.tag }}
+    steps:
+      # Pin to the commit the gates ran against, not the branch tip: a push that
+      # lands mid-run must not get tagged as though it had been validated.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Compute and push next tag
+        id: compute
+        env:
+          BRANCH: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Semver numeric identifier: no leading zeros anywhere in the tag we mint, or
+          # Go and the module proxy reject it as non-canonical.
+          NUM='(0|[1-9][0-9]*)'
+
+          # Branch encodes WCI's own major.minor: release/vMAJOR.MINOR.
+          if [[ ! "${BRANCH}" =~ ^release/v${NUM}[.]${NUM}$ ]]; then
+            echo "Branch '${BRANCH}' does not match release/vMAJOR.MINOR" >&2
+            exit 1
+          fi
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+
+          # Server release suffix = the earliest go.temporal.io/server release that
+          # actually contains the commit we build against (resolved from the go.mod
+          # pin; fails if that commit isn't in any release yet). See the script.
+          SUFFIX=$(bash scripts/resolve-server-suffix.sh)
+          echo "server suffix: ${SUFFIX}"
+
+          # Next WCI patch within this major.minor line (across any server suffix),
+          # so the core version increases monotonically. Pick the numerically-highest
+          # existing patch (version sort), not git describe's nearest-ancestor tag —
+          # an out-of-order tag on an older commit must not reset the patch counter.
+          # A tag with a zero-padded component is not one we could have minted, so it is
+          # filtered out here rather than allowed to drive the patch counter.
+          if LATEST_TAG=$(git tag --list "v${MAJOR}.${MINOR}.*" \
+                | grep -E "^v${NUM}[.]${NUM}[.]${NUM}(-${NUM}([.]${NUM})*)?$" \
+                | sort -V | tail -1) && [[ -n "${LATEST_TAG}" ]]; then
+            # Anchored on this line's MAJOR.MINOR, so BASH_REMATCH[1] is the patch.
+            if [[ ! "${LATEST_TAG}" =~ ^v${MAJOR}[.]${MINOR}[.]${NUM}(-${NUM}([.]${NUM})*)?$ ]]; then
+              echo "Tag '${LATEST_TAG}' does not match v${MAJOR}.${MINOR}.PATCH[-build.rev]" >&2
+              exit 1
+            fi
+            NEW_TAG="v${MAJOR}.${MINOR}.$((BASH_REMATCH[1] + 1))-${SUFFIX}"
+          else
+            # No tag yet on this line: seed the WCI patch at 0.
+            NEW_TAG="v${MAJOR}.${MINOR}.0-${SUFFIX}"
+          fi
+
+          if EXISTING_SHA=$(git rev-parse "${NEW_TAG}" 2>/dev/null); then
+            HEAD_SHA=$(git rev-parse HEAD)
+            if [[ "${EXISTING_SHA}" == "${HEAD_SHA}" ]]; then
+              echo "Tag ${NEW_TAG} already exists and points at HEAD, skipping"
+              echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Tag ${NEW_TAG} already exists but points at ${EXISTING_SHA}, not HEAD (${HEAD_SHA}); refusing to overwrite" >&2
+            exit 1
+          fi
+
+          echo "Creating tag ${NEW_TAG} at $(git rev-parse HEAD)"
+          git tag "${NEW_TAG}" HEAD
+          git push origin tag "${NEW_TAG}"
+          echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+
+  # A tag pushed with GITHUB_TOKEN won't fire release-tag.yml's `push: tags`
+  # trigger, so publish it directly here.
+  release:
+    needs: auto-tag
+    if: needs.auto-tag.outputs.tag != ''
+    uses: ./.github/workflows/release-tag.yml
+    with:
+      tag: ${{ needs.auto-tag.outputs.tag }}
+      skip_gates: true # already ran above, on this same commit
+    permissions:
+      contents: write

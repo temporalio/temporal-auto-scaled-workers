@@ -1,0 +1,96 @@
+name: Release
+
+# Validates a tagged commit and publishes a GitHub Release for it.
+#
+# Two entry points:
+#   - workflow_call: invoked by release-auto-tag.yml right after it pushes a new
+#     v1.<serverBuild>.<wciRev> tag (a tag pushed with GITHUB_TOKEN does NOT fire
+#     the `push: tags` trigger below, so the auto-tag workflow chains here directly).
+#     That path gates *before* tagging and passes skip_gates.
+#   - push a `v*` tag by hand (with a human/PAT credential) → this runs directly, and
+#     runs the gates itself since nothing validated the commit first.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.135.0)'
+        required: true
+        type: string
+      skip_gates:
+        description: 'Gates already ran on this commit before it was tagged'
+        required: false
+        default: false
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)publish a release for'
+        required: true
+        type: string
+
+permissions:
+  contents: write # create the GitHub Release
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # Both skipped on the auto-tag path, which gated before tagging.
+  # `!inputs.skip_gates` is deliberate over `inputs.skip_gates == false`: on the
+  # push/dispatch triggers `inputs` is empty, and an empty string compares equal to
+  # false — which would skip the gates on exactly the path that needs them.
+  ci:
+    if: ${{ !inputs.skip_gates }}
+    uses: ./.github/workflows/ci.yaml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: write
+
+  lint:
+    if: ${{ !inputs.skip_gates }}
+    uses: ./.github/workflows/golangci-lint.yaml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+    permissions:
+      contents: read
+
+  release:
+    needs: [ci, lint]
+    # A skipped `needs` skips its dependents by default, so spell out that only a
+    # failed or cancelled gate blocks the publish.
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Numeric identifiers reject leading zeros — `v1.0.0-1.32.0.158.03` is not
+          # valid semver, so it could never resolve as a module version anyway.
+          NUM='(0|[1-9][0-9]*)'
+          if [[ ! "${TAG}" =~ ^v${NUM}[.]${NUM}[.]${NUM}-${NUM}([.]${NUM})+$ ]]; then
+            echo "Tag '${TAG}' is not a vMAJOR.MINOR.PATCH-<serverVersion> module tag" >&2
+            exit 1
+          fi
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists, skipping"
+            exit 0
+          fi
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            --verify-tag

@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - main
+  # Called by release-auto-tag.yml as a release gate, before it pushes a tag.
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Commit, branch, or tag to validate (empty = the triggering ref)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -20,6 +27,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Empty means "the ref for the triggering event", so pull_request and
+          # push are unaffected; only workflow_call sets this.
+          ref: ${{ inputs.ref }}
 
       - name: Check go.mod consistency between root and tests/
         run: |
@@ -60,6 +71,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Setup Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -110,6 +123,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Setup Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0

@@ -1,6 +1,8 @@
 [tools]
 go = "1.26.4"
 golangci-lint = "2.12.2"
+actionlint = "1.7.12"
+shellcheck = "0.11.0" # actionlint shell-lints `run:` blocks only when this is on PATH
 
 # Integration tests live in the ./tests module and require the test_dep build tag
 # (compute-observer spy hooks). TEMPORAL_ROOT keeps testcore's .testoutput out of the
