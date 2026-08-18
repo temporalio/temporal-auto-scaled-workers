@@ -1,0 +1,41 @@
+name: Dry-run caller
+
+# THROWAWAY — delete this file and dryrun-probe.yml once the release wiring is
+# verified. Never merge to main.
+#
+# Triggered by pushing any dryrun/** branch, so nothing has to land on main first
+# (workflow_dispatch would require that). One push exercises both calls:
+#
+#   chained -> dryrun-probe.yml with skip_gates: true, reproducing what
+#              release-auto-tag.yml does to release-tag.yml. Expect gate-a and
+#              gate-b `skipped` and publish `success`.
+#   ci      -> ci.yaml as a release gate. Expect check-go-mod-sync, unit-test and
+#              integration-test `success`, and unit-code-coverage /
+#              integ-code-coverage `skipped` via their pull_request guard. If those
+#              two FAIL on permissions instead of skipping, the grant below is not
+#              reaching them and they need their own guard.
+#
+# The permission set mirrors release-auto-tag.yml's `ci` job: a called workflow can
+# only narrow what its caller grants, so the grant has to cover ci.yaml's
+# coverage-report jobs even though they skip here.
+on:
+  push:
+    branches: ['dryrun/**']
+
+jobs:
+  chained:
+    uses: ./.github/workflows/dryrun-probe.yml
+    with:
+      skip_gates: true
+    permissions:
+      contents: read
+
+  ci:
+    uses: ./.github/workflows/ci.yaml
+    with:
+      ref: ${{ github.sha }}
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: write

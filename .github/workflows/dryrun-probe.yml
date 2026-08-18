@@ -1,0 +1,62 @@
+name: Dry-run probe
+
+# THROWAWAY — delete this file and dryrun-caller.yml once the release wiring is
+# verified. Never merge to main.
+#
+# Mirrors release-tag.yml's job shape with echo bodies, to pin down two GitHub
+# behaviours that actionlint cannot check and no local test can reproduce:
+#
+#   1. `!inputs.skip_gates` when `inputs` does not exist. On the push trigger below,
+#      inputs is empty; an empty string compares equal to false, so the intuitive
+#      `inputs.skip_gates == false` would SKIP the gates on exactly the path that
+#      needs them. gate-a/gate-b must RUN when this fires from a tag push.
+#   2. `always()` with a skipped `needs`. A skipped dependency skips its dependents
+#      by default, so publish must still RUN when the gates are skipped — otherwise
+#      the real auto-tag path would tag and never publish a Release.
+#
+# Tags are matched as 'dryrun/v*', which cannot be a Go module version (leading
+# path segment, no semver core) and does not match release-tag.yml's 'v*' filter —
+# tag globs do not match across '/'. So nothing here can be resolved by `go get`
+# or cached by the module proxy.
+on:
+  push:
+    tags: ['dryrun/v*']
+  workflow_call:
+    inputs:
+      skip_gates:
+        description: 'Mirrors release-tag.yml: gates already ran before tagging'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  gate-a:
+    if: ${{ !inputs.skip_gates }}
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Report
+        env:
+          SKIP: ${{ inputs.skip_gates }}
+        run: echo "gate-a RAN; inputs.skip_gates=[${SKIP}]"
+
+  gate-b:
+    if: ${{ !inputs.skip_gates }}
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Report
+        run: echo "gate-b RAN"
+
+  publish:
+    needs: [gate-a, gate-b]
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Report
+        env:
+          A: ${{ needs.gate-a.result }}
+          B: ${{ needs.gate-b.result }}
+          EVENT: ${{ github.event_name }}
+        run: echo "publish RAN on ${EVENT}; gate-a=${A} gate-b=${B}"
