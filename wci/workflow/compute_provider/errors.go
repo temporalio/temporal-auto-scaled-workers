@@ -1,5 +1,14 @@
 package computeprovider
 
+import "errors"
+
+// errWCIOwned marks a failure as attributable to worker-controller's own setup
+// (base credentials, intermediary role/impersonation chain) rather than the
+// customer's config. It has to be marked where it happens: intermediary and
+// customer credential steps go through the same helpers and fail
+// indistinguishably. Shared across providers and read by their classify* funcs.
+var errWCIOwned = errors.New("worker-controller configuration error")
+
 // FailureClass is the provider-agnostic classification of a compute provider
 // failure. Each provider maps its own SDK's error taxonomy onto it so callers can
 // distinguish failure kinds without knowing which provider produced the error.

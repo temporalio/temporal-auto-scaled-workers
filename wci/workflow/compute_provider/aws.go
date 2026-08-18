@@ -21,12 +21,6 @@ type stsAPI interface {
 	AssumeRole(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error)
 }
 
-// errWCIOwned marks a failure as attributable to worker-controller's own AWS setup
-// (base credentials, intermediary role chain) rather than the customer's config.
-// This has to be marked where it happens: intermediary and customer role
-// assumptions go through the same helper and fail indistinguishably.
-var errWCIOwned = errors.New("worker-controller AWS configuration error")
-
 var (
 	awsThrottleCheck   = retry.ThrottleErrorCode{Codes: retry.DefaultThrottleErrorCodes}
 	awsConnectionCheck = retry.RetryableConnectionError{}
