@@ -48,6 +48,11 @@ const (
 	// Signals the version workflow after each ValidationStatus change so the
 	// deployment workflow can maintain an aggregate connectivity summary in its memo.
 	SignalVersionWorkflowVersion
+
+	// Cancels the child context which is attached to the timer futures,
+	// which, on deletion, will mark the future as failed and prevent the body of
+	// the associated callback from running.
+	CancelTimersOnDeleteVersion
 )
 
 type (
@@ -449,7 +454,9 @@ func (d *WorkflowRunner) validateDeleteInstance(args *iface.DeleteWorkerControll
 // task context - so that any further tasks will abort on next invocation.
 func (d *WorkflowRunner) markDeleted() {
 	d.deleteInstance = true
-	d.cancelTimerTasks()
+	if d.hasMinVersion(CancelTimersOnDeleteVersion) {
+		d.cancelTimerTasks()
+	}
 }
 
 func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.DeleteWorkerControllerInstanceRequest) (*iface.DeleteWorkerControllerInstanceResponse, error) {
