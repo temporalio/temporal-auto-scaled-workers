@@ -13,6 +13,10 @@ Each WCI manages a single deployment version (deployment name + build ID). It:
 
 Multiple **scaling groups** can be defined per WCI, each mapping a set of task queue types (workflow, activity, nexus) to a compute provider and scaling algorithm. One group can act as a catch-all for task types not claimed by other groups.
 
+### Task queue dispatch rate limiting
+
+When a task queue's dispatch rate is limited, adding more workers doesn't help; they poll but can't receive tasks any faster than the rate limit allows. The `no-sync` algorithm automatically suppresses backlog-driven scale-up for any queue type the Matching Service reports as currently rate-limited (`TaskQueueStats.rate_limiting_active`).
+
 ## Supported Compute Providers
 
 | Provider | Type string | Launch strategy |

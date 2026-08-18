@@ -7,12 +7,13 @@ import (
 	"errors"
 	"fmt"
 
-	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
-	"go.temporal.io/server/common/dynamicconfig"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/server/common/dynamicconfig"
 )
 
 const (

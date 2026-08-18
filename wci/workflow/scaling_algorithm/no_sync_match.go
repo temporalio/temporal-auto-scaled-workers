@@ -155,11 +155,12 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 		}
 	}
 
+	nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
+
 	throttledCount := 0
-	if !event.IsSyncMatch || event.NoSyncMatchSignalsSinceLast > 0 {
+	if event.NoSyncMatchSignalsSinceLast > 0 {
 		cooloffMs := config.GetInt64Field(configNoSyncScaleUpCooloffMsKey, configNoSyncScaleUpCooloffMsDefault)
 		lastScaleUpMs := priorState.GetInt64Field(stateLastScaleUpTimestampKey, 0)
-		nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
 		elapsedMs := nowMs - lastScaleUpMs
 
 		if elapsedMs >= cooloffMs {
@@ -171,6 +172,13 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 		}
 	}
 
+	if event.RateLimitedSignalsSinceLast > 0 {
+		// A worker was available, so the dispatch rate limit is the bottleneck, not worker count;
+		// ProcessMetricsPoll separately suppresses backlog-driven scale-up via RateLimitingActive.
+		logger.Info("Task queue dispatch rate limiting observed, suppressing scale-up",
+			"rate_limited_count", event.RateLimitedSignalsSinceLast)
+	}
+
 	return &TaskAddResponse{Actions: actions, Status: updatedState, ThrottledCount: throttledCount}, nil
 }
 
@@ -179,6 +187,8 @@ func (a *scalingAlgorithmNoSync) ProcessDeferredScalingDecision(_ context.Contex
 }
 
 func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config iface.ScalingAlgorithmConfig, priorState iface.ScalingAlgorithmStatus, metricsSnapshot ScalingMetricsSnapshot) (*MetricsPollResponse, error) {
+	logger := safeActivityLogger(ctx)
+
 	updatedState := maps.Clone(priorState)
 	actions := []ScalingAction{}
 
@@ -231,6 +241,14 @@ func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config 
 		}
 		if !perTypeScaleUp && maxWorkerLifetimeMs > 0 && backlog > 0 && elapsedSinceScaleUp >= maxWorkerLifetimeMs {
 			perTypeScaleUp = true
+		}
+		if perTypeScaleUp && q.metrics.RateLimitingActive {
+			logger.Info("Scale-up suppressed by task queue dispatch rate limiting",
+				"queue_type", q.qName,
+				"backlog", backlog,
+				"dispatch_rate", currentRate,
+				"elapsed_since_scale_up_ms", elapsedSinceScaleUp)
+			perTypeScaleUp = false
 		}
 		if perTypeScaleUp && epsilon > 0 && lastRate >= 0 && math.Abs(currentRate-lastRate) <= epsilon {
 			perTypeScaleUp = false

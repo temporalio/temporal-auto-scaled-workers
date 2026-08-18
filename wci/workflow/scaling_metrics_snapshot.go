@@ -47,20 +47,29 @@ func (a *Activities) pullScalingMetricsSnapshot(ctx context.Context, namespaceNa
 			metricsSnapshot.Workflow.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
 			metricsSnapshot.Workflow.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
 			metricsSnapshot.Workflow.LastBacklogAge = max(metricsSnapshot.Workflow.LastBacklogAge, versionedTaskQueue.Stats.GetApproximateBacklogAge().AsDuration())
+			metricsSnapshot.Workflow.RateLimitingActive = metricsSnapshot.Workflow.RateLimitingActive || versionedTaskQueue.Stats.RateLimitingActive
 		case enumspb.TASK_QUEUE_TYPE_ACTIVITY:
 			metricsSnapshot.Activity.LastBacklogCount += versionedTaskQueue.Stats.ApproximateBacklogCount
 			metricsSnapshot.Activity.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
 			metricsSnapshot.Activity.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
 			metricsSnapshot.Activity.LastBacklogAge = max(metricsSnapshot.Activity.LastBacklogAge, versionedTaskQueue.Stats.GetApproximateBacklogAge().AsDuration())
+			metricsSnapshot.Activity.RateLimitingActive = metricsSnapshot.Activity.RateLimitingActive || versionedTaskQueue.Stats.RateLimitingActive
 		case enumspb.TASK_QUEUE_TYPE_NEXUS:
 			metricsSnapshot.Nexus.LastBacklogCount += versionedTaskQueue.Stats.ApproximateBacklogCount
 			metricsSnapshot.Nexus.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
 			metricsSnapshot.Nexus.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
 			metricsSnapshot.Nexus.LastBacklogAge = max(metricsSnapshot.Nexus.LastBacklogAge, versionedTaskQueue.Stats.GetApproximateBacklogAge().AsDuration())
+			metricsSnapshot.Nexus.RateLimitingActive = metricsSnapshot.Nexus.RateLimitingActive || versionedTaskQueue.Stats.RateLimitingActive
 		}
 	}
 
-	logger.Info("Pulled scaling metrics snapshot", "workflow_count", metricsSnapshot.Workflow.LastBacklogCount, "activity_count", metricsSnapshot.Activity.LastBacklogCount, "nexus_count", metricsSnapshot.Nexus.LastBacklogCount)
+	logger.Info("Pulled scaling metrics snapshot",
+		"workflow_count", metricsSnapshot.Workflow.LastBacklogCount,
+		"activity_count", metricsSnapshot.Activity.LastBacklogCount,
+		"nexus_count", metricsSnapshot.Nexus.LastBacklogCount,
+		"workflow_rate_limiting_active", metricsSnapshot.Workflow.RateLimitingActive,
+		"activity_rate_limiting_active", metricsSnapshot.Activity.RateLimitingActive,
+		"nexus_rate_limiting_active", metricsSnapshot.Nexus.RateLimitingActive)
 
 	return &metricsSnapshot, nil
 }

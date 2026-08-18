@@ -1,10 +1,11 @@
 package iface
 
 import (
+	"google.golang.org/protobuf/proto"
+
 	"go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/workflow"
-	"google.golang.org/protobuf/proto"
 )
 
 // applyFieldMask copies only the specified field paths from src to dst.

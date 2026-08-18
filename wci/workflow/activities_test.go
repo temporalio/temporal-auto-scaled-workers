@@ -829,6 +829,48 @@ func TestHandleDeferredScalingDecisionMemoizesMetricsSnapshot(t *testing.T) {
 	assert.Equal(t, int64(42), calls[2].snap.Workflow.LastBacklogCount, "mutating one returned snapshot must not bleed into another")
 }
 
+// TestPullScalingMetricsSnapshotAggregatesRateLimitingActive verifies that RateLimitingActive is
+// OR-merged (not overwritten) across multiple VersionTaskQueue entries of the same TaskQueueType —
+// a worker deployment version can serve several distinct task queue names of the same type, and
+// a rate limit on any one of them must not be masked by another that isn't currently rate-limited.
+func TestPullScalingMetricsSnapshotAggregatesRateLimitingActive(t *testing.T) {
+	fake := &fakeWorkflowServiceClient{
+		describeFn: func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
+			return &workflowservice.DescribeWorkerDeploymentVersionResponse{
+				VersionTaskQueues: []*workflowservice.DescribeWorkerDeploymentVersionResponse_VersionTaskQueue{
+					{
+						Name:  "queue-a",
+						Type:  enumspb.TASK_QUEUE_TYPE_WORKFLOW,
+						Stats: &taskqueuepb.TaskQueueStats{RateLimitingActive: false},
+					},
+					{
+						Name:  "queue-b",
+						Type:  enumspb.TASK_QUEUE_TYPE_WORKFLOW,
+						Stats: &taskqueuepb.TaskQueueStats{RateLimitingActive: true},
+					},
+				},
+			}, nil
+		},
+	}
+
+	var snapshot *scalingalgorithm.ScalingMetricsSnapshot
+	algo := &deferredScalingDecisionTestAlgorithm{
+		deferredHook: func(getMetricsSnapshot scalingalgorithm.ScalingMetricsSnapshotGetter) {
+			var err error
+			snapshot, err = getMetricsSnapshot()
+			require.NoError(t, err)
+		},
+	}
+
+	_, err := runDeferredActivityWithFakeClient(t, algo, fake)
+	require.NoError(t, err)
+
+	require.NotNil(t, snapshot)
+	require.NotNil(t, snapshot.Workflow)
+	assert.True(t, snapshot.Workflow.RateLimitingActive,
+		"RateLimitingActive must be OR-aggregated across VersionTaskQueue entries of the same type: queue-b is rate-limited even though queue-a isn't")
+}
+
 // TestHandleDeferredScalingDecisionMemoizesMetricsSnapshotErrorSticky pins the sync.OnceValues
 // contract on the error path: a first-call failure is cached for the activity invocation, the
 // underlying RPC must not be retried within the same call, and DeferredScalingDecisionMetricsPullFailedCount

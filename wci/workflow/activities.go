@@ -560,6 +560,10 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 			groupMetrics.Counter(wcimetrics.ScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
 		}
 
+		if req.Request.RateLimitedSignalsSinceLast > 0 {
+			groupMetrics.Counter(wcimetrics.RateLimitedTaskCount.Name()).Inc(int64(req.Request.RateLimitedSignalsSinceLast))
+		}
+
 		recordSuccess()
 
 		return &HandleTaskAddSignalActivityResponse{Actions: updatedActions, UpdatedScalingStatus: updatedScalingStatus}, nil

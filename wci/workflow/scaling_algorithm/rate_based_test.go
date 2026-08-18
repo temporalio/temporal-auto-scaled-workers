@@ -301,7 +301,7 @@ func TestRateBasedProcessTaskAdd(t *testing.T) {
 			configRateBasedEWMAAlphaKey:                  float64(0.5),
 			configRateBasedInitialPerConsumerCapacityKey: float64(10),
 		}
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1}
 
 		resp, err := a.ProcessTaskAdd(ctx, cfg, state, event)
 		require.NoError(t, err)
@@ -322,7 +322,7 @@ func TestRateBasedProcessTaskAdd(t *testing.T) {
 			configRateBasedInitialCountKey: int64(2),
 			configRateBasedMaxCountKey:     int64(5),
 		}
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1}
 
 		resp, err := a.ProcessTaskAdd(ctx, cfg, nil, event)
 		require.NoError(t, err)
@@ -344,7 +344,7 @@ func TestRateBasedProcessTaskAdd(t *testing.T) {
 			configRateBasedInitialCountKey: int64(1),
 			configRateBasedMaxCountKey:     int64(10),
 		}
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1}
 
 		resp, err := a.ProcessTaskAdd(ctx, cfg, state, event)
 		require.NoError(t, err)
@@ -422,7 +422,7 @@ func TestRateBasedProcessTaskAdd(t *testing.T) {
 			stateRateBasedWorkerCount:          int64(0),
 			stateRateBasedLastScaleUpTimestamp: oldMs(),
 		}
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1}
 
 		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, state, event)
 		require.NoError(t, err)
@@ -437,7 +437,7 @@ func TestRateBasedProcessTaskAdd(t *testing.T) {
 			stateRateBasedWorkerCount:          int64(2),
 			stateRateBasedLastScaleUpTimestamp: oldMs(),
 		}
-		event := iface.SignalTaskAddRequest{IsSyncMatch: false}
+		event := iface.SignalTaskAddRequest{NoSyncMatchSignalsSinceLast: 1}
 
 		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, state, event)
 		require.NoError(t, err)

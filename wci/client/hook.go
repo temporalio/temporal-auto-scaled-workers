@@ -27,6 +27,7 @@ type (
 		timestamp        time.Time
 		syncMatchCount   int
 		noSyncMatchCount int
+		rateLimitedCount int
 	}
 
 	taskHookImpl struct {
@@ -87,9 +88,9 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	}
 	workflowID := GenerateWorkerControllerInstanceWorkflowID(event.DeploymentVersion)
 
-	// batch signals per WCI in minSignalInterval* time buckets
-	syncMatchBatchCount, noSyncMatchBatchCount, skip := th.batchMatchSignals(ctx, workflowID, event.IsSyncMatch)
-	if skip {
+	syncMatchBatchCount, noSyncMatchBatchCount, rateLimitedBatchCount, deferSend := th.storeTaskAddSignalResults(ctx, workflowID, event.SyncMatchOutcome, event.IsSyncMatch)
+	if deferSend {
+		// Counters retained for a later batch; nothing to send yet.
 		return
 	}
 
@@ -109,6 +110,7 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 		IsSyncMatch:                 event.IsSyncMatch,
 		NoSyncMatchSignalsSinceLast: noSyncMatchBatchCount,
 		SyncMatchSignalsSinceLast:   syncMatchBatchCount,
+		RateLimitedSignalsSinceLast: rateLimitedBatchCount,
 	}
 
 	if err := th.client.SignalTaskAddEvent(ctx, th.namespace, event.DeploymentVersion, request); err != nil {
@@ -117,7 +119,14 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	}
 }
 
-func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, isSyncMatch bool) (int, int, bool) {
+// storeTaskAddSignalResults tallies one task-add outcome per WCI workflow (signalling on every
+// task add would be too noisy). deferSend true means the returned counts are a partial batch.
+func (th *taskHookImpl) storeTaskAddSignalResults(
+	_ context.Context,
+	workflowID string,
+	outcome hooks.SyncMatchOutcome,
+	isSyncMatchFallback bool,
+) (syncCount int, noSyncCount int, rateLimitedCount int, deferSend bool) {
 	now := time.Now()
 
 	th.lastSignalMu.Lock()
@@ -129,13 +138,26 @@ func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, 
 			timestamp:        time.Unix(0, 0),
 			syncMatchCount:   0,
 			noSyncMatchCount: 0,
+			rateLimitedCount: 0,
 		}
 	}
 
-	if isSyncMatch {
+	switch outcome {
+	case hooks.SyncMatchOutcomeSuccess:
 		last.syncMatchCount++
-	} else {
+	case hooks.SyncMatchOutcomeNotMatched:
 		last.noSyncMatchCount++
+	case hooks.SyncMatchOutcomeRateLimited:
+		last.rateLimitedCount++ // does NOT increment noSyncMatchCount
+	default:
+		// SyncMatchOutcome was added to the hooks API in server release v1.32.0-156.0; a Matching service
+		// running an older build leaves it at Unspecified. Handle executions for workflows that were
+		// started before that server release, or where outcome is unspecified.
+		if isSyncMatchFallback {
+			last.syncMatchCount++
+		} else {
+			last.noSyncMatchCount++
+		}
 	}
 
 	minSignalIntervalSyncMatch := WorkerControllerMinSignalIntervalSyncMatchMilliseconds.Get(th.dc)(th.namespace.Name().String())
@@ -144,6 +166,8 @@ func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, 
 	}
 	sendBy := last.timestamp.Add(time.Duration(minSignalIntervalSyncMatch) * time.Millisecond)
 	if last.noSyncMatchCount > 0 {
+		// Not-matched events (no worker was available) send the batch urgently at 500ms.
+		// Rate-limited events stay in the slow 60-second window alongside sync-matched events.
 		minSignalIntervalNoSyncMatch := WorkerControllerMinSignalIntervalNoSyncMatchMilliseconds.Get(th.dc)(th.namespace.Name().String())
 		if minSignalIntervalNoSyncMatch <= 0 {
 			minSignalIntervalNoSyncMatch = 500
@@ -156,9 +180,10 @@ func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, 
 			timestamp:        now,
 			syncMatchCount:   0,
 			noSyncMatchCount: 0,
+			rateLimitedCount: 0,
 		}
-		return last.syncMatchCount, last.noSyncMatchCount, false
+		return last.syncMatchCount, last.noSyncMatchCount, last.rateLimitedCount, false
 	}
 	th.lastSignalDetails[workflowID] = last
-	return last.syncMatchCount, last.noSyncMatchCount, true
+	return last.syncMatchCount, last.noSyncMatchCount, last.rateLimitedCount, true
 }
