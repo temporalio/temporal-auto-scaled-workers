@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	enumspb "go.temporal.io/api/enums/v1"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
@@ -30,7 +31,7 @@ func failScalingMetricsSnapshotGetter(t *testing.T) ScalingMetricsSnapshotGetter
 
 func TestNoSyncValidateConfig(t *testing.T) {
 	a := newNoSync()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("nil config", func(t *testing.T) {
 		require.NoError(t, a.ValidateConfig(ctx, nil))
@@ -120,13 +121,13 @@ func TestNoSyncValidateConfig(t *testing.T) {
 
 func TestNoSyncProcessTaskAdd(t *testing.T) {
 	a := newNoSync()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("sync match no batched no-sync", func(t *testing.T) {
 		event := iface.SignalTaskAddRequest{IsSyncMatch: true, NoSyncMatchSignalsSinceLast: 0}
 		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, nil, event)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 	})
 
 	t.Run("no-sync match nil state first call", func(t *testing.T) {
@@ -145,7 +146,7 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 		event := iface.SignalTaskAddRequest{IsSyncMatch: false, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
 		resp, err := a.ProcessTaskAdd(ctx, cfg, state, event)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 	})
 
 	t.Run("no-sync match outside cooloff", func(t *testing.T) {
@@ -192,7 +193,7 @@ func TestNoSyncProcessTaskAdd(t *testing.T) {
 		// Second call within cooloff: must not fire when prior state is threaded back.
 		resp2, err := a.ProcessTaskAdd(ctx, cfg, resp1.Status, event)
 		require.NoError(t, err)
-		assert.Len(t, resp2.Actions, 0)
+		assert.Empty(t, resp2.Actions)
 	})
 
 	t.Run("cooloff=0 state recent still fires", func(t *testing.T) {
@@ -216,7 +217,7 @@ func TestNoSyncCompatibleLaunchStrategies(t *testing.T) {
 
 func TestNoSyncProcessDeferredScalingDecisionNoop(t *testing.T) {
 	a := newNoSync()
-	ctx := context.Background()
+	ctx := t.Context()
 	priorState := iface.ScalingAlgorithmStatus{"custom": int64(1)}
 	event := iface.SignalTaskAddRequest{IsSyncMatch: false, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW}
 
@@ -230,12 +231,12 @@ func TestNoSyncProcessDeferredScalingDecisionNoop(t *testing.T) {
 
 func TestNoSyncProcessMetricsPoll(t *testing.T) {
 	a := newNoSync()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("all nil metrics", func(t *testing.T) {
 		resp, err := a.ProcessMetricsPoll(ctx, iface.ScalingAlgorithmConfig{}, nil, ScalingMetricsSnapshot{})
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 		require.NotNil(t, resp.NextPoll)
 		assert.Equal(t, 60*time.Second, *resp.NextPoll)
 	})
@@ -254,7 +255,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, iface.ScalingAlgorithmConfig{}, nil, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 	})
 
 	t.Run("single queue backlog>0 no prior state", func(t *testing.T) {
@@ -278,7 +279,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 	})
 
 	t.Run("lifetime fires when within cooloff but past lifetime threshold", func(t *testing.T) {
@@ -328,7 +329,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 	})
 
 	t.Run("epsilon suppression on lifetime refresh path", func(t *testing.T) {
@@ -349,7 +350,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 	})
 
 	t.Run("epsilon does not suppress lifetime refresh when rate changed", func(t *testing.T) {
@@ -383,7 +384,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 	})
 
 	t.Run("epsilon suppression rate changed", func(t *testing.T) {
@@ -446,8 +447,8 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, iface.ScalingAlgorithmConfig{}, nil, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
-		assert.Equal(t, float64(7), resp.Status["workflow_last_dispatch_rate"])
+		assert.Empty(t, resp.Actions)
+		assert.InDelta(t, float64(7), resp.Status["workflow_last_dispatch_rate"], 1e-9)
 	})
 
 	t.Run("epsilon suppression skipped on first poll no prior rate", func(t *testing.T) {
@@ -474,7 +475,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 1)
 		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
-		assert.Equal(t, float64(0), resp.Status["activity_last_dispatch_rate"])
+		assert.InDelta(t, float64(0), resp.Status["activity_last_dispatch_rate"], 1e-9)
 	})
 
 	t.Run("only nexus has backlog", func(t *testing.T) {
@@ -485,7 +486,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 1)
 		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
-		assert.Equal(t, float64(0), resp.Status["nexus_last_dispatch_rate"])
+		assert.InDelta(t, float64(0), resp.Status["nexus_last_dispatch_rate"], 1e-9)
 	})
 
 	t.Run("cooloff is shared across queue types", func(t *testing.T) {
@@ -499,7 +500,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 	})
 
 	t.Run("backlog exactly at threshold does not fire", func(t *testing.T) {
@@ -515,7 +516,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, nil, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 	})
 
 	t.Run("nil config uses defaults", func(t *testing.T) {
@@ -542,8 +543,8 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
-		assert.Equal(t, float64(10), resp.Status["workflow_last_dispatch_rate"])
+		assert.Empty(t, resp.Actions)
+		assert.InDelta(t, float64(10), resp.Status["workflow_last_dispatch_rate"], 1e-9)
 	})
 
 	t.Run("state threads correctly across two calls", func(t *testing.T) {
@@ -559,7 +560,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		// Second call within cooloff: must not fire when prior state is threaded back.
 		resp2, err := a.ProcessMetricsPoll(ctx, cfg, resp1.Status, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp2.Actions, 0)
+		assert.Empty(t, resp2.Actions)
 	})
 
 	t.Run("lifetime state threads correctly across two calls", func(t *testing.T) {
@@ -582,7 +583,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		// Second call with the updated state: the lifetime timer was reset to nowMs, so 1s has not yet elapsed.
 		resp2, err := a.ProcessMetricsPoll(ctx, cfg, resp1.Status, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp2.Actions, 0, "second call: lifetime not yet elapsed, must not fire")
+		assert.Empty(t, resp2.Actions, "second call: lifetime not yet elapsed, must not fire")
 	})
 
 	t.Run("epsilon at exact boundary suppresses", func(t *testing.T) {
@@ -598,7 +599,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0, "diff == 0 is within epsilon, must suppress")
+		assert.Empty(t, resp.Actions, "diff == 0 is within epsilon, must suppress")
 	})
 
 	t.Run("epsilon just above boundary fires", func(t *testing.T) {
@@ -634,7 +635,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		// Second call: same rate — epsilon suppresses scale-up using rate stored by first call.
 		resp2, err := a.ProcessMetricsPoll(ctx, cfg, resp1.Status, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp2.Actions, 0)
+		assert.Empty(t, resp2.Actions)
 	})
 
 	t.Run("worker refresh does not fire when backlog is zero", func(t *testing.T) {
@@ -648,7 +649,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 	})
 
 	t.Run("backlog one above threshold fires", func(t *testing.T) {
@@ -679,7 +680,7 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 	})
 
 	t.Run("ProcessTaskAdd state suppresses ProcessMetricsPoll within cooloff", func(t *testing.T) {
@@ -696,6 +697,6 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		pollResp, err := a.ProcessMetricsPoll(ctx, cfg, taskAddResp.Status, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, pollResp.Actions, 0)
+		assert.Empty(t, pollResp.Actions)
 	})
 }

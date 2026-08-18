@@ -2,18 +2,18 @@ package scalingalgorithm
 
 import (
 	"bytes"
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	sdklog "go.temporal.io/sdk/log"
 )
 
 func TestFormatLoggerKeyvals(t *testing.T) {
 	t.Run("empty keyvals returns empty string", func(t *testing.T) {
-		assert.Equal(t, "", formatLoggerKeyvals(nil))
-		assert.Equal(t, "", formatLoggerKeyvals([]any{}))
+		assert.Empty(t, formatLoggerKeyvals(nil))
+		assert.Empty(t, formatLoggerKeyvals([]any{}))
 	})
 
 	t.Run("single pair", func(t *testing.T) {
@@ -108,7 +108,7 @@ func TestSafeActivityLoggerFallsBackOutsideActivityContext(t *testing.T) {
 	fallbackStdlibLogger.SetOutput(&buf)
 	t.Cleanup(func() { fallbackStdlibLogger.SetOutput(original) })
 
-	logger := safeActivityLogger(context.Background())
+	logger := safeActivityLogger(t.Context())
 	require.NotNil(t, logger)
 	assert.Contains(t, buf.String(), "panicked")
 

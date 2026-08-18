@@ -68,7 +68,7 @@ func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, rc Requ
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	_, err = client.GetWorkerPool(ctx, &runpb.GetWorkerPoolRequest{Name: name})
 	if err != nil {
 		return fmt.Errorf("worker pool %q not found: %w", name, err)
@@ -85,7 +85,7 @@ func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, rc
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if _, err = client.UpdateWorkerPool(ctx, buildUpdateWorkerPoolRequest(name, count)); err != nil {
 		return fmt.Errorf("failed to update worker pool %q: %w", name, err)
