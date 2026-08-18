@@ -45,6 +45,8 @@ func classifyGCPFailure(err error) FailureClass {
 			return FailureInternal
 		case codes.Canceled, codes.OK:
 			return FailureUnclassified
+		default:
+			// Client faults: narrowed by ownership below.
 		}
 		// Remaining codes are client faults. Our own missing resources and denied
 		// permissions page the same on-call the same way, so there is nothing to
