@@ -6,6 +6,8 @@ import (
 	_ "time/tzdata" // embed tzdata as a fallback
 
 	"github.com/urfave/cli/v2"
+	"go.uber.org/fx"
+
 	"go.temporal.io/auto-scaled-workers/wci"
 	"go.temporal.io/server/common/build"
 	"go.temporal.io/server/common/config"
@@ -25,7 +27,6 @@ import (
 	"go.temporal.io/server/common/resolver"
 	"go.temporal.io/server/common/rpc/encryption"
 	"go.temporal.io/server/temporal"
-	"go.uber.org/fx"
 )
 
 // main entry point for the temporal server

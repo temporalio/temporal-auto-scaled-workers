@@ -35,7 +35,7 @@ func TestAWSECSCheckExternalID_ClusterARN_CallsFn(t *testing.T) {
 		configAWSECSRoleExternalID: "my-eid",
 	}
 
-	if err := p.checkExternalID(context.Background(), cfg, testClusterARN); err != nil {
+	if err := p.checkExternalID(t.Context(), cfg, testClusterARN); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -68,7 +68,7 @@ func TestAWSECSCheckExternalID_PlainClusterWithRegionConfig_CallsFn(t *testing.T
 		configAWSECSRegion:         "eu-central-1",
 	}
 
-	if err := p.checkExternalID(context.Background(), cfg, "my-cluster"); err != nil {
+	if err := p.checkExternalID(t.Context(), cfg, "my-cluster"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -94,7 +94,7 @@ func TestAWSECSCheckExternalID_PlainClusterNoRegion_ReturnsError(t *testing.T) {
 		// no region, plain cluster name
 	}
 
-	if err := p.checkExternalID(context.Background(), cfg, "my-cluster"); err == nil {
+	if err := p.checkExternalID(t.Context(), cfg, "my-cluster"); err == nil {
 		t.Fatal("expected error when region cannot be determined, got nil")
 	}
 }
@@ -113,7 +113,7 @@ func TestAWSECSCheckExternalID_NoExternalID_SkipsFn(t *testing.T) {
 		// no role_external_id
 	}
 
-	if err := p.checkExternalID(context.Background(), cfg, testClusterARN); err != nil {
+	if err := p.checkExternalID(t.Context(), cfg, testClusterARN); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestAWSECSCheckExternalID_NoRole_SkipsFn(t *testing.T) {
 		// no role
 	}
 
-	if err := p.checkExternalID(context.Background(), cfg, testClusterARN); err != nil {
+	if err := p.checkExternalID(t.Context(), cfg, testClusterARN); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -145,7 +145,7 @@ func TestAWSECSValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 		// no role
 	}
 
-	if err := p.ValidateConfig(context.Background(), RequestContext{}, cfg); err == nil {
+	if err := p.ValidateConfig(t.Context(), RequestContext{}, cfg); err == nil {
 		t.Fatal("expected error when role is missing, got nil")
 	}
 }
@@ -159,7 +159,7 @@ func TestAWSECSValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
 		// no role_external_id
 	}
 
-	if err := p.ValidateConfig(context.Background(), RequestContext{}, cfg); err == nil {
+	if err := p.ValidateConfig(t.Context(), RequestContext{}, cfg); err == nil {
 		t.Fatal("expected error when external ID is missing, got nil")
 	}
 }
@@ -174,7 +174,7 @@ func TestAWSECSValidateConfig_OptOut_NoRoleOrEID_PassesMandatoryCheck(t *testing
 		// no role or external ID
 	}
 
-	err := p.ValidateConfig(context.Background(), RequestContext{}, cfg)
+	err := p.ValidateConfig(t.Context(), RequestContext{}, cfg)
 	// We expect a non-mandatory error (e.g. AWS call failure), not the mandatory check error.
 	if err != nil && (err.Error() == `ECS compute provider requires "role" to be configured` ||
 		err.Error() == `ECS compute provider requires "role_external_id" to be configured`) {
@@ -195,7 +195,7 @@ func TestAWSECSCheckExternalID_FnError_Propagated(t *testing.T) {
 		configAWSECSRoleExternalID: "my-eid",
 	}
 
-	if err := p.checkExternalID(context.Background(), cfg, testClusterARN); err == nil {
+	if err := p.checkExternalID(t.Context(), cfg, testClusterARN); err == nil {
 		t.Fatal("expected error to be propagated, got nil")
 	}
 }

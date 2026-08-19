@@ -1,10 +1,11 @@
 package workercomponent
 
 import (
+	"go.uber.org/fx"
+
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/sdk"
 	workercommon "go.temporal.io/server/service/worker/common"
-	"go.uber.org/fx"
 )
 
 type (
