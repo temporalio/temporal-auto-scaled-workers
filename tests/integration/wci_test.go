@@ -7,6 +7,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	commonpb "go.temporal.io/api/common/v1"
 	computepb "go.temporal.io/api/compute/v1"
 	deploymentpb "go.temporal.io/api/deployment/v1"
@@ -20,8 +23,6 @@ import (
 	"go.temporal.io/sdk/workflow"
 	"go.temporal.io/server/common/sdk"
 	"go.temporal.io/server/tests/testcore"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 func TestWCIInstanceLifecycle(t *testing.T) {
