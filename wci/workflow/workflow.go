@@ -30,10 +30,13 @@ const (
 	RegisterTaskQueuesViaWorkersActivityTimeout  = 30 * time.Second
 
 	periodicValidationInterval = 6 * time.Hour
-	maxPendingTaskAddSignals   = 4000
 
-	taskAddSignalQueueProcessingPatch = "taskAddSignalQueueProcessing"
-	taskAddSignalQueueLimitPatch      = "taskAddSignalQueueLimit"
+	// maxPendingTaskAddSignals defines how many past signals are kept around. At the
+	// default batching of 500ms this means we keep a bit more than 30min around, which
+	// seems like a reasonable cutoff while managing workflow state size.
+	maxPendingTaskAddSignals = 4000
+
+	taskAddSignalQueueLimitPatch = "taskAddSignalQueueLimit"
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -196,9 +199,8 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		return err
 	}
 
-	useQueuedTaskAddSignals := workflow.GetVersion(ctx, taskAddSignalQueueProcessingPatch, workflow.DefaultVersion, 1) > workflow.DefaultVersion
 	d.limitPendingTaskAddSignals = workflow.GetVersion(ctx, taskAddSignalQueueLimitPatch, workflow.DefaultVersion, 1) > workflow.DefaultVersion
-	if !useQueuedTaskAddSignals {
+	if !d.limitPendingTaskAddSignals {
 		// Process the signals from the prior run (pre-CaN)
 		d.processPendingTaskAddSignals(ctx)
 	}
@@ -209,7 +211,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		var req *iface.SignalTaskAddRequest
 		c.Receive(ctx, &req)
 
-		if useQueuedTaskAddSignals {
+		if d.limitPendingTaskAddSignals {
 			d.queueTaskAddSignal(req)
 		} else {
 			d.handleNoSyncMatchSignal(ctx, req)
@@ -261,13 +263,13 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	// before we start processing, we quickly drain the task add signals into the queue to make sure
 	// they get processed in this workflow task and not further queued for the next one. This makes
 	// it easier to debug the resulting queue.
-	if useQueuedTaskAddSignals {
+	if d.limitPendingTaskAddSignals {
 		d.drainTaskAddSignalChannelToQueue()
 	}
 
 	// Keep waiting for signals, when it's time to CaN the main goroutine will exit.
 	for !d.shouldContinueAsNew(ctx) {
-		if useQueuedTaskAddSignals && d.processNextQueuedTaskAddSignal(ctx) {
+		if d.limitPendingTaskAddSignals && d.processNextQueuedTaskAddSignal(ctx) {
 			continue
 		}
 
@@ -291,7 +293,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	// we pass the current state as input to the next workflow execution, resulting in a new
 	// workflow history with just two initial events. This minimizes the risk of NDE (Non-Deterministic Execution)
 	// errors during server rollbacks.
-	if !useQueuedTaskAddSignals {
+	if !d.limitPendingTaskAddSignals {
 		d.drainPendingTaskAddSignals()
 	}
 
