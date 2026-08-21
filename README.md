@@ -18,6 +18,7 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 | Provider | Type string | Launch strategy |
 |---|---|---|
 | AWS Lambda | `aws-lambda` | Invoke (one-off) |
+| AWS AgentCore | `aws-agentcore` | Invoke (one-off) |
 | AWS ECS | `aws-ecs` | Worker set (managed scaling) |
 | GCP Cloud Run | `gcp-cloud-run` | Worker set |
 | Kubernetes | `k8s` | Worker set |
