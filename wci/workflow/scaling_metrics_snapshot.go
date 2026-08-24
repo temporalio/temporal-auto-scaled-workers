@@ -62,7 +62,7 @@ func (a *Activities) pullScalingMetricsSnapshot(ctx context.Context, namespaceNa
 			metricsSnapshot.Nexus.LastBacklogAge = max(metricsSnapshot.Nexus.LastBacklogAge, versionedTaskQueue.Stats.GetApproximateBacklogAge().AsDuration())
 		case enumspb.TASK_QUEUE_TYPE_UNSPECIFIED:
 			// using unspecified instead of default to ensure (future) unhandled values are caught by linter.
-			logger.Warn("Unspecified task queue type for scaling metrics snapshot (namespace: %s, deployment: %s, buildId: %s).", namespaceName, deploymentName, deploymentBuildID)
+			logger.Warn("Unspecified task queue type for scaling metrics snapshot", "namespace", namespaceName, "task_queue", versionedTaskQueue.Name)
 		}
 
 		taskQueueCount++
