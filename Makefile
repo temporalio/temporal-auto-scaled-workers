@@ -1,15 +1,12 @@
 ############################# Main targets #############################
-# Rebuild binaries (used by Dockerfile).
-bins: temporal-auto-scaled-workers
-
 # Install all tools, run all possible checks and tests (long but comprehensive).
-all: clean bins test
+all: clean test
 
 # Delete all build artifacts
-clean: clean-bins clean-test-output
+clean: clean-test-output
 ########################################################################
 
-.PHONY: bins clean
+.PHONY: clean
 
 ##### Variables ######
 
@@ -32,13 +29,6 @@ INTEGRATION_REPORT_FLAGS    := $(if $(filter true,$(REPORT)),-v -json -coverprof
 INTEGRATION_REPORT_REDIRECT := $(if $(filter true,$(REPORT)),> $(TEST_OUTPUT_ROOT)/integration-report.json)
 
 ##### Binaries #####
-clean-bins:
-	@printf $(COLOR) "Delete old binaries..."
-	@rm -f temporal-auto-scaled-workers
-
-temporal-auto-scaled-workers: $(ALL_SRC)
-	@printf $(COLOR) "Build temporal-auto-scaled-workers with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
-	CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o temporal-auto-scaled-workers ./cmd/worker
 
 ##### Tests #####
 clean-test-output:
