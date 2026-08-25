@@ -18,10 +18,14 @@ import (
 )
 
 const (
-	testAgentCoreRuntimeARN = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/my-runtime-abc123"
-	testAgentCoreRuntimeID  = "my-runtime-abc123"
-	testAgentCoreRegion     = "us-east-1"
-	testAgentCoreEndpoint   = "DEFAULT"
+	// testAgentCoreEndpointARN is the single input; the rest are the pieces
+	// parseAgentCoreEndpointARN derives from it.
+	testAgentCoreEndpointARN  = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/my-runtime-abc123/runtime-endpoint/DEFAULT"
+	testAgentCoreRuntimeARN   = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/my-runtime-abc123"
+	testAgentCoreRuntimeID    = "my-runtime-abc123"
+	testAgentCoreEndpointName = "DEFAULT"
+	testAgentCoreAccountID    = "123456789012"
+	testAgentCoreRegion       = "us-east-1"
 )
 
 type mockAgentCoreDataClient struct {
@@ -72,7 +76,7 @@ func stubAgentCoreDataClientError(t *testing.T, err error) {
 	t.Cleanup(func() { newAgentCoreDataClientFn = orig })
 }
 
-// stubAgentCoreDataClient swaps the new controlplane client fn to return provided c, skipping AWS.
+// stubAgentCoreControlClient swaps the new controlplane client fn to return provided c, skipping AWS.
 func stubAgentCoreControlClient(t *testing.T, c agentCoreControlAPI) {
 	orig := newAgentCoreControlClientFn
 	newAgentCoreControlClientFn = func(context.Context, string, string, *string, [][]client.AWSIAMRoleRequest) (agentCoreControlAPI, error) {
@@ -81,7 +85,7 @@ func stubAgentCoreControlClient(t *testing.T, c agentCoreControlAPI) {
 	t.Cleanup(func() { newAgentCoreControlClientFn = orig })
 }
 
-// stubAgentCoreDataClientError overrides the new controlplane client fn with an error result.
+// stubAgentCoreControlClientError overrides the new controlplane client fn with an error result.
 func stubAgentCoreControlClientError(t *testing.T, err error) {
 	orig := newAgentCoreControlClientFn
 	newAgentCoreControlClientFn = func(context.Context, string, string, *string, [][]client.AWSIAMRoleRequest) (agentCoreControlAPI, error) {
@@ -92,11 +96,13 @@ func stubAgentCoreControlClientError(t *testing.T, err error) {
 
 func TestAWSAgentCoreInvokeWorker_Success(t *testing.T) {
 	var gotARN string
+	var gotAccountID *string
 	var gotQualifier *string
 	var gotPayload []byte
 	stubAgentCoreDataClient(t, &mockAgentCoreDataClient{
 		invokeFn: func(_ context.Context, params *bedrockagentcore.InvokeAgentRuntimeInput, _ ...func(*bedrockagentcore.Options)) (*bedrockagentcore.InvokeAgentRuntimeOutput, error) {
 			gotARN = aws.ToString(params.AgentRuntimeArn)
+			gotAccountID = params.AccountId
 			gotQualifier = params.Qualifier
 			gotPayload = params.Payload
 			return &bedrockagentcore.InvokeAgentRuntimeOutput{StatusCode: aws.Int32(200)}, nil
@@ -105,14 +111,17 @@ func TestAWSAgentCoreInvokeWorker_Success(t *testing.T) {
 
 	p := newAgentCoreProvider()
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 	}
 	rc := RequestContext{NamespaceName: "ns", DeploymentName: "dep", DeploymentBuildID: "build-1"}
 
 	require.NoError(t, p.InvokeWorker(t.Context(), rc, cfg))
-	assert.Equal(t, testAgentCoreRuntimeARN, gotARN)
-	assert.Equal(t, testAgentCoreEndpoint, aws.ToString(gotQualifier))
+	// The runtime id is passed as AgentRuntimeArn (the API accepts an ARN or id)
+	// with the account id required alongside it, and the endpoint name as the
+	// qualifier; all are parsed from the endpoint ARN.
+	assert.Equal(t, testAgentCoreRuntimeID, gotARN)
+	assert.Equal(t, testAgentCoreAccountID, aws.ToString(gotAccountID))
+	assert.Equal(t, testAgentCoreEndpointName, aws.ToString(gotQualifier))
 
 	var payload struct {
 		DeploymentName string `json:"deploymentName"`
@@ -134,12 +143,11 @@ func TestAWSAgentCoreInvokeWorker_Endpoint_ForwardedAsQualifier(t *testing.T) {
 
 	p := newAgentCoreProvider()
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 	}
 
 	require.NoError(t, p.InvokeWorker(t.Context(), RequestContext{}, cfg))
-	assert.Equal(t, testAgentCoreEndpoint, gotQualifier)
+	assert.Equal(t, testAgentCoreEndpointName, gotQualifier)
 }
 
 func TestAWSAgentCoreInvokeWorker_InvokeError_Wrapped(t *testing.T) {
@@ -152,8 +160,7 @@ func TestAWSAgentCoreInvokeWorker_InvokeError_Wrapped(t *testing.T) {
 
 	p := newAgentCoreProvider()
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 	}
 
 	err := p.InvokeWorker(t.Context(), RequestContext{}, cfg)
@@ -170,8 +177,7 @@ func TestAWSAgentCoreInvokeWorker_Non2xxStatus_ReturnsError(t *testing.T) {
 
 	p := newAgentCoreProvider()
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 	}
 
 	require.Error(t, p.InvokeWorker(t.Context(), RequestContext{}, cfg))
@@ -183,8 +189,7 @@ func TestAWSAgentCoreInvokeWorker_ClientBuildError_Propagated(t *testing.T) {
 
 	p := newAgentCoreProvider()
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 	}
 
 	err := p.InvokeWorker(t.Context(), RequestContext{}, cfg)
@@ -216,8 +221,7 @@ func TestAWSAgentCoreInvokeWorker_ClassifiesFailure(t *testing.T) {
 			})
 
 			err := newAgentCoreProvider().InvokeWorker(t.Context(), RequestContext{}, ComputeProviderConfig{
-				configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-				configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+				configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 			})
 			require.Error(t, err)
 
@@ -232,9 +236,9 @@ func TestAWSAgentCoreInvokeWorker_ClassifiesFailure(t *testing.T) {
 }
 
 func TestAWSAgentCoreInvokeWorker_ClassifiesConfigFailure(t *testing.T) {
-	err := newAgentCoreProvider().InvokeWorker(t.Context(), RequestContext{}, ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN: testAgentCoreRuntimeARN, // no endpoint
-	})
+	// A missing endpoint ARN is caught locally before any AWS call; no error code
+	// to narrow it, so it lands in the unnarrowed rejected bucket.
+	err := newAgentCoreProvider().InvokeWorker(t.Context(), RequestContext{}, ComputeProviderConfig{})
 	require.Error(t, err)
 
 	var pErr *ProviderError
@@ -246,8 +250,7 @@ func TestAWSAgentCoreInvokeWorker_ClassifiesClientBuildFailure(t *testing.T) {
 	stubAgentCoreDataClientError(t, fmt.Errorf("%w: failed to load AWS config", errWCIOwned))
 
 	err := newAgentCoreProvider().InvokeWorker(t.Context(), RequestContext{}, ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 	})
 	require.Error(t, err)
 
@@ -257,19 +260,18 @@ func TestAWSAgentCoreInvokeWorker_ClassifiesClientBuildFailure(t *testing.T) {
 	assert.ErrorIs(t, err, errWCIOwned)
 }
 
-func TestAWSAgentCoreInvokeWorker_MissingARN_ReturnsError(t *testing.T) {
+func TestAWSAgentCoreInvokeWorker_MissingEndpointARN_ReturnsError(t *testing.T) {
 	p := newAgentCoreProvider()
-	cfg := ComputeProviderConfig{} // no ARN
+	cfg := ComputeProviderConfig{} // no endpoint ARN
 
 	require.Error(t, p.InvokeWorker(t.Context(), RequestContext{}, cfg))
 }
 
-func TestAWSAgentCoreInvokeWorker_InvalidARN_ReturnsError(t *testing.T) {
+func TestAWSAgentCoreInvokeWorker_InvalidEndpointARN_ReturnsError(t *testing.T) {
 	p := newAgentCoreProvider()
-	// ARN present but unparseable: region cannot be derived from it.
+	// Present but unparseable: region/runtime/endpoint cannot be derived from it.
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      "not-an-arn",
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN: "not-an-arn",
 	}
 
 	require.Error(t, p.InvokeWorker(t.Context(), RequestContext{}, cfg))
@@ -278,9 +280,8 @@ func TestAWSAgentCoreInvokeWorker_InvalidARN_ReturnsError(t *testing.T) {
 func TestAWSAgentCoreInvokeWorker_InvalidRoleARN_ReturnsError(t *testing.T) {
 	p := newAgentCoreProvider()
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
-		configAWSAgentCoreRole:            "not-an-arn",
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
+		configAWSAgentCoreRole:        "not-an-arn",
 	}
 
 	require.Error(t, p.InvokeWorker(t.Context(), RequestContext{}, cfg))
@@ -289,7 +290,7 @@ func TestAWSAgentCoreInvokeWorker_InvalidRoleARN_ReturnsError(t *testing.T) {
 func TestAWSAgentCoreValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 	p := &awsAgentCoreComputeProvider{requireRoleAndExternalID: true}
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN: testAgentCoreRuntimeARN,
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 		// no role
 	}
 
@@ -299,21 +300,20 @@ func TestAWSAgentCoreValidateConfig_MissingRole_ReturnsError(t *testing.T) {
 func TestAWSAgentCoreValidateConfig_MissingExternalID_ReturnsError(t *testing.T) {
 	p := &awsAgentCoreComputeProvider{requireRoleAndExternalID: true}
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN: testAgentCoreRuntimeARN,
-		configAWSAgentCoreRole:       testRoleARN,
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
+		configAWSAgentCoreRole:        testRoleARN,
 		// no role_external_id
 	}
 
 	require.Error(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
 }
 
-func TestAWSAgentCoreValidateConfig_MissingEndpoint_ReturnsError(t *testing.T) {
+func TestAWSAgentCoreValidateConfig_MissingEndpointARN_ReturnsError(t *testing.T) {
 	p := &awsAgentCoreComputeProvider{requireRoleAndExternalID: true}
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:     testAgentCoreRuntimeARN,
 		configAWSAgentCoreRole:           testRoleARN,
 		configAWSAgentCoreRoleExternalID: "my-eid",
-		// no runtime_endpoint
+		// no endpoint ARN
 	}
 
 	require.Error(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
@@ -338,15 +338,15 @@ func TestAWSAgentCoreValidateConfig_Success_ChecksEndpointAndExternalID(t *testi
 
 	p := &awsAgentCoreComputeProvider{requireRoleAndExternalID: true}
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRole:            testRoleARN,
-		configAWSAgentCoreRoleExternalID:  "my-eid",
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN:    testAgentCoreEndpointARN,
+		configAWSAgentCoreRole:           testRoleARN,
+		configAWSAgentCoreRoleExternalID: "my-eid",
 	}
 
 	require.NoError(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
+	// The runtime id, endpoint name, and region are all parsed out of the endpoint ARN.
 	assert.Equal(t, testAgentCoreRuntimeID, gotRuntimeID)
-	assert.Equal(t, testAgentCoreEndpoint, gotEndpointName)
+	assert.Equal(t, testAgentCoreEndpointName, gotEndpointName)
 	assert.Equal(t, testAgentCoreRegion, gotRegion)
 	assert.Equal(t, testRoleARN, gotRoleARN)
 }
@@ -361,10 +361,9 @@ func TestAWSAgentCoreValidateConfig_GetEndpointError_Wrapped(t *testing.T) {
 
 	p := &awsAgentCoreComputeProvider{requireRoleAndExternalID: true}
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRole:            testRoleARN,
-		configAWSAgentCoreRoleExternalID:  "my-eid",
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN:    testAgentCoreEndpointARN,
+		configAWSAgentCoreRole:           testRoleARN,
+		configAWSAgentCoreRoleExternalID: "my-eid",
 	}
 
 	err := p.ValidateConfig(t.Context(), RequestContext{}, cfg)
@@ -379,10 +378,9 @@ func TestAWSAgentCoreValidateConfig_ClientBuildError_Wrapped(t *testing.T) {
 
 	p := &awsAgentCoreComputeProvider{requireRoleAndExternalID: true}
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRole:            testRoleARN,
-		configAWSAgentCoreRoleExternalID:  "my-eid",
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN:    testAgentCoreEndpointARN,
+		configAWSAgentCoreRole:           testRoleARN,
+		configAWSAgentCoreRoleExternalID: "my-eid",
 	}
 
 	err := p.ValidateConfig(t.Context(), RequestContext{}, cfg)
@@ -405,10 +403,9 @@ func TestAWSAgentCoreValidateConfig_ExternalIDError_Wrapped(t *testing.T) {
 
 	p := &awsAgentCoreComputeProvider{requireRoleAndExternalID: true}
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRole:            testRoleARN,
-		configAWSAgentCoreRoleExternalID:  "my-eid",
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN:    testAgentCoreEndpointARN,
+		configAWSAgentCoreRole:           testRoleARN,
+		configAWSAgentCoreRoleExternalID: "my-eid",
 	}
 
 	err := p.ValidateConfig(t.Context(), RequestContext{}, cfg)
@@ -431,11 +428,10 @@ func TestAWSAgentCoreValidateConfig_ExternalIDSkipped_WhenRoleMissing(t *testing
 	})
 
 	// requireRoleAndExternalID=false so the role/eid guard is skipped and no role/eid is set.
-	// The endpoint is still required.
+	// The endpoint ARN is still required.
 	p := &awsAgentCoreComputeProvider{requireRoleAndExternalID: false}
 	cfg := ComputeProviderConfig{
-		configAWSAgentCoreRuntimeARN:      testAgentCoreRuntimeARN,
-		configAWSAgentCoreRuntimeEndpoint: testAgentCoreEndpoint,
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 	}
 
 	require.NoError(t, p.ValidateConfig(t.Context(), RequestContext{}, cfg))
@@ -447,15 +443,27 @@ func TestAWSAgentCoreUpdateWorkerSetSize_Unsupported(t *testing.T) {
 	require.Error(t, p.UpdateWorkerSetSize(t.Context(), RequestContext{}, ComputeProviderConfig{}, 1))
 }
 
-func TestExtractAgentCoreRuntimeID(t *testing.T) {
-	id, err := extractAgentCoreRuntimeID(testAgentCoreRuntimeARN)
+func TestParseAgentCoreEndpointARN(t *testing.T) {
+	runtimeID, endpointName, accountID, region, err := parseAgentCoreEndpointARN(testAgentCoreEndpointARN)
 	require.NoError(t, err)
-	assert.Equal(t, testAgentCoreRuntimeID, id)
+	assert.Equal(t, testAgentCoreRuntimeID, runtimeID)
+	assert.Equal(t, testAgentCoreEndpointName, endpointName)
+	assert.Equal(t, testAgentCoreAccountID, accountID)
+	assert.Equal(t, testAgentCoreRegion, region)
 
-	_, err = extractAgentCoreRuntimeID("not-an-arn")
+	// Not an ARN at all.
+	_, _, _, _, err = parseAgentCoreEndpointARN("not-an-arn")
 	require.Error(t, err)
 
-	// ARN without a runtime/ resource segment.
-	_, err = extractAgentCoreRuntimeID("arn:aws:bedrock-agentcore:us-east-1:123456789012:something-else")
+	// A runtime ARN (no /runtime-endpoint/<name> segment) is not an endpoint ARN.
+	_, _, _, _, err = parseAgentCoreEndpointARN(testAgentCoreRuntimeARN)
+	require.Error(t, err)
+
+	// Endpoint ARN shape but missing region.
+	_, _, _, _, err = parseAgentCoreEndpointARN("arn:aws:bedrock-agentcore::123456789012:runtime/my-runtime-abc123/runtime-endpoint/DEFAULT")
+	require.Error(t, err)
+
+	// Endpoint ARN shape but missing account id.
+	_, _, _, _, err = parseAgentCoreEndpointARN("arn:aws:bedrock-agentcore:us-east-1::runtime/my-runtime-abc123/runtime-endpoint/DEFAULT")
 	require.Error(t, err)
 }

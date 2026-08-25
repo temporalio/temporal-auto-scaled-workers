@@ -18,18 +18,20 @@ import (
 )
 
 const (
-	configAWSAgentCoreRuntimeARN      = "runtime_arn"
-	configAWSAgentCoreRole            = "role"
-	configAWSAgentCoreRoleExternalID  = "role_external_id"
-	configAWSAgentCoreRuntimeEndpoint = "runtime_endpoint"
+	configAWSAgentCoreEndpointARN    = "endpoint_arn"
+	configAWSAgentCoreRole           = "role"
+	configAWSAgentCoreRoleExternalID = "role_external_id"
 )
 
 type AgentCoreParams struct {
-	RuntimeARN      string
-	RuntimeEndpoint string
-	Role            string
-	ExternalID      *string
-	Region          string
+	Role       string
+	ExternalID *string
+
+	// The following are derived from Runtime Endpoint ARN input
+	RuntimeID    string
+	EndpointName string
+	AccountID    string
+	Region       string
 }
 
 type awsAgentCoreComputeProvider struct {
@@ -77,9 +79,9 @@ func (p *awsAgentCoreComputeProvider) ValidateConfig(ctx context.Context, _ Requ
 		}
 	}
 
-	endpoint, _ := cfg[configAWSAgentCoreRuntimeEndpoint].(string)
-	if endpoint == "" {
-		return fmt.Errorf("AWS AgentCore compute provider requires %q to be configured", configAWSAgentCoreRuntimeEndpoint)
+	endpointARN, _ := cfg[configAWSAgentCoreEndpointARN].(string)
+	if endpointARN == "" {
+		return fmt.Errorf("AWS AgentCore compute provider requires %q to be configured", configAWSAgentCoreEndpointARN)
 	}
 
 	controlClient, params, err := p.getControlClientAndParams(ctx, cfg)
@@ -87,20 +89,16 @@ func (p *awsAgentCoreComputeProvider) ValidateConfig(ctx context.Context, _ Requ
 		return fmt.Errorf("cannot connect to the compute provider: %w", err)
 	}
 
-	runtimeID, err := extractAgentCoreRuntimeID(params.RuntimeARN)
-	if err != nil {
-		return err
-	}
-
-	// Validate the specific runtime endpoint (runtime + endpoint name).
+	// Validate the specific runtime endpoint (runtime id + endpoint name), both
+	// parsed out of the endpoint ARN.
 	if _, err = controlClient.GetAgentRuntimeEndpoint(ctx, &agentcore_cp.GetAgentRuntimeEndpointInput{
-		AgentRuntimeId: aws.String(runtimeID),
-		EndpointName:   aws.String(params.RuntimeEndpoint),
+		AgentRuntimeId: aws.String(params.RuntimeID),
+		EndpointName:   aws.String(params.EndpointName),
 	}); err != nil {
 		return fmt.Errorf("cannot access the compute resource: %w", err)
 	}
 
-	if err := p.checkExternalID(ctx, cfg, params.RuntimeARN); err != nil {
+	if err := p.checkExternalID(ctx, cfg, params.Region); err != nil {
 		return fmt.Errorf("IAM role trust policy does not enforce ExternalID condition: %w", err)
 	}
 
@@ -130,12 +128,13 @@ func (p *awsAgentCoreComputeProvider) invokeWorker(ctx context.Context, rc Reque
 		return fmt.Errorf("failed to marshal AgentCore invoke payload: %w", err)
 	}
 
-	// The endpoint name is passed through as the AgentCore invoke Qualifier.
+	// Account ID is required with runtime ID and endpoint name is passed as qualifier to invoke specific version
 	input := &agentcore_dp.InvokeAgentRuntimeInput{
-		AgentRuntimeArn: aws.String(params.RuntimeARN),
+		AgentRuntimeArn: aws.String(params.RuntimeID),
+		AccountId:       aws.String(params.AccountID),
 		ContentType:     aws.String("application/json"),
 		Payload:         payload,
-		Qualifier:       aws.String(params.RuntimeEndpoint),
+		Qualifier:       aws.String(params.EndpointName),
 	}
 
 	// AgentCore doesn't have an async invocation method. This aims to make the call and close the response stream on
@@ -158,32 +157,40 @@ func (p *awsAgentCoreComputeProvider) UpdateWorkerSetSize(_ context.Context, _ R
 	return errors.ErrUnsupported
 }
 
-func (p *awsAgentCoreComputeProvider) checkExternalID(ctx context.Context, cfg ComputeProviderConfig, runtimeARN string) error {
+func (p *awsAgentCoreComputeProvider) checkExternalID(ctx context.Context, cfg ComputeProviderConfig, region string) error {
 	roleARN, _ := cfg[configAWSAgentCoreRole].(string)
 	eid, _ := cfg[configAWSAgentCoreRoleExternalID].(string)
 	if roleARN == "" || eid == "" {
 		return nil
 	}
-	region, err := extractRegionFromARN(runtimeARN)
-	if err != nil {
-		return fmt.Errorf("cannot verify external ID enforcement: failed to extract region from AgentCore runtime ARN %q: %w", runtimeARN, err)
+	if region == "" {
+		return fmt.Errorf("cannot verify external ID enforcement for role %q: region is required", roleARN)
 	}
 	return verifyExternalIDEnforcedFn(ctx, region, roleARN, p.intermediaryRoles)
 }
 
-// extractAgentCoreRuntimeID pulls the runtime id out of a runtime ARN. AgentCore
-// runtime ARNs look like arn:aws:bedrock-agentcore:REGION:ACCOUNT:runtime/ID, and
-// the controlplane GetAgentRuntimeEndpoint API keys on the id rather than the ARN.
-func extractAgentCoreRuntimeID(runtimeARN string) (string, error) {
-	parsed, err := arn.Parse(runtimeARN)
+// Parses Runtime Endpoint ARN into pieces required by various APIs
+// The Get and Invoke APIs are not symmetric with inputs, luckily the Endpoint ARN is a subresource or Runtime ARN and
+// contains all we need.
+func parseAgentCoreEndpointARN(endpointARN string) (runtimeID, endpointName, accountID, region string, err error) {
+	parsed, err := arn.Parse(endpointARN)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse AgentCore runtime ARN %q: %w", runtimeARN, err)
+		return "", "", "", "", fmt.Errorf("failed to parse AgentCore endpoint ARN %q: %w", endpointARN, err)
 	}
-	id := strings.TrimPrefix(parsed.Resource, "runtime/")
-	if id == "" || id == parsed.Resource {
-		return "", fmt.Errorf("AgentCore runtime ARN %q does not contain a runtime id", runtimeARN)
+	if parsed.Region == "" {
+		return "", "", "", "", fmt.Errorf("AgentCore endpoint ARN %q does not contain a region", endpointARN)
 	}
-	return id, nil
+	if parsed.AccountID == "" {
+		return "", "", "", "", fmt.Errorf("AgentCore endpoint ARN %q does not contain an account id", endpointARN)
+	}
+	// resource is runtime/RUNTIME_ID/runtime-endpoint/ENDPOINT_NAME
+	parts := strings.Split(parsed.Resource, "/")
+	if len(parts) != 4 || parts[0] != "runtime" || parts[2] != "runtime-endpoint" || parts[1] == "" || parts[3] == "" {
+		return "", "", "", "", fmt.Errorf("AgentCore Endpoint ARN %q does not have correct pattern", endpointARN)
+	}
+	runtimeID = parts[1]
+	endpointName = parts[3]
+	return runtimeID, endpointName, parsed.AccountID, parsed.Region, nil
 }
 
 // newAgentCoreDataClientFn and newAgentCoreControlClientFn are package-level
@@ -209,18 +216,15 @@ func newAgentCoreControlClient(ctx context.Context, region, roleARN string, exte
 	return agentcore_cp.NewFromConfig(awsConfig), nil
 }
 
-// Ensures required inputs are present and region is in runtime ARN, returns parsed values
+// resolveParams ensures the required inputs are present and derives the runtime
+// ARN, runtime id, endpoint name, and region from the single endpoint ARN.
 func (p *awsAgentCoreComputeProvider) resolveParams(cfg ComputeProviderConfig) (AgentCoreParams, error) {
-	runtimeARN, ok := cfg[configAWSAgentCoreRuntimeARN].(string)
-	if !ok || runtimeARN == "" {
-		return AgentCoreParams{}, fmt.Errorf("AWS AgentCore Runtime ARN not found or invalid")
-	}
-	endpoint, ok := cfg[configAWSAgentCoreRuntimeEndpoint].(string)
-	if !ok || endpoint == "" {
-		return AgentCoreParams{}, fmt.Errorf("AWS AgentCore Runtime Endpoint not found or invalid")
+	endpointARN, ok := cfg[configAWSAgentCoreEndpointARN].(string)
+	if !ok || endpointARN == "" {
+		return AgentCoreParams{}, fmt.Errorf("AWS AgentCore endpoint ARN not found or invalid")
 	}
 
-	region, err := extractRegionFromARN(runtimeARN)
+	runtimeID, endpointName, accountID, region, err := parseAgentCoreEndpointARN(endpointARN)
 	if err != nil {
 		return AgentCoreParams{}, err
 	}
@@ -238,11 +242,12 @@ func (p *awsAgentCoreComputeProvider) resolveParams(cfg ComputeProviderConfig) (
 	}
 
 	return AgentCoreParams{
-		RuntimeARN:      runtimeARN,
-		RuntimeEndpoint: endpoint,
-		Role:            roleARN,
-		ExternalID:      roleExternalID,
-		Region:          region,
+		RuntimeID:    runtimeID,
+		EndpointName: endpointName,
+		AccountID:    accountID,
+		Role:         roleARN,
+		ExternalID:   roleExternalID,
+		Region:       region,
 	}, nil
 }
 
