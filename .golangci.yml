@@ -20,6 +20,7 @@ linters:
     # - gomodguard
     - govet
     - iotamixing
+    - loggercheck
     - staticcheck
     - testifylint
     - usetesting
@@ -27,6 +28,13 @@ linters:
     usetesting:
       context-background: true
       context-todo: true
+    loggercheck:
+      no-printf-like: true
+      rules:
+        - '(go.temporal.io/sdk/log.Logger).Debug'
+        - '(go.temporal.io/sdk/log.Logger).Info'
+        - '(go.temporal.io/sdk/log.Logger).Warn'
+        - '(go.temporal.io/sdk/log.Logger).Error'
     testifylint:
       enable-all: true
       disable:
