@@ -6,6 +6,9 @@ import (
 	"errors"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
@@ -15,7 +18,6 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 	worker_versioning "go.temporal.io/server/common/worker_versioning"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -46,6 +48,11 @@ const (
 	// Signals the version workflow after each ValidationStatus change so the
 	// deployment workflow can maintain an aggregate connectivity summary in its memo.
 	SignalVersionWorkflowVersion
+
+	// Cancels the child context which is attached to the timer futures,
+	// which, on deletion, will mark the future as failed and prevent the body of
+	// the associated callback from running.
+	CancelTimersOnDeleteVersion
 )
 
 type (
@@ -66,6 +73,8 @@ type (
 		deleteInstance                   bool
 		unsafeMaxVersion                 func() int
 		unsafePeriodicValidationInterval func() time.Duration
+
+		cancelTimerTasks workflow.CancelFunc
 
 		// stateChanged is used to track if the state of the workflow has undergone a local state change since the last signal/update.
 		// This prevents a workflow from continuing-as-new if the state has not changed.
@@ -123,6 +132,11 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 
 func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	var err error
+
+	// Create a Context to use for periodic background tasks.
+	// This allows us to cancel these tasks when the WCI is deleted.
+	timerCtx, cancelTimerTasks := workflow.WithCancel(ctx)
+	d.cancelTimerTasks = cancelTimerTasks
 
 	// make sure we got all fields we want
 	if d.State == nil {
@@ -190,15 +204,15 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 
 	var addStatsPullTimer func(nextPoll time.Duration)
 	addStatsPullTimer = func(nextPoll time.Duration) {
-		timerFuture := workflow.NewTimer(ctx, nextPoll)
+		timerFuture := workflow.NewTimer(timerCtx, nextPoll)
 		d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
-			if err = f.Get(ctx, nil); err != nil {
+			if err = f.Get(timerCtx, nil); err != nil {
 				d.logger.Debug("Periodic stats timer cancelled, not re-arming", "error", err)
 
 				// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
 				return
 			}
-			nextPollDuration := d.pullStatsAndUpdate(ctx)
+			nextPollDuration := d.pullStatsAndUpdate(timerCtx)
 
 			// for now we don't want to mark things as dirty to avoid excessive CaN
 			// d.stateChanged = true
@@ -211,22 +225,19 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		// Read once at run start. Dynamic config changes take effect at the next
 		// ContinueAsNew. The interval defaults to 6h and is
 		// unlikely to change frequently, so waiting for a CaN boundary is acceptable.
-		validationInterval := d.unsafePeriodicValidationInterval()
-		if validationInterval < time.Minute {
-			validationInterval = time.Minute
-		}
+		validationInterval := max(d.unsafePeriodicValidationInterval(), time.Minute)
 
 		var addPeriodicValidationTimer func()
 		addPeriodicValidationTimer = func() {
-			timerFuture := workflow.NewTimer(ctx, validationInterval)
+			timerFuture := workflow.NewTimer(timerCtx, validationInterval)
 			d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
-				if err = f.Get(ctx, nil); err != nil {
+				if err = f.Get(timerCtx, nil); err != nil {
 					d.logger.Debug("Periodic validation timer cancelled, not re-arming", "error", err)
 
 					// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
 					return
 				}
-				d.periodicValidateSpec(ctx)
+				d.periodicValidateSpec(timerCtx)
 				addPeriodicValidationTimer()
 			})
 		}
@@ -259,13 +270,9 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 }
 
 func (d *WorkflowRunner) validateValidateSpec(args *iface.ValidateSpecRequest) error {
-	if err := d.ensureNotDeleted(); err != nil {
-		return err
-	}
-	if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
-		return temporal.NewApplicationError("no change found", iface.ErrFailedPrecondition)
-	}
-	return nil
+	// Unlike validateUpdateInstance, an empty request is valid here.
+	// It allows validating the current configuration rather than a dry-run of changes.
+	return d.ensureNotDeleted()
 }
 
 // handleValidateSpec is the handler for the validateSpec update request. It implements a dry-run for any submitted changes,
@@ -365,7 +372,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		// if there are no scaling groups after the update, it is seen as implicit delete
 		// that way no orphaned workflows stick around and waste cycles
 		if len(updatedSpec.ScalingGroupSpecs) == 0 {
-			d.deleteInstance = true
+			d.markDeleted()
 			d.State.ConflictToken = args.ConflictToken
 			d.State.Spec = updatedSpec
 
@@ -398,24 +405,32 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		}
 
 		// we need to scale up each of the groups for a moment to get them to register the task queues
+		var regResp InvokeWorkersToRegisterTaskQueuesResponse
 		if err := workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: RegisterTaskQueuesViaWorkersActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.InvokeWorkersToRegisterTaskQueues,
 			&InvokeWorkersToRegisterTaskQueuesRequest{
 				RequestContext:               d.requestContext(),
 				WorkerControllerInstanceSpec: *updatedSpec,
+				ScalingStatus:                d.State.ScalingStatus,
 			},
-		).Get(ctx, nil); err != nil {
+		).Get(ctx, &regResp); err != nil {
 			d.updateMetric(wcimetrics.UpdateTypeUpdateInstance).recordActivityError(err)
 
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
-				if appErr.Type() == "InvalidArgument" {
+				switch appErr.Type() {
+				case "InvalidArgument":
 					return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
+				case "ResourceExhausted":
+					// no need to pass through the cause as the client will strip that before returning
+					return nil, serviceerror.NewResourceExhausted(enumspb.RESOURCE_EXHAUSTED_CAUSE_UNSPECIFIED, appErr.Message())
 				}
 				return nil, serviceerror.NewFailedPreconditionf("%s", appErr.Message())
 			}
 			return nil, err
 		}
+
+		d.State.ScalingStatus = regResp.UpdatedScalingStatus
 
 		d.State.ValidationStatus = iface.NewValidationStatusSuccess(validationTime)
 		d.signalVersionWorkflow(ctx)
@@ -433,6 +448,15 @@ func (d *WorkflowRunner) validateDeleteInstance(args *iface.DeleteWorkerControll
 		return err
 	}
 	return nil
+}
+
+// markDeleted sets the deleteInstance flag to true as well as cancelling the background
+// task context - so that any further tasks will abort on next invocation.
+func (d *WorkflowRunner) markDeleted() {
+	d.deleteInstance = true
+	if d.hasMinVersion(CancelTimersOnDeleteVersion) {
+		d.cancelTimerTasks()
+	}
 }
 
 func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.DeleteWorkerControllerInstanceRequest) (*iface.DeleteWorkerControllerInstanceResponse, error) {
@@ -453,7 +477,7 @@ func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.
 		d.lock.Unlock()
 	}()
 
-	d.deleteInstance = true
+	d.markDeleted()
 
 	d.updateMetric(wcimetrics.UpdateTypeDeleteInstance).recordSuccess()
 
@@ -713,6 +737,8 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				p.operationMetric(wcimetrics.OperationTypeUpdateWorkerSetSize).recordActivityError(err)
 			} else {
 				p.operationMetric(wcimetrics.OperationTypeUpdateWorkerSetSize).recordSuccess()
+				// Record the target worker-set size once the update was applied successfully.
+				p.recordTargetWorkerCount(count)
 				p.recordLatency(ctx, origin, wcimetrics.OperationTypeUpdateWorkerSetSize)
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}

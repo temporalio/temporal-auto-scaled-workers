@@ -1,0 +1,45 @@
+name: Nightly Integration Test
+on:
+  schedule:
+    - cron: "0 2 * * *"
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+
+jobs:
+  integration-test-server-main:
+    runs-on: ubuntu-24.04-arm
+    env:
+      TEST_OUTPUT_ROOT: ${{ github.workspace }}/reports
+      # Server testcore writes to $TEMPORAL_ROOT/.testoutput; default resolves into
+      # the read-only module cache when server is a dependency.
+      TEMPORAL_ROOT: ${{ github.workspace }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: "tests/go.mod"
+
+      - name: Update server to main
+        working-directory: tests
+        run: |
+          go get go.temporal.io/server@main
+          go mod tidy
+
+      - name: Run Integration Tests
+        env:
+          REPORT: "true"
+        run: make integration-test
+
+      - name: Integration Test Report
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        if: ${{ !cancelled() }}
+        with:
+          name: Integration Tests (server@main)
+          path: ${{ env.TEST_OUTPUT_ROOT }}/integration-report.json
+          reporter: golang-json

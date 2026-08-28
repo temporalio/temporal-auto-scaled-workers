@@ -18,6 +18,7 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 | Provider | Type string | Launch strategy |
 |---|---|---|
 | AWS Lambda | `aws-lambda` | Invoke (one-off) |
+| AWS AgentCore | `aws-agentcore` | Invoke (one-off) |
 | AWS ECS | `aws-ecs` | Worker set (managed scaling) |
 | GCP Cloud Run | `gcp-cloud-run` | Worker set |
 | Kubernetes | `k8s` | Worker set |
@@ -25,6 +26,8 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 
 **Invoke** providers are called once per scaling event to start a short-lived worker.
 **Worker-set** providers manage a persistent pool whose size is adjusted up or down.
+
+The development-only subprocess provider accepts an optional positive Go duration string as `config.timeout` (for example, `"30m"` or `"1h"`). It defaults to `"1m"`.
 
 ## Supported Scaling Algorithms
 

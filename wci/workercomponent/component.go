@@ -33,7 +33,6 @@ func (s *workerComponent) DedicatedWorkerOptions(ns *namespace.Namespace) *worke
 }
 
 func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Namespace, details workercommon.RegistrationDetails) func() {
-	// there is no need to close the sdkClient as it uses an existing grpc connection
 	sdkClient := s.sdkClientFactory.NewClient(sdkclient.Options{
 		Namespace:     ns.Name().String(),
 		DataConverter: sdk.PreferProtoDataConverter,
@@ -60,5 +59,5 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 	registry.RegisterWorkflowWithOptions(validateWorkflow, workflow.RegisterOptions{Name: iface.WorkerControllerInstanceValidateWorkflowType})
 	registry.RegisterActivity(activities)
 
-	return nil
+	return func() { sdkClient.Close() }
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 )
@@ -23,6 +24,63 @@ func newRateBased() *scalingAlgorithmRateBased {
 
 func oldMs() int64 {
 	return time.Now().Add(-time.Hour).UnixMilli()
+}
+
+func TestRateBasedTaskQueueRegistrationActions(t *testing.T) {
+	a := newRateBased()
+
+	// regSize runs TaskQueueRegistrationActions and asserts it emits exactly one UpdateWorkerSetSize
+	// whose count is folded back into the returned status; it returns that count.
+	regSize := func(t *testing.T, config iface.ScalingAlgorithmConfig, status iface.ScalingAlgorithmStatus) int32 {
+		t.Helper()
+		resp, err := a.TaskQueueRegistrationActions(t.Context(), config, status)
+		require.NoError(t, err)
+		require.Len(t, resp.Actions, 1)
+		require.Equal(t, ActionTypeUpdateWorkerSetSize, resp.Actions[0].Action)
+		require.NotNil(t, resp.Actions[0].Count)
+		assert.Equal(t, int64(*resp.Actions[0].Count), resp.Status.GetInt64Field(stateRateBasedWorkerCount, -1),
+			"the resize target must be folded back into the status")
+		return *resp.Actions[0].Count
+	}
+
+	t.Run("unset status resizes to initial_count", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedInitialCountKey: int64(5)}
+		assert.Equal(t, int32(5), regSize(t, config, nil))
+	})
+
+	t.Run("no status and no initial_count floors to 1 (default initial_count is 0)", func(t *testing.T) {
+		require.Equal(t, int64(0), configRateBasedInitialCountDefault)
+		assert.Equal(t, int32(1), regSize(t, iface.ScalingAlgorithmConfig{}, iface.ScalingAlgorithmStatus{}))
+	})
+
+	t.Run("stored worker_count wins over initial_count", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedInitialCountKey: int64(5)}
+		status := iface.ScalingAlgorithmStatus{stateRateBasedWorkerCount: int64(3)}
+		assert.Equal(t, int32(3), regSize(t, config, status))
+	})
+
+	t.Run("garbage stored worker_count is dropped, falls back to initial_count", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedInitialCountKey: int64(5)}
+		status := iface.ScalingAlgorithmStatus{stateRateBasedWorkerCount: "not-a-number"}
+		assert.Equal(t, int32(5), regSize(t, config, status))
+	})
+
+	t.Run("stored count above max_count is clamped to max_count", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedMaxCountKey: int64(5)}
+		status := iface.ScalingAlgorithmStatus{stateRateBasedWorkerCount: int64(10)}
+		assert.Equal(t, int32(5), regSize(t, config, status))
+	})
+
+	t.Run("stored count below min_count is clamped to min_count", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedMinCountKey: int64(3)}
+		status := iface.ScalingAlgorithmStatus{stateRateBasedWorkerCount: int64(1)}
+		assert.Equal(t, int32(3), regSize(t, config, status))
+	})
+
+	t.Run("initial_count 0 still resizes to at least 1", func(t *testing.T) {
+		config := iface.ScalingAlgorithmConfig{configRateBasedInitialCountKey: int64(0)}
+		assert.Equal(t, int32(1), regSize(t, config, nil))
+	})
 }
 
 func staticMetricsSnapshotGetter(snapshot ScalingMetricsSnapshot, callCount *int) ScalingMetricsSnapshotGetter {
@@ -45,7 +103,7 @@ func errorMetricsSnapshotGetter(err error, callCount *int) ScalingMetricsSnapsho
 
 func TestRateBasedValidateConfig(t *testing.T) {
 	a := newRateBased()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("nil config", func(t *testing.T) {
 		require.NoError(t, a.ValidateConfig(ctx, nil))
@@ -208,7 +266,7 @@ func TestRateBasedDefaultRegistration(t *testing.T) {
 	// init() registers the algorithm as the default for these compute providers.
 	// A regression that dropped one of the mappings would silently route the
 	// affected provider to a different algorithm (or none).
-	ctx := context.Background()
+	ctx := t.Context()
 	for _, providerType := range []iface.ComputeProviderType{
 		iface.ComputeProviderTypeAWSECS,
 		iface.ComputeProviderTypeK8s,
@@ -224,13 +282,13 @@ func TestRateBasedDefaultRegistration(t *testing.T) {
 
 func TestRateBasedProcessTaskAdd(t *testing.T) {
 	a := newRateBased()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("sync match no batched no-sync", func(t *testing.T) {
 		event := iface.SignalTaskAddRequest{IsSyncMatch: true, NoSyncMatchSignalsSinceLast: 0}
 		resp, err := a.ProcessTaskAdd(ctx, iface.ScalingAlgorithmConfig{}, nil, event)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 		assert.NotContains(t, resp.Status, stateRateBasedLastNoSyncMatchTimestamp)
 	})
 
@@ -427,7 +485,7 @@ func TestRateBasedProcessTaskAdd(t *testing.T) {
 
 func TestRateBasedProcessDeferredScalingDecision(t *testing.T) {
 	a := newRateBased()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("samples per-consumer capacity", func(t *testing.T) {
 		priorState := iface.ScalingAlgorithmStatus{
@@ -540,12 +598,12 @@ func TestRateBasedProcessDeferredScalingDecision(t *testing.T) {
 
 func TestRateBasedProcessMetricsPoll(t *testing.T) {
 	a := newRateBased()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("all nil metrics default poll", func(t *testing.T) {
 		resp, err := a.ProcessMetricsPoll(ctx, iface.ScalingAlgorithmConfig{}, nil, ScalingMetricsSnapshot{})
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 		require.NotNil(t, resp.NextPoll)
 		assert.Equal(t, 60*time.Second, *resp.NextPoll)
 		// With no contributing queues the EWMA update is gated off; the slots
@@ -572,7 +630,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, nil, ScalingMetricsSnapshot{})
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 		assert.Equal(t, int64(3), resp.Status.GetInt64Field(stateRateBasedWorkerCount, 0))
 	})
 
@@ -589,9 +647,9 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
-		assert.Equal(t, float64(5), resp.Status.GetFloat64Field(stateRateBasedEWMAArrivalRate, 0))
-		assert.Equal(t, float64(4), resp.Status.GetFloat64Field(stateRateBasedEWMADispatchRate, 0))
+		assert.Empty(t, resp.Actions)
+		assert.InDelta(t, float64(5), resp.Status.GetFloat64Field(stateRateBasedEWMAArrivalRate, 0), 1e-9)
+		assert.InDelta(t, float64(4), resp.Status.GetFloat64Field(stateRateBasedEWMADispatchRate, 0), 1e-9)
 	})
 
 	t.Run("later cadence smooths ewma rates", func(t *testing.T) {
@@ -612,7 +670,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 		assert.InDelta(t, 5.0, resp.Status.GetFloat64Field(stateRateBasedEWMAArrivalRate, 0), 0.0001)
 		assert.InDelta(t, 2.5, resp.Status.GetFloat64Field(stateRateBasedEWMADispatchRate, 0), 0.0001)
 	})
@@ -641,8 +699,8 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		require.NotNil(t, resp.Actions[0].Count)
 		assert.Equal(t, int32(1), *resp.Actions[0].Count)
 		assert.Equal(t, int64(1), resp.Status.GetInt64Field(stateRateBasedWorkerCount, 0))
-		assert.Equal(t, float64(0), resp.Status.GetFloat64Field(stateRateBasedEWMAArrivalRate, -1))
-		assert.Equal(t, float64(0), resp.Status.GetFloat64Field(stateRateBasedEWMADispatchRate, -1))
+		assert.InDelta(t, float64(0), resp.Status.GetFloat64Field(stateRateBasedEWMAArrivalRate, -1), 1e-9)
+		assert.InDelta(t, float64(0), resp.Status.GetFloat64Field(stateRateBasedEWMADispatchRate, -1), 1e-9)
 	})
 
 	t.Run("raw dispatch prevents idle ewma snap-to-zero", func(t *testing.T) {
@@ -663,7 +721,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 		assert.InDelta(t, 3.0, resp.Status.GetFloat64Field(stateRateBasedEWMAArrivalRate, 0), 0.0001)
 		assert.InDelta(t, 2.5, resp.Status.GetFloat64Field(stateRateBasedEWMADispatchRate, 0), 0.0001)
 	})
@@ -701,7 +759,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Equal(t, float64(10), resp.Status.GetFloat64Field(stateRateBasedEWMAPerConsumerCapacity, 0))
+		assert.InDelta(t, float64(10), resp.Status.GetFloat64Field(stateRateBasedEWMAPerConsumerCapacity, 0), 1e-9)
 	})
 
 	t.Run("desired capacity scale-up uses max step", func(t *testing.T) {
@@ -747,7 +805,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 		assert.Equal(t, int64(2), resp.Status.GetInt64Field(stateRateBasedWorkerCount, 0))
 	})
 
@@ -840,7 +898,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, iface.ScalingAlgorithmConfig{}, state, ScalingMetricsSnapshot{Workflow: &iface.QueueTypeScalingMetrics{}})
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 		assert.Equal(t, int64(3), resp.Status.GetInt64Field(stateRateBasedWorkerCount, 0))
 		// Quiet-period block must not bump LastScaleDownTimestamp; otherwise every
 		// failed poll would silently delay every future scale-down by another cooldown.
@@ -856,7 +914,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, iface.ScalingAlgorithmConfig{}, state, ScalingMetricsSnapshot{Workflow: &iface.QueueTypeScalingMetrics{}})
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 		assert.Equal(t, int64(3), resp.Status.GetInt64Field(stateRateBasedWorkerCount, 0))
 		// Cooldown block must leave the timestamp at its prior value so the
 		// cooldown clock doesn't self-extend with each blocked poll.
@@ -879,9 +937,9 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
-		assert.Equal(t, float64(6), resp.Status.GetFloat64Field(stateRateBasedEWMAArrivalRate, 0))
-		assert.Equal(t, float64(3), resp.Status.GetFloat64Field(stateRateBasedEWMADispatchRate, 0))
+		assert.Empty(t, resp.Actions)
+		assert.InDelta(t, float64(6), resp.Status.GetFloat64Field(stateRateBasedEWMAArrivalRate, 0), 1e-9)
+		assert.InDelta(t, float64(3), resp.Status.GetFloat64Field(stateRateBasedEWMADispatchRate, 0), 1e-9)
 		assert.Equal(t, int64(2), resp.Status.GetInt64Field(stateRateBasedWorkerCount, 0))
 	})
 
@@ -1015,7 +1073,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0, "backlog=0 must suppress drain rate so no scale-up occurs (scale-down blocked by no-sync quiet)")
+		assert.Empty(t, resp.Actions, "backlog=0 must suppress drain rate so no scale-up occurs (scale-down blocked by no-sync quiet)")
 	})
 
 	t.Run("non-finite stored capacity recovers to initial", func(t *testing.T) {
@@ -1189,7 +1247,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
 		stored := resp.Status.GetFloat64Field(stateRateBasedEWMAPerConsumerCapacity, math.NaN())
-		assert.Equal(t, priorCapacity, stored, "Workflow's backlog must drop with its NaN rates; gate must not trip; capacity slot must stay at prior value")
+		assert.InDelta(t, priorCapacity, stored, 1e-9, "Workflow's backlog must drop with its NaN rates; gate must not trip; capacity slot must stay at prior value")
 	})
 
 	t.Run("metrics-outage poll preserves prior EWMA (all queues rejected as non-finite)", func(t *testing.T) {
@@ -1209,8 +1267,8 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		require.NoError(t, err)
 		storedArrival := resp.Status.GetFloat64Field(stateRateBasedEWMAArrivalRate, math.NaN())
 		storedDispatch := resp.Status.GetFloat64Field(stateRateBasedEWMADispatchRate, math.NaN())
-		assert.Equal(t, float64(5), storedArrival, "prior arrival EWMA must be preserved verbatim on outage poll")
-		assert.Equal(t, float64(3), storedDispatch, "prior dispatch EWMA must be preserved verbatim on outage poll")
+		assert.InDelta(t, float64(5), storedArrival, 1e-9, "prior arrival EWMA must be preserved verbatim on outage poll")
+		assert.InDelta(t, float64(3), storedDispatch, 1e-9, "prior dispatch EWMA must be preserved verbatim on outage poll")
 	})
 
 	t.Run("metrics-outage poll preserves prior EWMA (no contributing queues)", func(t *testing.T) {
@@ -1228,8 +1286,8 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		require.NoError(t, err)
 		storedArrival := resp.Status.GetFloat64Field(stateRateBasedEWMAArrivalRate, math.NaN())
 		storedDispatch := resp.Status.GetFloat64Field(stateRateBasedEWMADispatchRate, math.NaN())
-		assert.Equal(t, float64(5), storedArrival, "prior arrival EWMA must be preserved verbatim when no queue contributed")
-		assert.Equal(t, float64(3), storedDispatch, "prior dispatch EWMA must be preserved verbatim when no queue contributed")
+		assert.InDelta(t, float64(5), storedArrival, 1e-9, "prior arrival EWMA must be preserved verbatim when no queue contributed")
+		assert.InDelta(t, float64(3), storedDispatch, 1e-9, "prior dispatch EWMA must be preserved verbatim when no queue contributed")
 	})
 
 	t.Run("at min count with idle metrics emits no action", func(t *testing.T) {
@@ -1247,7 +1305,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
+		assert.Empty(t, resp.Actions)
 		assert.Equal(t, int64(1), resp.Status.GetInt64Field(stateRateBasedWorkerCount, 0))
 	})
 
@@ -1388,7 +1446,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 		// would otherwise trigger scale-down. Block must hold.
 		pollResp, err := a.ProcessMetricsPoll(ctx, cfg, taskAddResp.Status, ScalingMetricsSnapshot{Workflow: &iface.QueueTypeScalingMetrics{}})
 		require.NoError(t, err)
-		assert.Len(t, pollResp.Actions, 0, "scale-down must be blocked by no_sync_quiet on the poll immediately following a no-sync task-add")
+		assert.Empty(t, pollResp.Actions, "scale-down must be blocked by no_sync_quiet on the poll immediately following a no-sync task-add")
 		assert.Equal(t, taskAddResp.Status.GetInt64Field(stateRateBasedWorkerCount, 0), pollResp.Status.GetInt64Field(stateRateBasedWorkerCount, 0))
 		// The cleaner must preserve the bumped no-sync timestamp through the
 		// poll's clean/read cycle, since that timestamp IS the block signal.
@@ -1399,7 +1457,7 @@ func TestRateBasedProcessMetricsPoll(t *testing.T) {
 }
 
 func TestRateBasedAggregateMetrics(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("nil snapshot yields hasData=false and no dropped queues", func(t *testing.T) {
 		m := aggregateRateBasedMetrics(ctx, nil)
@@ -1422,8 +1480,8 @@ func TestRateBasedAggregateMetrics(t *testing.T) {
 		assert.True(t, m.hasData)
 		assert.Empty(t, m.droppedQueues)
 		assert.Equal(t, int64(15), m.backlog)
-		assert.Equal(t, float64(3), m.arrivalRate)
-		assert.Equal(t, float64(2), m.dispatchRate)
+		assert.InDelta(t, float64(3), m.arrivalRate, 1e-9)
+		assert.InDelta(t, float64(2), m.dispatchRate, 1e-9)
 	})
 
 	t.Run("partial-data poll records dropped queue and keeps hasData=true", func(t *testing.T) {
@@ -1434,8 +1492,8 @@ func TestRateBasedAggregateMetrics(t *testing.T) {
 		assert.True(t, m.hasData, "Activity contributed finite samples")
 		assert.Equal(t, []string{"workflow"}, m.droppedQueues)
 		assert.Equal(t, int64(1), m.backlog, "Workflow's backlog must be excluded along with its NaN rates")
-		assert.Equal(t, float64(4), m.arrivalRate)
-		assert.Equal(t, float64(2), m.dispatchRate)
+		assert.InDelta(t, float64(4), m.arrivalRate, 1e-9)
+		assert.InDelta(t, float64(2), m.dispatchRate, 1e-9)
 	})
 
 	t.Run("all queues rejected yields hasData=false with every queue name listed", func(t *testing.T) {
@@ -1456,8 +1514,8 @@ func TestRateBasedAggregateMetrics(t *testing.T) {
 		assert.True(t, m.hasData, "Activity contributed finite samples")
 		assert.Equal(t, []string{"workflow"}, m.droppedQueues)
 		assert.Equal(t, int64(1), m.backlog, "Workflow's backlog must be excluded along with its negative rate")
-		assert.Equal(t, float64(4), m.arrivalRate)
-		assert.Equal(t, float64(2), m.dispatchRate)
+		assert.InDelta(t, float64(4), m.arrivalRate, 1e-9)
+		assert.InDelta(t, float64(2), m.dispatchRate, 1e-9)
 	})
 
 	t.Run("negative dispatch rate sample is rejected like NaN", func(t *testing.T) {
@@ -1468,8 +1526,8 @@ func TestRateBasedAggregateMetrics(t *testing.T) {
 		assert.True(t, m.hasData)
 		assert.Equal(t, []string{"workflow"}, m.droppedQueues)
 		assert.Equal(t, int64(1), m.backlog)
-		assert.Equal(t, float64(4), m.arrivalRate)
-		assert.Equal(t, float64(2), m.dispatchRate)
+		assert.InDelta(t, float64(4), m.arrivalRate, 1e-9)
+		assert.InDelta(t, float64(2), m.dispatchRate, 1e-9)
 	})
 
 	t.Run("negative backlog sample is rejected", func(t *testing.T) {
@@ -1480,7 +1538,7 @@ func TestRateBasedAggregateMetrics(t *testing.T) {
 		assert.True(t, m.hasData)
 		assert.Equal(t, []string{"workflow"}, m.droppedQueues)
 		assert.Equal(t, int64(10), m.backlog, "Activity's backlog stands alone; workflow's negative backlog must be excluded")
-		assert.Equal(t, float64(4), m.arrivalRate, "workflow's arrival rate dropped with its backlog")
-		assert.Equal(t, float64(2), m.dispatchRate)
+		assert.InDelta(t, float64(4), m.arrivalRate, 1e-9, "workflow's arrival rate dropped with its backlog")
+		assert.InDelta(t, float64(2), m.dispatchRate, 1e-9)
 	})
 }

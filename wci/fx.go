@@ -2,6 +2,8 @@
 package wci
 
 import (
+	"go.uber.org/fx"
+
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workercomponent"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
@@ -23,7 +25,6 @@ import (
 	"go.temporal.io/server/service/worker"
 	workercommon "go.temporal.io/server/service/worker/common"
 	"go.temporal.io/server/temporal"
-	"go.uber.org/fx"
 )
 
 var Module = fx.Options(

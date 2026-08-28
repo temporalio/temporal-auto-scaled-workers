@@ -135,6 +135,12 @@ func (p providerScope) recordEvent(name string) {
 	p.tagged.Counter(name).Inc(1)
 }
 
+// recordTargetWorkerCount records the target worker-set size the scaling algorithm
+// requested, once a resize was applied successfully.
+func (p providerScope) recordTargetWorkerCount(count int32) {
+	p.tagged.Gauge(wcimetrics.TargetWorkerCount.Name()).Update(float64(count))
+}
+
 func (p providerScope) operationMetric(op string) operationRecorder {
 	return operationRecorder{d: p.d, op: op, provider: p.provider}
 }

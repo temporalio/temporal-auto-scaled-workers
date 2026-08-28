@@ -68,7 +68,7 @@ func (p *gcpCloudRunComputeProvider) ValidateConfig(ctx context.Context, rc Requ
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	_, err = client.GetWorkerPool(ctx, &runpb.GetWorkerPoolRequest{Name: name})
 	if err != nil {
 		return fmt.Errorf("worker pool %q not found: %w", name, err)
@@ -83,12 +83,12 @@ func (p *gcpCloudRunComputeProvider) InvokeWorker(_ context.Context, _ RequestCo
 func (p *gcpCloudRunComputeProvider) UpdateWorkerSetSize(ctx context.Context, rc RequestContext, config ComputeProviderConfig, count int32) error {
 	client, name, err := p.buildClientAndParams(ctx, rc, config)
 	if err != nil {
-		return err
+		return NewProviderError(classifyGCPFailure(err), err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if _, err = client.UpdateWorkerPool(ctx, buildUpdateWorkerPoolRequest(name, count)); err != nil {
-		return fmt.Errorf("failed to update worker pool %q: %w", name, err)
+		return NewProviderError(classifyGCPFailure(err), fmt.Errorf("failed to update worker pool %q: %w", name, err))
 	}
 	return nil
 }
@@ -134,7 +134,7 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 			GlobalSACandidates: candidates,
 		})
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to resolve impersonation chain: %w", err)
+			return nil, "", fmt.Errorf("%w: failed to resolve impersonation chain: %w", errWCIOwned, err)
 		}
 
 		scopes := []string{"https://www.googleapis.com/auth/cloud-platform"}
@@ -155,7 +155,7 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 				Scopes:          scopes,
 			})
 			if err != nil {
-				return nil, "", fmt.Errorf("failed to impersonate global service account %q: %w", chainDelegates[0], err)
+				return nil, "", fmt.Errorf("%w: failed to impersonate global service account %q: %w", errWCIOwned, chainDelegates[0], err)
 			}
 			baseOpts = []option.ClientOption{option.WithTokenSource(baseTS)}
 			chainDelegates = chainDelegates[1:]
@@ -174,7 +174,7 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 
 	client, err := run.NewWorkerPoolsClient(ctx, opts...)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create Cloud Run client: %w", err)
+		return nil, "", fmt.Errorf("%w: failed to create Cloud Run client: %w", errWCIOwned, err)
 	}
 	return client, name, nil
 }

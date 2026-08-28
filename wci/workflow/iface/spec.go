@@ -3,10 +3,11 @@ package iface
 import (
 	"slices"
 
+	"google.golang.org/protobuf/proto"
+
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
-	"google.golang.org/protobuf/proto"
 )
 
 type (
@@ -48,6 +49,7 @@ type (
 
 const (
 	ComputeProviderTypeAWSLambda     ComputeProviderType = "aws-lambda"
+	ComputeProviderTypeAWSAgentCore  ComputeProviderType = "aws-agentcore"
 	ComputeProviderTypeAWSECS        ComputeProviderType = "aws-ecs"
 	ComputeProviderTypeSubprocess    ComputeProviderType = "subprocess"
 	ComputeProviderTypeK8s           ComputeProviderType = "k8s"
@@ -61,6 +63,7 @@ const (
 
 var validComputeProviderTypes = map[string]ComputeProviderType{
 	string(ComputeProviderTypeAWSLambda):     ComputeProviderTypeAWSLambda,
+	string(ComputeProviderTypeAWSAgentCore):  ComputeProviderTypeAWSAgentCore,
 	string(ComputeProviderTypeAWSECS):        ComputeProviderTypeAWSECS,
 	string(ComputeProviderTypeSubprocess):    ComputeProviderTypeSubprocess,
 	string(ComputeProviderTypeK8s):           ComputeProviderTypeK8s,

@@ -36,6 +36,9 @@ func (a *Activities) pullScalingMetricsSnapshot(ctx context.Context, namespaceNa
 		Activity: &iface.QueueTypeScalingMetrics{},
 		Nexus:    &iface.QueueTypeScalingMetrics{},
 	}
+	taskQueueCount := 0
+	const taskQueueSampleMax = 3
+	taskQueueSample := []string{}
 	for _, versionedTaskQueue := range deploymentVersionDetails.VersionTaskQueues {
 		if versionedTaskQueue == nil || versionedTaskQueue.Stats == nil {
 			continue
@@ -57,10 +60,27 @@ func (a *Activities) pullScalingMetricsSnapshot(ctx context.Context, namespaceNa
 			metricsSnapshot.Nexus.LastArrivalRate += versionedTaskQueue.Stats.TasksAddRate
 			metricsSnapshot.Nexus.LastProcessingRate += versionedTaskQueue.Stats.TasksDispatchRate
 			metricsSnapshot.Nexus.LastBacklogAge = max(metricsSnapshot.Nexus.LastBacklogAge, versionedTaskQueue.Stats.GetApproximateBacklogAge().AsDuration())
+		case enumspb.TASK_QUEUE_TYPE_UNSPECIFIED:
+			// using unspecified instead of default to ensure (future) unhandled values are caught by linter.
+			logger.Warn("Unspecified task queue type for scaling metrics snapshot", "namespace", namespaceName, "task_queue", versionedTaskQueue.Name)
+		}
+
+		taskQueueCount++
+		// Unclear what we should rank task queues by here, so just use array order
+		if len(taskQueueSample) < taskQueueSampleMax {
+			// Task queue names are user-specified identifiers, but are validated by the server to be valid UTF-8
+			// and limited to a reasonable length (default 1000 bytes), so are safe to log verbatim.
+			taskQueueSample = append(taskQueueSample, "["+versionedTaskQueue.Type.String()+"]"+versionedTaskQueue.Name)
 		}
 	}
 
-	logger.Info("Pulled scaling metrics snapshot", "workflow_count", metricsSnapshot.Workflow.LastBacklogCount, "activity_count", metricsSnapshot.Activity.LastBacklogCount, "nexus_count", metricsSnapshot.Nexus.LastBacklogCount)
+	logger.Info("Pulled scaling metrics snapshot",
+		"workflow_count", metricsSnapshot.Workflow.LastBacklogCount,
+		"activity_count", metricsSnapshot.Activity.LastBacklogCount,
+		"nexus_count", metricsSnapshot.Nexus.LastBacklogCount,
+		"task_queue_count", taskQueueCount,
+		"task_queue_sample", taskQueueSample,
+	)
 
 	return &metricsSnapshot, nil
 }

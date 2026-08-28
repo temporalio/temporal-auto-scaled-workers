@@ -34,7 +34,7 @@ func TestCheckExternalIDEnforced_Enforced(t *testing.T) {
 			return nil, &mockAPIError{code: "AccessDenied"}
 		},
 	}
-	err := checkExternalIDEnforced(context.Background(), mock, "arn:aws:iam::123456789012:role/MyRole")
+	err := checkExternalIDEnforced(t.Context(), mock, "arn:aws:iam::123456789012:role/MyRole")
 	if err != nil {
 		t.Fatalf("expected nil (external ID enforced), got: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestCheckExternalIDEnforced_NotEnforced(t *testing.T) {
 		},
 	}
 	roleARN := "arn:aws:iam::123456789012:role/MyRole"
-	err := checkExternalIDEnforced(context.Background(), mock, roleARN)
+	err := checkExternalIDEnforced(t.Context(), mock, roleARN)
 	if err == nil {
 		t.Fatal("expected error (external ID not enforced), got nil")
 	}
@@ -62,7 +62,7 @@ func TestCheckExternalIDEnforced_InfraError_Surfaced(t *testing.T) {
 			return nil, errors.New("connection timeout")
 		},
 	}
-	err := checkExternalIDEnforced(context.Background(), mock, "arn:aws:iam::123456789012:role/MyRole")
+	err := checkExternalIDEnforced(t.Context(), mock, "arn:aws:iam::123456789012:role/MyRole")
 	if err == nil {
 		t.Fatal("expected error for infrastructure failure, got nil")
 	}
@@ -80,5 +80,5 @@ func TestCheckExternalIDEnforced_ProbeHasNoExternalID(t *testing.T) {
 			return nil, &mockAPIError{code: "AccessDenied"}
 		},
 	}
-	_ = checkExternalIDEnforced(context.Background(), mock, "arn:aws:iam::123456789012:role/MyRole")
+	_ = checkExternalIDEnforced(t.Context(), mock, "arn:aws:iam::123456789012:role/MyRole")
 }

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"google.golang.org/protobuf/types/known/durationpb"
+
 	commonpb "go.temporal.io/api/common/v1"
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -21,7 +23,6 @@ import (
 	"go.temporal.io/server/common/persistence/visibility/manager"
 	"go.temporal.io/server/common/sdk"
 	"go.temporal.io/server/common/searchattribute/sadefs"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 const (
@@ -37,7 +38,7 @@ func startWorkflowAndWait(
 	taskQueueName string,
 	workflowType string,
 	workflowID string,
-	input interface{},
+	input any,
 	identity string,
 	requestID string,
 	timeout time.Duration,
@@ -219,9 +220,9 @@ func updateWorkflowWithStart(
 	taskQueueName string,
 	workflowType string,
 	workflowID string,
-	startInput interface{},
+	startInput any,
 	updateType string,
-	updateArg interface{},
+	updateArg any,
 	identity string,
 	requestID string,
 ) (*updatepb.Outcome, error) {

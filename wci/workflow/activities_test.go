@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"testing"
 	"time"
@@ -10,18 +11,24 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	sdkworkflow "go.temporal.io/sdk/workflow"
+	persistencespb "go.temporal.io/server/api/persistence/v1"
+	"go.temporal.io/server/common/dynamicconfig"
+	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/sdk"
-	"google.golang.org/grpc"
 )
 
 func newTestSignalTaskAddEvent() iface.SignalTaskAddRequest {
@@ -78,6 +85,10 @@ func (a *deferredScalingDecisionTestAlgorithm) CompatibleLaunchStrategies() []co
 
 func (a *deferredScalingDecisionTestAlgorithm) ValidateConfig(context.Context, iface.ScalingAlgorithmConfig) error {
 	return nil
+}
+
+func (a *deferredScalingDecisionTestAlgorithm) TaskQueueRegistrationActions(_ context.Context, _ iface.ScalingAlgorithmConfig, status iface.ScalingAlgorithmStatus) (*scalingalgorithm.TaskQueueRegistrationResponse, error) {
+	return &scalingalgorithm.TaskQueueRegistrationResponse{Status: status}, nil
 }
 
 func (a *deferredScalingDecisionTestAlgorithm) ProcessTaskAdd(
@@ -853,5 +864,223 @@ func TestHandleDeferredScalingDecisionMemoizesMetricsSnapshotErrorSticky(t *test
 		assert.Nil(t, c.snap, "call %d", i)
 		require.Error(t, c.err, "call %d", i)
 		assert.ErrorIs(t, c.err, pullErr, "call %d: cached error must equal the original RPC error", i)
+	}
+}
+
+// stateWorkerCountKey mirrors the unexported rate-based state key (worker_count); the
+// registration path writes the resized worker count here so the algorithm's model matches reality.
+const stateWorkerCountKey = "worker_count"
+
+func describeResponseWithTypes(types ...enumspb.TaskQueueType) *workflowservice.DescribeWorkerDeploymentVersionResponse {
+	resp := &workflowservice.DescribeWorkerDeploymentVersionResponse{}
+	for _, ty := range types {
+		resp.VersionTaskQueues = append(resp.VersionTaskQueues, &workflowservice.DescribeWorkerDeploymentVersionResponse_VersionTaskQueue{
+			Name: "test-queue",
+			Type: ty,
+		})
+	}
+	return resp
+}
+
+// rateBasedWorkerSetGroup builds a worker-set (test provider) scaling group backed by the
+// real rate-based algorithm with the given initial_count for the registration logic to use.
+func rateBasedWorkerSetGroup(t *testing.T, taskType enumspb.TaskQueueType, initialCount int64) iface.ScalingGroupSpec {
+	t.Helper()
+	scalingCfg, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{"initial_count": initialCount})
+	require.NoError(t, err)
+	computeCfg, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{})
+	require.NoError(t, err)
+	return iface.ScalingGroupSpec{
+		TaskTypes: []enumspb.TaskQueueType{taskType},
+		Compute:   iface.ComputeProviderSpec{ProviderType: iface.ComputeProviderTypeTestWorkerSet, Config: computeCfg},
+		Scaling:   &iface.ScalingAlgorithmSpec{ScalingAlgorithm: iface.ScalingAlgorithmRateBased, Config: scalingCfg},
+	}
+}
+
+func runInvokeWorkersToRegisterTaskQueues(t *testing.T, fake *fakeWorkflowServiceClient, spec iface.WorkerControllerInstanceSpec, scalingStatus map[string]iface.ScalingAlgorithmStatus) *InvokeWorkersToRegisterTaskQueuesResponse {
+	t.Helper()
+	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
+	activities := NewActivities(ns, dynamicconfig.NewNoopCollection(), fake)
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	env.RegisterActivity(activities.InvokeWorkersToRegisterTaskQueues)
+	encoded, err := env.ExecuteActivity(activities.InvokeWorkersToRegisterTaskQueues, &InvokeWorkersToRegisterTaskQueuesRequest{
+		RequestContext: RequestContext{
+			NamespaceName:     "test-namespace",
+			DeploymentName:    "test-deployment",
+			DeploymentBuildID: "test-build",
+		},
+		WorkerControllerInstanceSpec: spec,
+		ScalingStatus:                scalingStatus,
+	})
+	require.NoError(t, err)
+	var resp InvokeWorkersToRegisterTaskQueuesResponse
+	require.NoError(t, encoded.Get(&resp))
+	return &resp
+}
+
+// runInvokeWorkersToRegisterTaskQueuesErr runs the activity and returns its error instead of
+// failing the test, for cases that assert the activity aborts.
+func runInvokeWorkersToRegisterTaskQueuesErr(t *testing.T, fake *fakeWorkflowServiceClient, spec iface.WorkerControllerInstanceSpec) (*InvokeWorkersToRegisterTaskQueuesResponse, error) {
+	t.Helper()
+	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
+	activities := NewActivities(ns, dynamicconfig.NewNoopCollection(), fake)
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	env.RegisterActivity(activities.InvokeWorkersToRegisterTaskQueues)
+	encoded, err := env.ExecuteActivity(activities.InvokeWorkersToRegisterTaskQueues, &InvokeWorkersToRegisterTaskQueuesRequest{
+		RequestContext: RequestContext{
+			NamespaceName:     "test-namespace",
+			DeploymentName:    "test-deployment",
+			DeploymentBuildID: "test-build",
+		},
+		WorkerControllerInstanceSpec: spec,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var resp InvokeWorkersToRegisterTaskQueuesResponse
+	require.NoError(t, encoded.Get(&resp))
+	return &resp, nil
+}
+
+func TestInvokeWorkersToRegisterTaskQueues_SkipsRegistered(t *testing.T) {
+	fake := &fakeWorkflowServiceClient{describeFn: func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
+		return describeResponseWithTypes(enumspb.TASK_QUEUE_TYPE_WORKFLOW), nil
+	}}
+	spec := iface.WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
+		"group": rateBasedWorkerSetGroup(t, enumspb.TASK_QUEUE_TYPE_WORKFLOW, 5),
+	}}
+
+	resp := runInvokeWorkersToRegisterTaskQueues(t, fake, spec, nil)
+
+	assert.Equal(t, 1, fake.describeCalls)
+	assert.Empty(t, resp.UpdatedScalingStatus, "a registered group must be skipped: no resize, no writeback")
+}
+
+func TestInvokeWorkersToRegisterTaskQueues_ResizesUnregisteredToInitial(t *testing.T) {
+	fake := &fakeWorkflowServiceClient{describeFn: func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
+		// Activity type is registered, workflow (this group) is not.
+		return describeResponseWithTypes(enumspb.TASK_QUEUE_TYPE_ACTIVITY), nil
+	}}
+	spec := iface.WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
+		"group": rateBasedWorkerSetGroup(t, enumspb.TASK_QUEUE_TYPE_WORKFLOW, 5),
+	}}
+
+	resp := runInvokeWorkersToRegisterTaskQueues(t, fake, spec, nil)
+
+	require.Contains(t, resp.UpdatedScalingStatus, "group")
+	assert.Equal(t, int64(5), resp.UpdatedScalingStatus["group"].GetInt64Field(stateWorkerCountKey, -1),
+		"an unregistered group must be resized to and written back at initial_count, not 1")
+}
+
+func TestInvokeWorkersToRegisterTaskQueues_InitialZeroResizesToOne(t *testing.T) {
+	fake := &fakeWorkflowServiceClient{describeFn: func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
+		return describeResponseWithTypes(), nil // nothing registered
+	}}
+	spec := iface.WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
+		"group": rateBasedWorkerSetGroup(t, enumspb.TASK_QUEUE_TYPE_WORKFLOW, 0),
+	}}
+
+	resp := runInvokeWorkersToRegisterTaskQueues(t, fake, spec, nil)
+
+	require.Contains(t, resp.UpdatedScalingStatus, "group")
+	assert.Equal(t, int64(1), resp.UpdatedScalingStatus["group"].GetInt64Field(stateWorkerCountKey, -1),
+		"initial_count=0 must still resize to 1 for registration and write back 1 so the next poll can scale to 0")
+}
+
+func TestInvokeWorkersToRegisterTaskQueues_DescribeErrorFailsOpen(t *testing.T) {
+	fake := &fakeWorkflowServiceClient{describeFn: func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
+		return nil, errors.New("describe unavailable")
+	}}
+	spec := iface.WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
+		"group": rateBasedWorkerSetGroup(t, enumspb.TASK_QUEUE_TYPE_WORKFLOW, 0),
+	}}
+
+	resp := runInvokeWorkersToRegisterTaskQueues(t, fake, spec, nil)
+
+	assert.Equal(t, 1, fake.describeCalls)
+	require.Contains(t, resp.UpdatedScalingStatus, "group",
+		"a describe failure must fail open and still resize the group")
+	assert.Equal(t, int64(1), resp.UpdatedScalingStatus["group"].GetInt64Field(stateWorkerCountKey, -1))
+}
+
+func TestInvokeWorkersToRegisterTaskQueues_CarriesForwardSkippedGroupStatus(t *testing.T) {
+	// "registered" is already registered (skipped); "fresh" is not and gets resized.
+	fake := &fakeWorkflowServiceClient{describeFn: func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
+		return describeResponseWithTypes(enumspb.TASK_QUEUE_TYPE_ACTIVITY), nil
+	}}
+	spec := iface.WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
+		"registered": rateBasedWorkerSetGroup(t, enumspb.TASK_QUEUE_TYPE_ACTIVITY, 5),
+		"fresh":      rateBasedWorkerSetGroup(t, enumspb.TASK_QUEUE_TYPE_WORKFLOW, 3),
+	}}
+	scalingStatus := map[string]iface.ScalingAlgorithmStatus{
+		"registered": {stateWorkerCountKey: int64(7)},
+	}
+
+	resp := runInvokeWorkersToRegisterTaskQueues(t, fake, spec, scalingStatus)
+
+	// The response is the complete next-state: the skipped group's live count is carried
+	// forward untouched, and the fresh group is reconciled to its initial count.
+	require.Contains(t, resp.UpdatedScalingStatus, "registered")
+	assert.Equal(t, int64(7), resp.UpdatedScalingStatus["registered"].GetInt64Field(stateWorkerCountKey, -1),
+		"a skipped group's live count must be carried forward, not dropped or reset")
+	require.Contains(t, resp.UpdatedScalingStatus, "fresh")
+	assert.Equal(t, int64(3), resp.UpdatedScalingStatus["fresh"].GetInt64Field(stateWorkerCountKey, -1))
+}
+
+func TestInvokeWorkersToRegisterTaskQueues_RateLimitFailsClosed(t *testing.T) {
+	spec := iface.WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
+		"group": rateBasedWorkerSetGroup(t, enumspb.TASK_QUEUE_TYPE_WORKFLOW, 0),
+	}}
+
+	// The rate-limit error may arrive bare or wrapped; errors.As must unwrap it either way.
+	cases := map[string]error{
+		"bare":    serviceerror.NewResourceExhausted(enumspb.RESOURCE_EXHAUSTED_CAUSE_RPS_LIMIT, "slow down"),
+		"wrapped": errors.Join(errors.New("describe failed"), serviceerror.NewResourceExhausted(enumspb.RESOURCE_EXHAUSTED_CAUSE_RPS_LIMIT, "slow down")),
+	}
+	for name, describeErr := range cases {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeWorkflowServiceClient{describeFn: func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
+				return nil, describeErr
+			}}
+
+			_, err := runInvokeWorkersToRegisterTaskQueuesErr(t, fake, spec)
+
+			assert.Equal(t, 1, fake.describeCalls, "must not power through to a worker invocation on rate limiting")
+			var appErr *temporal.ApplicationError
+			require.ErrorAs(t, err, &appErr)
+			assert.Equal(t, "ResourceExhausted", appErr.Type(),
+				"rate limiting must abort with a ResourceExhausted error rather than fail open and add load")
+		})
+	}
+}
+
+func TestComputeProviderErrorType(t *testing.T) {
+	cause := errors.New("boom")
+	cases := []struct {
+		name string
+		err  error
+		want wcimetrics.ErrorType
+	}{
+		{"rejected", computeprovider.NewProviderError(computeprovider.FailureRejected, cause), wcimetrics.ErrorTypeComputeProviderRejected},
+		{"not found", computeprovider.NewProviderError(computeprovider.FailureNotFound, cause), wcimetrics.ErrorTypeComputeProviderRejectedNotFound},
+		{"access denied", computeprovider.NewProviderError(computeprovider.FailureAccessDenied, cause), wcimetrics.ErrorTypeComputeProviderRejectedAccessDenied},
+		{"unavailable", computeprovider.NewProviderError(computeprovider.FailureUnavailable, cause), wcimetrics.ErrorTypeComputeProviderServiceUnavailable},
+		{"throttled", computeprovider.NewProviderError(computeprovider.FailureThrottled, cause), wcimetrics.ErrorTypeComputeProviderThrottled},
+		{"internal", computeprovider.NewProviderError(computeprovider.FailureInternal, cause), wcimetrics.ErrorTypeComputeProviderInternal},
+		{"unclassified", computeprovider.NewProviderError(computeprovider.FailureUnclassified, cause), wcimetrics.ErrorTypeComputeProviderFailed},
+		// A provider that doesn't classify falls back rather than being misattributed.
+		{"unwrapped", cause, wcimetrics.ErrorTypeComputeProviderFailed},
+		{"wrapped in temporal error", fmt.Errorf("activity failed: %w",
+			computeprovider.NewProviderError(computeprovider.FailureThrottled, cause)), wcimetrics.ErrorTypeComputeProviderThrottled},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, computeProviderErrorType(tc.err))
+		})
 	}
 }

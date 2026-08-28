@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
+
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -93,6 +94,11 @@ func (p *awsECSComputeProvider) InvokeWorker(_ context.Context, _ RequestContext
 }
 
 func (p *awsECSComputeProvider) UpdateWorkerSetSize(ctx context.Context, _ RequestContext, cfg ComputeProviderConfig, size int32) error {
+	err := p.updateWorkerSetSize(ctx, cfg, size)
+	return NewProviderError(classifyAWSFailure(err), err)
+}
+
+func (p *awsECSComputeProvider) updateWorkerSetSize(ctx context.Context, cfg ComputeProviderConfig, size int32) error {
 	ecsClient, cluster, service, err := p.getECSClientAndParams(ctx, cfg)
 	if err != nil {
 		return err

@@ -7,6 +7,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
 	commonpb "go.temporal.io/api/common/v1"
 	computepb "go.temporal.io/api/compute/v1"
 	deploymentpb "go.temporal.io/api/deployment/v1"
@@ -20,8 +23,6 @@ import (
 	"go.temporal.io/sdk/workflow"
 	"go.temporal.io/server/common/sdk"
 	"go.temporal.io/server/tests/testcore"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 func TestWCIInstanceLifecycle(t *testing.T) {
@@ -278,6 +279,45 @@ func TestWCICreateVersionInvalidComputeConfig(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestWCIInvokeIncompatibleWithRateBased verifies the rate-based algorithm
+// (worker-set launch strategy) cannot be paired with the invoke test provider.
+func TestWCIInvokeIncompatibleWithRateBased(t *testing.T) {
+	env := createWCITestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	namespace := env.Namespace().String()
+	deploymentName := uuid.NewString()
+	version := &deploymentpb.WorkerDeploymentVersion{
+		DeploymentName: deploymentName,
+		BuildId:        uuid.NewString(),
+	}
+
+	createWorkerDeployment(t, env, deploymentName)
+
+	config := &computepb.ComputeConfig{
+		ScalingGroups: map[string]*computepb.ComputeConfigScalingGroup{
+			"default": {
+				Provider: &computepb.ComputeProvider{Type: "test-invoke"},
+				Scaler:   &computepb.ComputeScaler{Type: "rate-based"},
+			},
+		},
+	}
+	_, err := cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
+		&workflowservice.CreateWorkerDeploymentVersionRequest{
+			Namespace:         namespace,
+			DeploymentVersion: version,
+			Identity:          "test-identity",
+			ComputeConfig:     config,
+			RequestId:         uuid.NewString(),
+		})
+	require.Error(t, err)
+	var invalidArg *serviceerror.InvalidArgument
+	require.ErrorAs(t, err, &invalidArg,
+		"rate-based with an invoke provider should be rejected, got: %v", err)
+	require.ErrorContains(t, err, "not compatible")
+}
+
 func TestWCIUpdateVersionInvalidComputeConfig(t *testing.T) {
 	env := createWCITestEnv(t)
 	ctx := env.Context()
@@ -449,7 +489,7 @@ func TestWCIScaleUp(t *testing.T) {
 
 	// Observe provider invocations for this build before anything can fire one.
 	spy := &invokeSpy{events: make(chan string, 16)}
-	t.Cleanup(computeprovider.SetInvokeObserver(buildID, spy))
+	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
 	events := spy.events
 
 	// Create the parent deployment, then a version backed by the no-op
@@ -541,7 +581,7 @@ func TestWCIVersionInactiveAfterInvoke(t *testing.T) {
 
 	// Observe provider invocations for this build before anything can fire one.
 	spy := &invokeSpy{events: make(chan string, 16)}
-	t.Cleanup(computeprovider.SetInvokeObserver(buildID, spy))
+	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
 	events := spy.events
 
 	// Create the parent deployment
@@ -633,11 +673,11 @@ func TestWCIMultipleVersionsInvokeWithPinnedWorkflows(t *testing.T) {
 	}
 
 	spy1 := &invokeSpy{events: make(chan string, 16)}
-	t.Cleanup(computeprovider.SetInvokeObserver(buildID1, spy1))
+	t.Cleanup(computeprovider.SetComputeObserver(buildID1, spy1))
 	events1 := spy1.events
 
 	spy2 := &invokeSpy{events: make(chan string, 16)}
-	t.Cleanup(computeprovider.SetInvokeObserver(buildID2, spy2))
+	t.Cleanup(computeprovider.SetComputeObserver(buildID2, spy2))
 	events2 := spy2.events
 
 	_, err = cli.WorkflowService().CreateWorkerDeploymentVersion(ctx,
@@ -874,7 +914,7 @@ func TestWCISetCurrentVersionMissingTaskQueuesAndOverride(t *testing.T) {
 	}
 
 	spy := &invokeSpy{events: make(chan string, 16)}
-	t.Cleanup(computeprovider.SetInvokeObserver(buildA, spy))
+	t.Cleanup(computeprovider.SetComputeObserver(buildA, spy))
 	events := spy.events
 
 	// Deployment + version A, with a worker so A registers the task queue.
@@ -1406,7 +1446,7 @@ func setupPolledVersion(
 
 	// Observe provider invocations for this build before anything can fire one.
 	spy := &invokeSpy{events: make(chan string, 16)}
-	t.Cleanup(computeprovider.SetInvokeObserver(buildID, spy))
+	t.Cleanup(computeprovider.SetComputeObserver(buildID, spy))
 
 	_, err := cli.WorkflowService().CreateWorkerDeployment(ctx,
 		&workflowservice.CreateWorkerDeploymentRequest{
@@ -1900,7 +1940,6 @@ func TestWCIDescribeVersionReportsTaskQueueStats(t *testing.T) {
 		})
 	require.NoError(t, err)
 
-
 	// Bring up a worker so the task queue registers against (is polled by) the version.
 	_, w1 := createAndRegisterVersion(t, ctx, cli, namespace, deploymentName, buildID, taskQueue)
 	require.Eventually(t, func() bool {
@@ -2049,7 +2088,7 @@ func startVersionedWorker(
 
 // invokeSpy forwards the test-invoke provider actions it observes onto a
 // channel the test consumes. It is registered against a single deployment
-// build (see SetInvokeObserver), so every action it receives is relevant.
+// build (see SetComputeObserver), so every action it receives is relevant.
 type invokeSpy struct {
 	events chan string
 }
