@@ -37,6 +37,11 @@ const (
 	maxPendingTaskAddSignals = 4000
 
 	taskAddSignalQueueLimitPatch = "taskAddSignalQueueLimit"
+
+	// pollDeadlinePatch gates the deadline-driven metrics poll: the run loop fires the
+	// poll when State.NextPollTime is due, so a sustained task-add signal load can no
+	// longer starve the (selector-based) poll timer.
+	pollDeadlinePatch = "pollDeadline"
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -90,6 +95,7 @@ type (
 		forceCAN      bool
 
 		limitPendingTaskAddSignals bool
+		usePollDeadline            bool
 
 		// workflowVersion is set at workflow start based on the dynamic config of the worker
 		// that completes the first task. It remains constant for the lifetime of the run and
@@ -200,6 +206,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	}
 
 	d.limitPendingTaskAddSignals = workflow.GetVersion(ctx, taskAddSignalQueueLimitPatch, workflow.DefaultVersion, 1) > workflow.DefaultVersion
+	d.usePollDeadline = workflow.GetVersion(ctx, pollDeadlinePatch, workflow.DefaultVersion, 1) > workflow.DefaultVersion
 	if !d.limitPendingTaskAddSignals {
 		// Process the signals from the prior run (pre-CaN)
 		d.processPendingTaskAddSignals(ctx)
@@ -228,14 +235,22 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 				// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
 				return
 			}
-			nextPollDuration := d.pullStatsAndUpdate(timerCtx)
+			// When the deadline patch is active, the run loop owns polling and this timer
+			// only wakes an otherwise-idle Select; pollIfDue is a no-op if a loop iteration
+			// already polled, so there is no double-poll.
+			var nextPollDuration time.Duration
+			if d.usePollDeadline {
+				nextPollDuration = d.pollIfDue(timerCtx)
+			} else {
+				nextPollDuration = d.pullStatsAndUpdate(timerCtx)
+			}
 
 			// for now we don't want to mark things as dirty to avoid excessive CaN
 			// d.stateChanged = true
 			addStatsPullTimer(nextPollDuration)
 		})
 	}
-	addStatsPullTimer(maxPollInterval)
+	addStatsPullTimer(d.initialPollDelay(ctx))
 
 	if d.hasMinVersion(PeriodicValidationVersion) {
 		// Read once at run start. Dynamic config changes take effect at the next
@@ -269,6 +284,12 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 
 	// Keep waiting for signals, when it's time to CaN the main goroutine will exit.
 	for !d.shouldContinueAsNew(ctx) {
+		// Deadline-driven poll: fire the metrics poll from the loop when it is due, so a
+		// sustained task-add signal load cannot starve it. No-op until NextPollTime elapses.
+		if d.usePollDeadline {
+			d.pollIfDue(ctx)
+		}
+
 		if d.limitPendingTaskAddSignals && d.processNextQueuedTaskAddSignal(ctx) {
 			continue
 		}
@@ -513,6 +534,44 @@ func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.
 	d.recordUpdate(wcimetrics.UpdateTypeDeleteInstance, wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone)
 
 	return &iface.DeleteWorkerControllerInstanceResponse{}, nil
+}
+
+// pollIfDue runs a metrics poll when State.NextPollTime has elapsed and advances the
+// deadline by the interval the poll requests. It is driven from the run loop so the poll
+// cannot be starved by the task-add signal selector under sustained load. Safe to call
+// every iteration: a no-op until the deadline is reached. Returns the time remaining until
+// the next poll so the idle-wake timer can be re-armed accordingly.
+func (d *WorkflowRunner) pollIfDue(ctx workflow.Context) time.Duration {
+	if d.State == nil {
+		return maxPollInterval
+	}
+	now := workflow.Now(ctx)
+	// First encounter (nil deadline, e.g. a brand-new WCI): seed the deadline one interval out
+	// rather than polling now. That still guarantees a poll within an interval -- and, since
+	// NextPollTime is persisted, across continue-as-new -- without an extra poll at WCI birth.
+	if d.State.NextPollTime == nil {
+		d.State.NextPollTime = timestamppb.New(now.Add(maxPollInterval))
+		return maxPollInterval
+	}
+	if remaining := d.State.NextPollTime.AsTime().Sub(now); remaining > 0 {
+		return remaining
+	}
+	next := d.pullStatsAndUpdate(ctx)
+	d.State.NextPollTime = timestamppb.New(now.Add(next))
+	return next
+}
+
+// initialPollDelay is the delay for the first stats-pull timer arm. With the poll-deadline
+// patch active it honors a NextPollTime carried across continue-as-new so the poll cadence
+// isn't reset to a full interval on every CaN; otherwise it is the legacy full interval.
+func (d *WorkflowRunner) initialPollDelay(ctx workflow.Context) time.Duration {
+	if !d.usePollDeadline || d.State == nil || d.State.NextPollTime == nil {
+		return maxPollInterval
+	}
+	if remaining := d.State.NextPollTime.AsTime().Sub(workflow.Now(ctx)); remaining > 0 {
+		return remaining
+	}
+	return 0
 }
 
 func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration {
