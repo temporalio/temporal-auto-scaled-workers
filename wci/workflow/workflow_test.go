@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
@@ -128,4 +129,74 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCarriedPollDeadlineHonoredAfterRestart covers the poll-deadline patch's core
+// promise: NextPollTime carried in from a continue-as-new drives the first poll, instead
+// of the cadence being reset to a full maxPollInterval on every CaN. We seed a deadline
+// well under maxPollInterval and assert PullStats fires at that carried deadline. If the
+// carried deadline were ignored, the first poll would arm at maxPollInterval and the
+// delete below would cancel it before it ever fired.
+func TestCarriedPollDeadlineHonoredAfterRestart(t *testing.T) {
+	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
+	require.NoError(t, err)
+	computeConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{})
+	require.NoError(t, err)
+
+	const carriedDeadline = 5 * time.Second
+	require.Less(t, carriedDeadline, maxPollInterval, "carried deadline must be shorter than the legacy interval to be observable")
+
+	activities := NewActivities(nil, nil, nil)
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+
+	// Seed a poll deadline as if it had been carried across a continue-as-new.
+	startTime := env.Now()
+	args := &iface.WorkerControllerInstanceWorkflowArgs{
+		NamespaceName:  "test-namespace",
+		DeploymentName: "test-deployment",
+		BuildId:        "test-build",
+		State: &iface.WorkerControllerInstanceLocalState{
+			Spec: &iface.WorkerControllerInstanceSpec{
+				ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
+					"workflow": newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, computeConfigPayload),
+				},
+			},
+			NextPollTime: timestamppb.New(startTime.Add(carriedDeadline)),
+		},
+	}
+
+	testWorkflow := func(ctx sdkworkflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
+		return Workflow(ctx,
+			func() WorkerControllerInstanceWorkflowVersion { return CancelTimersOnDeleteVersion },
+			func() int { return 100 },
+			func() time.Duration { return periodicValidationInterval },
+			args, activities)
+	}
+	env.RegisterWorkflow(testWorkflow)
+
+	var firstPollElapsed time.Duration
+	pullStatsCalled := false
+	env.OnActivity(activities.PullStats, mock.Anything, mock.Anything).
+		Return(&PullStatsActivityResponse{NextPollSeconds: uint32(maxPollInterval.Seconds())}, nil).
+		Run(func(mock.Arguments) {
+			if !pullStatsCalled {
+				firstPollElapsed = env.Now().Sub(startTime)
+				pullStatsCalled = true
+			}
+		})
+
+	// End the run well before the legacy maxPollInterval so that, absent the fix, no poll
+	// would ever fire (the timer would still be pending at maxPollInterval when we delete).
+	env.RegisterDelayedCallback(func() {
+		env.UpdateWorkflowNoRejection(iface.DeleteWorkerControllerInstance, "delete-1", t, &iface.DeleteWorkerControllerInstanceRequest{})
+	}, maxPollInterval/2)
+
+	env.ExecuteWorkflow(testWorkflow, args)
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.True(t, pullStatsCalled, "expected PullStats to fire at the carried deadline")
+	require.Equal(t, carriedDeadline, firstPollElapsed, "expected the first poll at the carried deadline, not reset to maxPollInterval")
 }
