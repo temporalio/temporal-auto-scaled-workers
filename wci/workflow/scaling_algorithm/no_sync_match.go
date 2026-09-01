@@ -50,6 +50,37 @@ const (
 	// The %s placeholder is replaced by the queue type name ("workflow", "activity", "nexus"),
 	// producing keys such as "workflow_last_dispatch_rate".
 	stateLastDispatchRateKeyFmt = "%s_last_dispatch_rate"
+
+	// --- flat dispatch rate detection (engages only when scale_up_dispatch_rate_epsilon > 0) ---
+	//
+	// When epsilon > 0 it is reinterpreted as a RELATIVE band (a fraction of dispatch, ~0.05-0.10):
+	// ProcessMetricsPoll confirms a flat dispatch rate under a material backlog, then persists a
+	// suppression verdict that the metrics-blind ProcessTaskAdd (fast) path reads and obeys. Growth is
+	// gated on both paths; the poll path's lifetime maintenance is never gated. epsilon <= 0 is unchanged.
+
+	// configNoSyncFlatDispatchRateConfirmMsKey: dispatch must stay flat this long (>= one ~30s averaging
+	// window) before suppression engages, so a just-invoked, still-cold-starting worker isn't mistaken for
+	// a flat dispatch rate.
+	configNoSyncFlatDispatchRateConfirmMsKey     = "flat_dispatch_rate_confirm_ms"
+	configNoSyncFlatDispatchRateConfirmMsDefault = int64(45_000)
+
+	// configNoSyncSuppressScaleUpMsKey: the lease/TTL written into suppress_scale_up_until_ms. The poll
+	// renews it each flat poll; if the poll path stops, the flag self-expires after this. Must exceed the
+	// suppression poll interval so it never lapses between polls. Path-neutral (not task-add specific): the
+	// poll path may consume the lease too.
+	configNoSyncSuppressScaleUpMsKey     = "suppress_scale_up_ms"
+	configNoSyncSuppressScaleUpMsDefault = int64(120_000)
+
+	// configNoSyncSuppressPollIntervalMsKey: the poll cadence while actively suppressing. Backed off
+	// LONGER than the normal poll -- finer than the ~30s dispatch-rate averaging window adds no signal, so
+	// under sustained suppression we re-check less often, not more.
+	configNoSyncSuppressPollIntervalMsKey     = "suppress_poll_interval_ms"
+	configNoSyncSuppressPollIntervalMsDefault = int64(90_000)
+
+	// Flat-dispatch-rate detection state keys (all persisted across polls; the fast path reads suppress_scale_up_until_ms).
+	stateDispatchFlatSinceKey    = "dispatch_flat_since_ms"     // when dispatch first went flat under a backlog (0 = not flat)
+	stateSuppressScaleUpUntilKey = "suppress_scale_up_until_ms" // suppression lease deadline both scaling paths compare against
+	stateDispatchRefRateKey      = "dispatch_ref_rate"          // dispatch rate anchored when flat began (-1 = none)
 )
 
 var _ ScalingAlgorithm = (*scalingAlgorithmNoSync)(nil)
@@ -60,6 +91,9 @@ var noSyncValidConfigKeys = map[string]struct{}{
 	configNoSyncMaxWorkerLifetimeMsKey:        {},
 	configNoSyncScaleUpDispatchRateEpsilonKey: {},
 	configNoSyncMetricsPollIntervalMsKey:      {},
+	configNoSyncFlatDispatchRateConfirmMsKey:  {},
+	configNoSyncSuppressScaleUpMsKey:          {},
+	configNoSyncSuppressPollIntervalMsKey:     {},
 }
 
 var noSyncValidStateKeys = map[string]struct{}{
@@ -67,6 +101,9 @@ var noSyncValidStateKeys = map[string]struct{}{
 	fmt.Sprintf(stateLastDispatchRateKeyFmt, "workflow"): {},
 	fmt.Sprintf(stateLastDispatchRateKeyFmt, "activity"): {},
 	fmt.Sprintf(stateLastDispatchRateKeyFmt, "nexus"):    {},
+	stateDispatchFlatSinceKey:                            {},
+	stateSuppressScaleUpUntilKey:                         {},
+	stateDispatchRefRateKey:                              {},
 }
 
 type (
@@ -120,6 +157,15 @@ func (a *scalingAlgorithmNoSync) ValidateConfig(ctx context.Context, config ifac
 	if err := config.ValidateInt64Field(configNoSyncMetricsPollIntervalMsKey, 10000); err != nil {
 		return err
 	}
+	if err := config.ValidateInt64Field(configNoSyncFlatDispatchRateConfirmMsKey, 0); err != nil {
+		return err
+	}
+	if err := config.ValidateInt64Field(configNoSyncSuppressScaleUpMsKey, 0); err != nil {
+		return err
+	}
+	if err := config.ValidateInt64Field(configNoSyncSuppressPollIntervalMsKey, 0); err != nil {
+		return err
+	}
 
 	// Cross-field: if poll interval < cooloff, metric-driven scale-ups can never fire.
 	// The guard `cooloff > 0` reflects the "0 means disabled" semantics: when cooloff is
@@ -128,6 +174,22 @@ func (a *scalingAlgorithmNoSync) ValidateConfig(ctx context.Context, config ifac
 	cooloff := config.GetInt64Field(configNoSyncScaleUpCooloffMsKey, configNoSyncScaleUpCooloffMsDefault)
 	if cooloff > 0 && pollInterval < cooloff {
 		return fmt.Errorf("metrics_poll_interval_ms (%d) must be >= scale_up_cooloff_ms (%d), otherwise metric-driven scale-ups will never fire", pollInterval, cooloff)
+	}
+
+	// Flat-dispatch-rate detection (epsilon > 0) cross-field checks.
+	if config.GetFloat64Field(configNoSyncScaleUpDispatchRateEpsilonKey, configNoSyncScaleUpDispatchRateEpsilonDefault) > 0 {
+		confirmMs := config.GetInt64Field(configNoSyncFlatDispatchRateConfirmMsKey, configNoSyncFlatDispatchRateConfirmMsDefault)
+		suppressMs := config.GetInt64Field(configNoSyncSuppressScaleUpMsKey, configNoSyncSuppressScaleUpMsDefault)
+		suppressPollMs := config.GetInt64Field(configNoSyncSuppressPollIntervalMsKey, configNoSyncSuppressPollIntervalMsDefault)
+		if confirmMs <= 0 {
+			return fmt.Errorf("flat_dispatch_rate_confirm_ms (%d) must be > 0 when scale_up_dispatch_rate_epsilon > 0", confirmMs)
+		}
+		if suppressPollMs <= 0 {
+			return fmt.Errorf("suppress_poll_interval_ms (%d) must be > 0 when scale_up_dispatch_rate_epsilon > 0", suppressPollMs)
+		}
+		if suppressMs <= suppressPollMs {
+			return fmt.Errorf("suppress_scale_up_ms (%d) must be > suppress_poll_interval_ms (%d), otherwise the suppression lease lapses between polls", suppressMs, suppressPollMs)
+		}
 	}
 
 	return nil
@@ -162,7 +224,13 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 		nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
 		elapsedMs := nowMs - lastScaleUpMs
 
-		if elapsedMs >= cooloffMs {
+		// Obey the suppression lease persisted by the poll path.
+		suppressed := nowMs < priorState.GetInt64Field(stateSuppressScaleUpUntilKey, 0)
+
+		if suppressed {
+			logger.Info("Suppressed scale-up (flat dispatch rate)", "elapsed_ms", elapsedMs)
+			throttledCount = event.NoSyncMatchSignalsSinceLast
+		} else if elapsedMs >= cooloffMs {
 			actions = append(actions, ScalingAction{Action: ActionTypeInvokeWorker})
 			updatedState[stateLastScaleUpTimestampKey] = nowMs
 		} else {
@@ -206,6 +274,84 @@ func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config 
 	epsilon := config.GetFloat64Field(configNoSyncScaleUpDispatchRateEpsilonKey, configNoSyncScaleUpDispatchRateEpsilonDefault)
 	lastScaleUpMs := priorState.GetInt64Field(stateLastScaleUpTimestampKey, 0)
 	nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
+
+	// Flat dispatch rate detection: when epsilon > 0 it becomes a relative band. We aggregate dispatch
+	// rate and backlog across queue types, confirm a flat rate under a material backlog over
+	// flat_dispatch_rate_confirm_ms, and persist a suppression lease (suppress_scale_up_until_ms) that the
+	// metrics-blind fast path obeys. This replaces the per-queue absolute-epsilon check below; epsilon <= 0
+	// is unchanged. Growth is gated; maintenance (lifetime refresh) is never gated.
+	if epsilon > 0 {
+		logger := safeActivityLogger(ctx)
+
+		var rate float64
+		var backlog int64
+		for _, m := range []*iface.QueueTypeScalingMetrics{metricsSnapshot.Workflow, metricsSnapshot.Activity, metricsSnapshot.Nexus} {
+			if m == nil {
+				continue
+			}
+			rate += float64(m.LastProcessingRate)
+			backlog += m.LastBacklogCount
+		}
+
+		flatSince := priorState.GetInt64Field(stateDispatchFlatSinceKey, 0)
+		suppressUntil := priorState.GetInt64Field(stateSuppressScaleUpUntilKey, 0)
+		refRate := priorState.GetFloat64Field(stateDispatchRefRateKey, -1)
+
+		confirmMs := config.GetInt64Field(configNoSyncFlatDispatchRateConfirmMsKey, configNoSyncFlatDispatchRateConfirmMsDefault)
+		suppressMs := config.GetInt64Field(configNoSyncSuppressScaleUpMsKey, configNoSyncSuppressScaleUpMsDefault)
+		suppressPollMs := config.GetInt64Field(configNoSyncSuppressPollIntervalMsKey, configNoSyncSuppressPollIntervalMsDefault)
+
+		elapsedSinceScaleUp := nowMs - lastScaleUpMs
+		material := backlog > backlogThreshold
+		growth := material && elapsedSinceScaleUp >= cooloffMs
+		maintenance := maxWorkerLifetimeMs > 0 && backlog > 0 && elapsedSinceScaleUp >= maxWorkerLifetimeMs
+
+		band := epsilon * refRate                              // relative band (fraction of dispatch)
+		moved := refRate >= 0 && math.Abs(rate-refRate) > band // dispatch rose OR dropped
+
+		switch {
+		case !material || moved || rate <= 0:
+			// no material backlog, dispatch moved, or zero throughput (a stall, not a flat
+			// dispatch rate to suppress) -> resume: clear the verdict so normal scale-up can recover
+			suppressUntil, flatSince, refRate = 0, 0, -1
+		case flatSince == 0:
+			// dispatch flat + material backlog -> start confirming; anchor the reference rate
+			flatSince, refRate = nowMs, rate
+		case nowMs-flatSince >= confirmMs:
+			// confirmed flat under backlog -> suppress; log only on the transition into suppression
+			if suppressUntil <= nowMs {
+				logger.Info("Flat dispatch rate: suppressing scale-up", "dispatch_rate", rate, "backlog", backlog)
+			}
+			suppressUntil = nowMs + suppressMs
+		}
+
+		updatedState[stateDispatchFlatSinceKey] = flatSince
+		updatedState[stateDispatchRefRateKey] = refRate
+		updatedState[stateSuppressScaleUpUntilKey] = suppressUntil
+
+		// Poll cadence: back off to the (longer) suppress interval while actively suppressing -- finer
+		// than the ~30s dispatch-rate averaging window adds no signal.
+		detectorPollMs := pollIntervalMs
+		if suppressUntil > nowMs {
+			detectorPollMs = suppressPollMs
+		}
+		detectorNextPoll := time.Duration(detectorPollMs) * time.Millisecond
+
+		// One scale-up per poll: growth (gated by suppression) OR maintenance (never gated).
+		if (growth && suppressUntil <= nowMs) || maintenance {
+			actions = append(actions, ScalingAction{Action: ActionTypeInvokeWorker})
+			updatedState[stateLastScaleUpTimestampKey] = nowMs
+		}
+
+		return &MetricsPollResponse{Actions: actions, Status: updatedState, NextPoll: &detectorNextPoll}, nil
+	}
+
+	// Detector disabled (epsilon <= 0): clear any persisted suppression state so the fast path (which
+	// obeys the lease unconditionally) reverts to baseline.
+	delete(updatedState, stateSuppressScaleUpUntilKey)
+	delete(updatedState, stateDispatchFlatSinceKey)
+	delete(updatedState, stateDispatchRefRateKey)
+
 	elapsedSinceScaleUp := nowMs - lastScaleUpMs
 
 	scaleUp := false

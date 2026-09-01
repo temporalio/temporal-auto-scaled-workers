@@ -354,3 +354,21 @@ main.two-column {
 .history-outcome.no-action {
   color: var(--muted);
 }
+
+/* ---- flat-dispatch-rate detection extension ---- */
+.slot-bar .slot.warming {
+  background: repeating-linear-gradient(45deg, var(--border) 0 3px, rgba(255,152,0,0.45) 3px 6px);
+}
+.history-outcome.suppressed { color: #c792ea; font-weight: 600; }
+
+.detector-hint { font-weight: 400; color: var(--muted); font-size: 0.85rem; }
+.detector-note {
+  margin: 0.6rem 0 0; padding: 0.6rem 0.8rem; font-size: 0.85rem; line-height: 1.5;
+  background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px;
+}
+
+.metric-value.detector-off,
+.detector-off { color: var(--muted); }
+.metric-value.detector-clear { color: var(--success); }
+.metric-value.detector-confirming { color: var(--warn); }
+.metric-value.detector-suppressed { color: #c792ea; }
