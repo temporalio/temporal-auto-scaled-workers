@@ -2,6 +2,7 @@ package scalingalgorithm
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,6 +11,13 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+)
+
+// Activity-scoped detector state keys used by most tests (the detector keys state per queue type).
+var (
+	stateActivityDispatchFlatSinceKey    = fmt.Sprintf(stateDispatchFlatSinceKeyFmt, "activity")
+	stateActivitySuppressScaleUpUntilKey = fmt.Sprintf(stateSuppressScaleUpUntilKeyFmt, "activity")
+	stateActivityDispatchRefRateKey      = fmt.Sprintf(stateDispatchRefRateKeyFmt, "activity")
 )
 
 func newNoSync() *scalingAlgorithmNoSync {
@@ -113,6 +121,77 @@ func TestNoSyncValidateConfig(t *testing.T) {
 		cfg := iface.ScalingAlgorithmConfig{
 			configNoSyncMetricsPollIntervalMsKey: int64(60000),
 			configNoSyncScaleUpCooloffMsKey:      int64(60000),
+		}
+		require.NoError(t, a.ValidateConfig(ctx, cfg))
+	})
+
+	t.Run("flat_dispatch_rate_confirm_ms negative", func(t *testing.T) {
+		cfg := iface.ScalingAlgorithmConfig{configNoSyncFlatDispatchRateConfirmMsKey: int64(-1)}
+		require.Error(t, a.ValidateConfig(ctx, cfg))
+	})
+
+	t.Run("suppress_scale_up_ms negative", func(t *testing.T) {
+		cfg := iface.ScalingAlgorithmConfig{configNoSyncSuppressScaleUpMsKey: int64(-1)}
+		require.Error(t, a.ValidateConfig(ctx, cfg))
+	})
+
+	t.Run("suppress_poll_interval_ms negative", func(t *testing.T) {
+		cfg := iface.ScalingAlgorithmConfig{configNoSyncSuppressPollIntervalMsKey: int64(-1)}
+		require.Error(t, a.ValidateConfig(ctx, cfg))
+	})
+
+	t.Run("epsilon at the 0.10 cap accepted", func(t *testing.T) {
+		cfg := iface.ScalingAlgorithmConfig{configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.10)}
+		require.NoError(t, a.ValidateConfig(ctx, cfg))
+	})
+
+	t.Run("epsilon just above the 0.10 cap rejected", func(t *testing.T) {
+		cfg := iface.ScalingAlgorithmConfig{configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.11)}
+		require.Error(t, a.ValidateConfig(ctx, cfg))
+	})
+
+	t.Run("epsilon>0 with confirm window <= 0 rejected", func(t *testing.T) {
+		cfg := iface.ScalingAlgorithmConfig{
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.08),
+			configNoSyncFlatDispatchRateConfirmMsKey:  int64(0),
+		}
+		require.Error(t, a.ValidateConfig(ctx, cfg))
+	})
+
+	t.Run("epsilon>0 with suppress_poll_interval_ms <= 0 rejected", func(t *testing.T) {
+		cfg := iface.ScalingAlgorithmConfig{
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.08),
+			configNoSyncSuppressPollIntervalMsKey:     int64(0),
+		}
+		require.Error(t, a.ValidateConfig(ctx, cfg))
+	})
+
+	t.Run("epsilon>0 with suppress lease <= suppress poll interval rejected", func(t *testing.T) {
+		// The lease must outlast the suppress poll cadence, else it lapses between polls.
+		cfg := iface.ScalingAlgorithmConfig{
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.08),
+			configNoSyncSuppressScaleUpMsKey:          int64(90_000),
+			configNoSyncSuppressPollIntervalMsKey:     int64(90_000),
+		}
+		require.Error(t, a.ValidateConfig(ctx, cfg))
+	})
+
+	t.Run("epsilon>0 with valid timers accepted", func(t *testing.T) {
+		cfg := iface.ScalingAlgorithmConfig{
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.08),
+			configNoSyncFlatDispatchRateConfirmMsKey:  int64(45_000),
+			configNoSyncSuppressScaleUpMsKey:          int64(120_000),
+			configNoSyncSuppressPollIntervalMsKey:     int64(90_000),
+		}
+		require.NoError(t, a.ValidateConfig(ctx, cfg))
+	})
+
+	t.Run("disabled epsilon skips the timer cross-field checks", func(t *testing.T) {
+		// With epsilon=0 the detector is off, so an otherwise-invalid lease/poll relationship is allowed.
+		cfg := iface.ScalingAlgorithmConfig{
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0),
+			configNoSyncSuppressScaleUpMsKey:          int64(90_000),
+			configNoSyncSuppressPollIntervalMsKey:     int64(90_000),
 		}
 		require.NoError(t, a.ValidateConfig(ctx, cfg))
 	})
@@ -331,17 +410,15 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		assert.Len(t, resp.Actions, 0)
 	})
 
-	t.Run("epsilon suppression on lifetime refresh path", func(t *testing.T) {
-		// Lifetime path triggers scale-up but epsilon suppresses it because rate is unchanged.
-		// Backlog threshold is set high so only the lifetime path would fire.
-		state := iface.ScalingAlgorithmStatus{
-			stateLastScaleUpTimestampKey:  int64(0),
-			"workflow_last_dispatch_rate": float64(10),
-		}
+	t.Run("flat dispatch rate detection never gates the lifetime-refresh (maintenance) path", func(t *testing.T) {
+		// epsilon > 0 engages the flat dispatch rate detection, but maintenance (lifetime refresh) is never gated:
+		// an expired worker is replaced even while dispatch is flat. Backlog threshold is high so only
+		// the lifetime path is eligible.
+		state := iface.ScalingAlgorithmStatus{stateLastScaleUpTimestampKey: int64(0)}
 		cfg := iface.ScalingAlgorithmConfig{
 			configNoSyncMaxWorkerLifetimeMsKey:        int64(1000),
 			configNoSyncScaleUpBacklogThresholdKey:    int64(100),
-			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.5),
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.05),
 			configNoSyncScaleUpCooloffMsKey:           int64(0),
 		}
 		snapshot := ScalingMetricsSnapshot{
@@ -349,71 +426,25 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
-	})
-
-	t.Run("epsilon does not suppress lifetime refresh when rate changed", func(t *testing.T) {
-		state := iface.ScalingAlgorithmStatus{
-			stateLastScaleUpTimestampKey:  int64(0),
-			"workflow_last_dispatch_rate": float64(10),
-		}
-		cfg := iface.ScalingAlgorithmConfig{
-			configNoSyncMaxWorkerLifetimeMsKey:        int64(1000),
-			configNoSyncScaleUpBacklogThresholdKey:    int64(100),
-			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.5),
-			configNoSyncScaleUpCooloffMsKey:           int64(0),
-		}
-		snapshot := ScalingMetricsSnapshot{
-			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 3, LastProcessingRate: 15},
-		}
-		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
-		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 1)
+		assert.Len(t, resp.Actions, 1, "maintenance fires despite the flat dispatch rate detection")
 		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
 	})
 
-	t.Run("epsilon suppression rate unchanged", func(t *testing.T) {
-		state := iface.ScalingAlgorithmStatus{"workflow_last_dispatch_rate": float64(10)}
+	t.Run("flat dispatch rate detection: first flat poll starts confirming, does not suppress growth", func(t *testing.T) {
+		// On the first flat reading the confirm window has not elapsed, so growth still fires; the poll
+		// only anchors the reference rate and starts the confirm timer.
 		cfg := iface.ScalingAlgorithmConfig{
-			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.5),
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.05),
 			configNoSyncScaleUpCooloffMsKey:           int64(0),
 		}
 		snapshot := ScalingMetricsSnapshot{
-			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5, LastProcessingRate: 10},
+			Activity: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5, LastProcessingRate: 10},
 		}
-		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
+		resp, err := a.ProcessMetricsPoll(ctx, cfg, nil, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
-	})
-
-	t.Run("epsilon suppression rate changed", func(t *testing.T) {
-		state := iface.ScalingAlgorithmStatus{"workflow_last_dispatch_rate": float64(10)}
-		cfg := iface.ScalingAlgorithmConfig{
-			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.5),
-			configNoSyncScaleUpCooloffMsKey:           int64(0),
-		}
-		snapshot := ScalingMetricsSnapshot{
-			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5, LastProcessingRate: 15},
-		}
-		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
-		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 1)
-		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
-	})
-
-	t.Run("epsilon disabled rate unchanged fires", func(t *testing.T) {
-		state := iface.ScalingAlgorithmStatus{"workflow_last_dispatch_rate": float64(10)}
-		cfg := iface.ScalingAlgorithmConfig{
-			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0),
-			configNoSyncScaleUpCooloffMsKey:           int64(0),
-		}
-		snapshot := ScalingMetricsSnapshot{
-			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5, LastProcessingRate: 10},
-		}
-		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
-		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 1)
-		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
+		assert.Len(t, resp.Actions, 1, "growth fires until suppression is confirmed")
+		assert.EqualValues(t, 10, resp.Status[stateActivityDispatchRefRateKey], "reference rate anchored")
+		assert.EqualValues(t, 0, resp.Status[stateActivitySuppressScaleUpUntilKey], "not suppressed yet")
 	})
 
 	t.Run("all three queues have backlog", func(t *testing.T) {
@@ -440,32 +471,6 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
 	})
 
-	t.Run("dispatch rate saved in state without scale-up", func(t *testing.T) {
-		snapshot := ScalingMetricsSnapshot{
-			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 0, LastProcessingRate: 7},
-		}
-		resp, err := a.ProcessMetricsPoll(ctx, iface.ScalingAlgorithmConfig{}, nil, snapshot)
-		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
-		assert.Equal(t, float64(7), resp.Status["workflow_last_dispatch_rate"])
-	})
-
-	t.Run("epsilon suppression skipped on first poll no prior rate", func(t *testing.T) {
-		// With no prior rate in state, lastRate defaults to -1 which skips the epsilon guard.
-		// A scale-up must still fire even when epsilon is enabled.
-		cfg := iface.ScalingAlgorithmConfig{
-			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.5),
-			configNoSyncScaleUpCooloffMsKey:           int64(0),
-		}
-		snapshot := ScalingMetricsSnapshot{
-			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5, LastProcessingRate: 10},
-		}
-		resp, err := a.ProcessMetricsPoll(ctx, cfg, nil, snapshot)
-		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 1)
-		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
-	})
-
 	t.Run("only activity has backlog", func(t *testing.T) {
 		snapshot := ScalingMetricsSnapshot{
 			Activity: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5},
@@ -474,7 +479,6 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 1)
 		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
-		assert.Equal(t, float64(0), resp.Status["activity_last_dispatch_rate"])
 	})
 
 	t.Run("only nexus has backlog", func(t *testing.T) {
@@ -485,7 +489,6 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, resp.Actions, 1)
 		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
-		assert.Equal(t, float64(0), resp.Status["nexus_last_dispatch_rate"])
 	})
 
 	t.Run("cooloff is shared across queue types", func(t *testing.T) {
@@ -529,21 +532,22 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		assert.Equal(t, 60*time.Second, *resp.NextPoll)
 	})
 
-	t.Run("dispatch rate saved in state after epsilon suppression", func(t *testing.T) {
-		// When scale-up is suppressed by epsilon, the rate should still be updated in state
-		// so that the next poll has the correct reference point.
-		state := iface.ScalingAlgorithmStatus{"workflow_last_dispatch_rate": float64(10)}
+	t.Run("flat dispatch rate detection persists its state keys across the poll", func(t *testing.T) {
+		// The detector must persist flat_since, ref_rate and the suppress lease so the confirm timer
+		// accumulates and the fast path can read the verdict.
 		cfg := iface.ScalingAlgorithmConfig{
-			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.5),
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.05),
 			configNoSyncScaleUpCooloffMsKey:           int64(0),
 		}
 		snapshot := ScalingMetricsSnapshot{
-			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5, LastProcessingRate: 10},
+			Activity: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5, LastProcessingRate: 10},
 		}
-		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
+		resp, err := a.ProcessMetricsPoll(ctx, cfg, nil, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0)
-		assert.Equal(t, float64(10), resp.Status["workflow_last_dispatch_rate"])
+		assert.Contains(t, resp.Status, stateActivityDispatchFlatSinceKey)
+		assert.Contains(t, resp.Status, stateActivityDispatchRefRateKey)
+		assert.Contains(t, resp.Status, stateActivitySuppressScaleUpUntilKey)
+		assert.EqualValues(t, 10, resp.Status[stateActivityDispatchRefRateKey])
 	})
 
 	t.Run("state threads correctly across two calls", func(t *testing.T) {
@@ -585,56 +589,54 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		assert.Len(t, resp2.Actions, 0, "second call: lifetime not yet elapsed, must not fire")
 	})
 
-	t.Run("epsilon at exact boundary suppresses", func(t *testing.T) {
-		// |currentRate - lastRate| == epsilon: the <= comparison must suppress the scale-up.
-		state := iface.ScalingAlgorithmStatus{"workflow_last_dispatch_rate": float64(10)}
+	t.Run("flat dispatch rate detection resumes when activity dispatch rises past the band", func(t *testing.T) {
+		// Activity was confirmed-flat and suppressing at ref_rate=10 (band = 0.05*10 = 0.5). Activity
+		// dispatch has now risen to 15 (|15-10|=5 > 0.5) under a still-material backlog, so the ceiling
+		// lifted: the verdict clears via the relative band and activity growth resumes. Driving the ACTIVITY
+		// queue (not Workflow) is what actually exercises the `moved` branch rather than the `!material` one.
+		now := time.Now().UnixMilli()
+		state := iface.ScalingAlgorithmStatus{
+			stateLastScaleUpTimestampKey:         now, // recent -> maintenance can't mask the growth action
+			stateActivityDispatchRefRateKey:      float64(10),
+			stateActivityDispatchFlatSinceKey:    now - 100_000,
+			stateActivitySuppressScaleUpUntilKey: now + 100_000, // actively suppressed before the move
+		}
 		cfg := iface.ScalingAlgorithmConfig{
-			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.5),
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.05),
 			configNoSyncScaleUpCooloffMsKey:           int64(0),
 		}
-		// Use rate that differs by exactly epsilon from lastRate via float arithmetic (10 + 0.5 = 10.5).
 		snapshot := ScalingMetricsSnapshot{
-			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5, LastProcessingRate: 10.5}, // diff = 0.0 <= 0.5
+			Activity: &iface.QueueTypeScalingMetrics{LastBacklogCount: 100, LastProcessingRate: 15},
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 0, "diff == 0 is within epsilon, must suppress")
+		assert.EqualValues(t, 0, resp.Status[stateActivitySuppressScaleUpUntilKey], "lease cleared when dispatch rises past the band")
+		assert.EqualValues(t, 0, resp.Status[stateActivityDispatchFlatSinceKey], "confirm timer reset on movement")
+		assert.EqualValues(t, -1, resp.Status[stateActivityDispatchRefRateKey], "reference cleared on movement")
+		assert.Len(t, resp.Actions, 1, "activity growth resumes once the rate moves off the ceiling")
 	})
 
-	t.Run("epsilon just above boundary fires", func(t *testing.T) {
-		// |currentRate - lastRate| > epsilon: the scale-up must proceed.
-		state := iface.ScalingAlgorithmStatus{"workflow_last_dispatch_rate": float64(10)}
+	t.Run("flat dispatch rate detection resumes when activity dispatch drops past the band", func(t *testing.T) {
+		// Falling side of the band: activity dispatch dropped to 5 (|5-10|=5 > 0.5) under a material
+		// backlog (throughput fell, not a stall) -> the verdict clears and growth resumes.
+		now := time.Now().UnixMilli()
+		state := iface.ScalingAlgorithmStatus{
+			stateLastScaleUpTimestampKey:         now,
+			stateActivityDispatchRefRateKey:      float64(10),
+			stateActivityDispatchFlatSinceKey:    now - 100_000,
+			stateActivitySuppressScaleUpUntilKey: now + 100_000,
+		}
 		cfg := iface.ScalingAlgorithmConfig{
-			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.5),
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.05),
 			configNoSyncScaleUpCooloffMsKey:           int64(0),
 		}
 		snapshot := ScalingMetricsSnapshot{
-			// LastProcessingRate is int32; use a value whose float64 diff is > 0.5.
-			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5, LastProcessingRate: 11}, // diff = 1.0 > 0.5
+			Activity: &iface.QueueTypeScalingMetrics{LastBacklogCount: 100, LastProcessingRate: 5},
 		}
 		resp, err := a.ProcessMetricsPoll(ctx, cfg, state, snapshot)
 		require.NoError(t, err)
-		assert.Len(t, resp.Actions, 1, "diff > epsilon, must fire")
-		assert.Equal(t, ActionTypeInvokeWorker, resp.Actions[0].Action)
-	})
-
-	t.Run("dispatch rate state threads correctly across two calls", func(t *testing.T) {
-		// First call: stores dispatch rate in state.
-		cfg := iface.ScalingAlgorithmConfig{
-			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.5),
-			configNoSyncScaleUpCooloffMsKey:           int64(0),
-		}
-		snapshot := ScalingMetricsSnapshot{
-			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 5, LastProcessingRate: 10},
-		}
-		resp1, err := a.ProcessMetricsPoll(ctx, cfg, nil, snapshot)
-		require.NoError(t, err)
-		assert.Len(t, resp1.Actions, 1) // first poll: no prior rate, epsilon skipped
-
-		// Second call: same rate — epsilon suppresses scale-up using rate stored by first call.
-		resp2, err := a.ProcessMetricsPoll(ctx, cfg, resp1.Status, snapshot)
-		require.NoError(t, err)
-		assert.Len(t, resp2.Actions, 0)
+		assert.EqualValues(t, 0, resp.Status[stateActivitySuppressScaleUpUntilKey], "lease cleared when dispatch drops past the band")
+		assert.Len(t, resp.Actions, 1, "activity growth resumes on a downward move too")
 	})
 
 	t.Run("worker refresh does not fire when backlog is zero", func(t *testing.T) {
@@ -697,5 +699,265 @@ func TestNoSyncProcessMetricsPoll(t *testing.T) {
 		pollResp, err := a.ProcessMetricsPoll(ctx, cfg, taskAddResp.Status, snapshot)
 		require.NoError(t, err)
 		assert.Len(t, pollResp.Actions, 0)
+	})
+}
+
+// TestNoSyncFlatDispatchRateDetection covers the epsilon>0 flat dispatch rate detection end to end:
+// each transition is driven as a single poll with prior state offset from real time.
+func TestNoSyncFlatDispatchRateDetection(t *testing.T) {
+	a := newNoSync()
+	ctx := context.Background()
+
+	active := func() iface.ScalingAlgorithmConfig {
+		return iface.ScalingAlgorithmConfig{
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.08),
+			configNoSyncScaleUpCooloffMsKey:           int64(0),
+			configNoSyncFlatDispatchRateConfirmMsKey:  int64(45_000),
+			configNoSyncSuppressScaleUpMsKey:          int64(120_000),
+			configNoSyncSuppressPollIntervalMsKey:     int64(90_000),
+			configNoSyncMetricsPollIntervalMsKey:      int64(60_000),
+			configNoSyncMaxWorkerLifetimeMsKey:        int64(600_000),
+		}
+	}
+	// The detector keys on the ACTIVITY queue -- the only rate-capped one.
+	flatSnap := ScalingMetricsSnapshot{
+		Activity: &iface.QueueTypeScalingMetrics{LastBacklogCount: 100, LastProcessingRate: 5},
+	}
+
+	t.Run("first flat poll anchors and starts confirming; activity growth still fires", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		// Recent scale-up so maintenance can't mask the growth action.
+		state := iface.ScalingAlgorithmStatus{stateLastScaleUpTimestampKey: now}
+		r, err := a.ProcessMetricsPoll(ctx, active(), state, flatSnap)
+		require.NoError(t, err)
+		assert.Len(t, r.Actions, 1, "activity growth fires while still confirming")
+		assert.NotEqualValues(t, 0, r.Status[stateActivityDispatchFlatSinceKey], "confirm timer anchored")
+		assert.EqualValues(t, 5, r.Status[stateActivityDispatchRefRateKey], "activity reference rate anchored")
+		assert.EqualValues(t, 0, r.Status[stateActivitySuppressScaleUpUntilKey], "not suppressed yet")
+		require.NotNil(t, r.NextPoll)
+		assert.Equal(t, 60_000*time.Millisecond, *r.NextPoll, "normal poll cadence while confirming")
+	})
+
+	t.Run("still flat past the confirm window -> suppress; activity fast path obeys; poll backs off", func(t *testing.T) {
+		cfg := active()
+		now := time.Now().UnixMilli()
+		// Flat began before the 45s confirm window; recent scale-up so the poll sees no maintenance.
+		state := iface.ScalingAlgorithmStatus{
+			stateLastScaleUpTimestampKey:      now,
+			stateActivityDispatchFlatSinceKey: now - 46_000,
+			stateActivityDispatchRefRateKey:   float64(5),
+		}
+		r, err := a.ProcessMetricsPoll(ctx, cfg, state, flatSnap)
+		require.NoError(t, err)
+		assert.Greater(t, r.Status.GetInt64Field(stateActivitySuppressScaleUpUntilKey, 0), now, "suppression lease set into the future")
+		assert.Len(t, r.Actions, 0, "activity growth gated once suppressed")
+		require.NotNil(t, r.NextPoll)
+		assert.Equal(t, 90_000*time.Millisecond, *r.NextPoll, "poll backs off while suppressing")
+
+		// An ACTIVITY no-sync batch reads the persisted lease and is gated.
+		fr, err := a.ProcessTaskAdd(ctx, cfg, r.Status, iface.SignalTaskAddRequest{TaskQueueType: enumspb.TASK_QUEUE_TYPE_ACTIVITY, NoSyncMatchSignalsSinceLast: 3})
+		require.NoError(t, err)
+		assert.Len(t, fr.Actions, 0, "activity fast-path growth suppressed at the ceiling")
+		assert.Equal(t, 3, fr.ThrottledCount)
+	})
+
+	t.Run("workflow task-add is not gated by an activity lease (fast path is per-queue)", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		state := iface.ScalingAlgorithmStatus{
+			stateLastScaleUpTimestampKey:         now,           // recent -> no maintenance confusion
+			stateActivitySuppressScaleUpUntilKey: now + 100_000, // activity suppressed
+		}
+		fr, err := a.ProcessTaskAdd(ctx, active(), state, iface.SignalTaskAddRequest{TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW, NoSyncMatchSignalsSinceLast: 1})
+		require.NoError(t, err)
+		assert.Len(t, fr.Actions, 1, "workflow scale-up gated only by its own lease, not activity's")
+	})
+
+	t.Run("flat dispatch on the workflow queue also suppresses (detector is per-type)", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		// Workflow flat under a material backlog, already past the confirm window -> its own verdict gates
+		// workflow growth. Proves the detector runs per queue type, not activity-only.
+		snap := ScalingMetricsSnapshot{
+			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 100, LastProcessingRate: 5},
+		}
+		state := iface.ScalingAlgorithmStatus{
+			stateLastScaleUpTimestampKey:                          now,
+			fmt.Sprintf(stateDispatchFlatSinceKeyFmt, "workflow"): now - 46_000,
+			fmt.Sprintf(stateDispatchRefRateKeyFmt, "workflow"):   float64(5),
+		}
+		r, err := a.ProcessMetricsPoll(ctx, active(), state, snap)
+		require.NoError(t, err)
+		assert.Greater(t, r.Status.GetInt64Field(fmt.Sprintf(stateSuppressScaleUpUntilKeyFmt, "workflow"), 0), now, "workflow suppression lease set")
+		assert.Len(t, r.Actions, 0, "workflow growth gated by its own ceiling")
+	})
+
+	t.Run("each queue's verdict uses only its own dispatch rate", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		// Activity flat at the ceiling; workflow rate is rising sharply -- must NOT prevent activity suppression.
+		snap := ScalingMetricsSnapshot{
+			Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 100, LastProcessingRate: 999},
+			Activity: &iface.QueueTypeScalingMetrics{LastBacklogCount: 100, LastProcessingRate: 5},
+		}
+		state := iface.ScalingAlgorithmStatus{
+			stateLastScaleUpTimestampKey:      now,
+			stateActivityDispatchFlatSinceKey: now - 46_000,
+			stateActivityDispatchRefRateKey:   float64(5), // anchored on activity
+		}
+		r, err := a.ProcessMetricsPoll(ctx, active(), state, snap)
+		require.NoError(t, err)
+		assert.Greater(t, r.Status.GetInt64Field(stateActivitySuppressScaleUpUntilKey, 0), now, "activity flatness suppresses regardless of workflow rate")
+	})
+
+	t.Run("poll maintenance fires even while activity is suppressed", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		// Activity confirmed-flat (will suppress), and the last scale-up predates the lifetime.
+		state := iface.ScalingAlgorithmStatus{
+			stateLastScaleUpTimestampKey:      now - 700_000, // > 600_000 lifetime
+			stateActivityDispatchFlatSinceKey: now - 46_000,
+			stateActivityDispatchRefRateKey:   float64(5),
+		}
+		r, err := a.ProcessMetricsPoll(ctx, active(), state, flatSnap)
+		require.NoError(t, err)
+		assert.Greater(t, r.Status.GetInt64Field(stateActivitySuppressScaleUpUntilKey, 0), now, "still suppressing growth")
+		assert.Len(t, r.Actions, 1, "maintenance (lifetime refresh) fires even while suppressed")
+	})
+
+	t.Run("fast path stays suppressed even when a worker has aged out (no lifetime replacement)", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		state := iface.ScalingAlgorithmStatus{
+			stateLastScaleUpTimestampKey:         now - 700_000, // older than any lifetime
+			stateActivitySuppressScaleUpUntilKey: now + 100_000, // suppressed
+		}
+		fr, err := a.ProcessTaskAdd(ctx, active(), state, iface.SignalTaskAddRequest{TaskQueueType: enumspb.TASK_QUEUE_TYPE_ACTIVITY, NoSyncMatchSignalsSinceLast: 1})
+		require.NoError(t, err)
+		assert.Len(t, fr.Actions, 0, "fast path obeys the lease; lifetime replacement is the poll path's job")
+		assert.Equal(t, 1, fr.ThrottledCount)
+	})
+
+	t.Run("activity fast path obeys the persisted lease regardless of epsilon config", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		// No epsilon set, but a lease is present in state: the fast path is a pure consumer and obeys it.
+		cfg := iface.ScalingAlgorithmConfig{configNoSyncScaleUpCooloffMsKey: int64(0)}
+		state := iface.ScalingAlgorithmStatus{stateActivitySuppressScaleUpUntilKey: now + 100_000}
+		fr, err := a.ProcessTaskAdd(ctx, cfg, state, iface.SignalTaskAddRequest{TaskQueueType: enumspb.TASK_QUEUE_TYPE_ACTIVITY, NoSyncMatchSignalsSinceLast: 1})
+		require.NoError(t, err)
+		assert.Len(t, fr.Actions, 0, "activity fast path obeys the persisted lease; it does not check epsilon")
+		assert.Equal(t, 1, fr.ThrottledCount)
+	})
+
+	t.Run("disabled detector (epsilon<=0) poll clears any persisted suppression state", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		// Detector off (epsilon defaults to 0); a stale lease/verdict from a prior epsilon>0 period is present.
+		cfg := iface.ScalingAlgorithmConfig{configNoSyncScaleUpCooloffMsKey: int64(0)}
+		state := iface.ScalingAlgorithmStatus{
+			stateActivitySuppressScaleUpUntilKey: now + 100_000,
+			stateActivityDispatchFlatSinceKey:    now - 50_000,
+			stateActivityDispatchRefRateKey:      float64(5),
+		}
+		r, err := a.ProcessMetricsPoll(ctx, cfg, state, flatSnap)
+		require.NoError(t, err)
+		assert.NotContains(t, r.Status, stateActivitySuppressScaleUpUntilKey, "lease cleared when detector disabled")
+		assert.NotContains(t, r.Status, stateActivityDispatchFlatSinceKey, "flat-since cleared when detector disabled")
+		assert.NotContains(t, r.Status, stateActivityDispatchRefRateKey, "ref-rate cleared when detector disabled")
+	})
+
+	t.Run("no activity metrics leaves the prior verdict untouched", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		state := iface.ScalingAlgorithmStatus{
+			stateLastScaleUpTimestampKey:         now,
+			stateActivityDispatchFlatSinceKey:    now - 100_000,
+			stateActivityDispatchRefRateKey:      float64(5),
+			stateActivitySuppressScaleUpUntilKey: now + 100_000,
+		}
+		snap := ScalingMetricsSnapshot{Workflow: &iface.QueueTypeScalingMetrics{LastBacklogCount: 0}}
+		r, err := a.ProcessMetricsPoll(ctx, active(), state, snap)
+		require.NoError(t, err)
+		assert.EqualValues(t, now+100_000, r.Status[stateActivitySuppressScaleUpUntilKey], "lease preserved on a nil-activity poll")
+		assert.EqualValues(t, now-100_000, r.Status[stateActivityDispatchFlatSinceKey], "flat-since preserved")
+		assert.EqualValues(t, 5, r.Status[stateActivityDispatchRefRateKey], "ref-rate preserved")
+	})
+
+	t.Run("zero activity dispatch under backlog is a stall, not a flat-rate plateau", func(t *testing.T) {
+		cfg := active()
+		now := time.Now().UnixMilli()
+		zeroSnap := ScalingMetricsSnapshot{
+			Activity: &iface.QueueTypeScalingMetrics{LastBacklogCount: 100, LastProcessingRate: 0},
+		}
+		// First poll: zero rate + material backlog must NOT anchor; growth still fires to recover.
+		state := iface.ScalingAlgorithmStatus{stateLastScaleUpTimestampKey: now}
+		r1, err := a.ProcessMetricsPoll(ctx, cfg, state, zeroSnap)
+		require.NoError(t, err)
+		assert.EqualValues(t, 0, r1.Status[stateActivityDispatchFlatSinceKey], "zero rate does not start confirming")
+		assert.EqualValues(t, -1, r1.Status[stateActivityDispatchRefRateKey], "no reference anchored at zero throughput")
+		assert.Len(t, r1.Actions, 1, "growth fires to recover from a stall")
+
+		// Even with the confirm window long elapsed (a stale zero-anchor), zero throughput never suppresses.
+		state2 := iface.ScalingAlgorithmStatus{stateLastScaleUpTimestampKey: now, stateActivityDispatchFlatSinceKey: now - 200_000, stateActivityDispatchRefRateKey: float64(0)}
+		r2, err := a.ProcessMetricsPoll(ctx, cfg, state2, zeroSnap)
+		require.NoError(t, err)
+		assert.EqualValues(t, 0, r2.Status[stateActivitySuppressScaleUpUntilKey], "zero throughput never suppresses")
+		assert.Len(t, r2.Actions, 1, "growth keeps firing under a stall")
+	})
+
+	t.Run("suppression lease renews on a sustained flat rate", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		// Already confirmed and actively suppressed; the lease is near-term so a renew is observable.
+		state := iface.ScalingAlgorithmStatus{
+			stateLastScaleUpTimestampKey:         now,
+			stateActivityDispatchFlatSinceKey:    now - 100_000,
+			stateActivityDispatchRefRateKey:      float64(5),
+			stateActivitySuppressScaleUpUntilKey: now + 10_000,
+		}
+		r, err := a.ProcessMetricsPoll(ctx, active(), state, flatSnap)
+		require.NoError(t, err)
+		lease := r.Status.GetInt64Field(stateActivitySuppressScaleUpUntilKey, 0)
+		assert.Greater(t, lease, now+100_000, "lease renewed well beyond the prior near-term expiry")
+		assert.Len(t, r.Actions, 0, "growth stays gated while suppressing")
+	})
+
+	t.Run("activity backlog draining clears an active suppression lease", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		state := iface.ScalingAlgorithmStatus{
+			stateActivityDispatchFlatSinceKey:    now - 100_000,
+			stateActivityDispatchRefRateKey:      float64(5),
+			stateActivitySuppressScaleUpUntilKey: now + 100_000, // active lease
+		}
+		drainedSnap := ScalingMetricsSnapshot{
+			Activity: &iface.QueueTypeScalingMetrics{LastBacklogCount: 0, LastProcessingRate: 5},
+		}
+		r, err := a.ProcessMetricsPoll(ctx, active(), state, drainedSnap)
+		require.NoError(t, err)
+		assert.EqualValues(t, 0, r.Status[stateActivitySuppressScaleUpUntilKey], "lease cleared once backlog drains")
+		assert.EqualValues(t, 0, r.Status[stateActivityDispatchFlatSinceKey], "confirm timer cleared")
+		assert.EqualValues(t, -1, r.Status[stateActivityDispatchRefRateKey], "reference cleared")
+	})
+
+	t.Run("timing knobs fall back to defaults when unset", func(t *testing.T) {
+		// Only epsilon + cooloff set; confirm/suppress/suppress-poll use the 45s/120s/90s defaults.
+		cfg := iface.ScalingAlgorithmConfig{
+			configNoSyncScaleUpDispatchRateEpsilonKey: float64(0.08),
+			configNoSyncScaleUpCooloffMsKey:           int64(0),
+		}
+
+		// Flat but 1s short of the default 45s confirm window -> not suppressed; normal poll cadence.
+		now := time.Now().UnixMilli()
+		before := iface.ScalingAlgorithmStatus{stateLastScaleUpTimestampKey: now, stateActivityDispatchFlatSinceKey: now - 44_000, stateActivityDispatchRefRateKey: float64(5)}
+		rb, err := a.ProcessMetricsPoll(ctx, cfg, before, flatSnap)
+		require.NoError(t, err)
+		assert.EqualValues(t, 0, rb.Status[stateActivitySuppressScaleUpUntilKey], "not confirmed before the default 45s window")
+		require.NotNil(t, rb.NextPoll)
+		assert.Equal(t, 60_000*time.Millisecond, *rb.NextPoll, "normal poll while confirming")
+
+		// Flat past the default 45s window -> suppress with the default 120s lease; poll backs off to 90s.
+		now = time.Now().UnixMilli()
+		after := iface.ScalingAlgorithmStatus{stateLastScaleUpTimestampKey: now, stateActivityDispatchFlatSinceKey: now - 46_000, stateActivityDispatchRefRateKey: float64(5)}
+		lo := time.Now().UnixMilli()
+		ra, err := a.ProcessMetricsPoll(ctx, cfg, after, flatSnap)
+		require.NoError(t, err)
+		hi := time.Now().UnixMilli()
+		lease := ra.Status.GetInt64Field(stateActivitySuppressScaleUpUntilKey, 0)
+		assert.GreaterOrEqual(t, lease, lo+120_000, "default 120s suppress lease (lower bound)")
+		assert.LessOrEqual(t, lease, hi+120_000, "default 120s suppress lease (upper bound)")
+		require.NotNil(t, ra.NextPoll)
+		assert.Equal(t, 90_000*time.Millisecond, *ra.NextPoll, "default 90s suppress poll while suppressing")
 	})
 }

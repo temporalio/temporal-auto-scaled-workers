@@ -15,6 +15,14 @@
   let nextConsumerId = 1;
   let lastMetricsPollRealTime = 0;
   let lastDispatchRate = -1;
+  // --- flat dispatch rate detection state (engages only when dispatch-rate epsilon > 0) ---
+  let flatSinceMs = 0;          // when dispatch first went flat with a backlog (0 = not flat)
+  let suppressUntilMs = 0;      // fast-path suppression flag: growth gated while now < this
+  let refRate = -1;             // dispatch rate anchored when flat began; must move off it to resume (-1 = none)
+  let nextPollIntervalMs = 0;   // adaptive poll: 0 = use the configured interval
+  let gatingStatus = 'off';     // 'off' | 'clear' | 'confirming' | 'suppressed'
+  let noSyncPending = false;    // a no-sync match occurred this batch window (for ~500ms task-add batching)
+  let lastBatchRealTime = 0;
   let arrivalTimestamps = [];
   let dispatchTimestamps = [];
   let chartData = [];
@@ -22,8 +30,9 @@
   let chart = null;
   let rateChartData = [];
   let rateChart = null;
-  const RATE_WINDOW_MS = 10000;
-  const RATE_TRIM_MS = 60000;
+  const RATE_WINDOW_MS = 30000; // dispatch/arrival averaging window — models the server's fixed ~30s metric window (not a tunable config)
+  const RATE_TRIM_MS = 90000;
+  const TASK_ADD_BATCH_MS = 500;   // client batches no-sync signals (MinSignalIntervalNoSyncMatch default); fixed infra
   const CHART_WINDOW_MS = 300000;
   const CHART_SAMPLE_MS = 500;
 
@@ -68,6 +77,24 @@
       scaleUpDispatchRateEpsilon: (function () {
         var v = parseFloat(document.getElementById('scaleUpDispatchRateEpsilon').value);
         return (isNaN(v) || v < 0) ? 0 : v;
+      })(),
+      // --- physics / fidelity knobs (mirror the real world) ---
+      coldStartMs: (function () {
+        var v = parseFloat(document.getElementById('coldStart').value);
+        return (isNaN(v) || v < 0) ? 0 : v * 1000;
+      })(),
+      // --- flat dispatch rate detection knobs (engage only when epsilon > 0) ---
+      dispatchConfirmMs: (function () {
+        var v = parseInt(document.getElementById('dispatchConfirm').value, 10);
+        return (isNaN(v) || v < 0) ? 45000 : v;
+      })(),
+      dispatchSuppressMs: (function () {
+        var v = parseInt(document.getElementById('dispatchSuppress').value, 10);
+        return (isNaN(v) || v < 0) ? 120000 : v;
+      })(),
+      suppressPollIntervalMs: (function () {
+        var v = parseInt(document.getElementById('suppressPollInterval').value, 10);
+        return (isNaN(v) || v < 5000) ? 30000 : v;
       })()
     };
   }
@@ -103,6 +130,7 @@
 
   function findFreeSlot() {
     for (let c = 0; c < consumers.length; c++) {
+      if (consumers[c].readyAt !== undefined && simTime < consumers[c].readyAt) continue; // still cold-starting
       for (let s = 0; s < consumers[c].slots.length; s++) {
         if (consumers[c].slots[s] === null) return { consumer: consumers[c], index: s };
       }
@@ -203,6 +231,7 @@
     consumers.push({
       id: nextConsumerId++,
       createdAt: simTime,
+      readyAt: simTime + config.coldStartMs,   // cold start: can't dispatch until warmed
       slots: slots
     });
     lastScaleUpTimeMs = Date.now();
@@ -249,8 +278,14 @@
 
     const config = getConfig();
     const now = Date.now();
-    const elapsed = now - lastScaleUpTimeMs;
 
+    // flat dispatch rate detection: the fast path just obeys the poll's persisted suppression lease.
+    if (now < suppressUntilMs) {
+      logEvent('suppressed', 'Suppressed', 'Task-add gated (flat dispatch rate)');
+      return;
+    }
+
+    const elapsed = now - lastScaleUpTimeMs;
     if (elapsed >= config.scaleUpCooloffMs) {
       invokeWorker('Task-add no-sync');
     } else {
@@ -258,46 +293,60 @@
     }
   }
 
-  function processMetricsPoll() {
-    const config = getConfig();
+  // Confirm whether dispatch is at a flat-rate ceiling; persists the verdict (flat_since, ref_rate, suppress lease)
+  // that the fast path reads, and returns whether growth is currently suppressed. epsilon <= 0 clears the verdict and
+  // returns false, reverting to today's behavior. Mirrors detectActivityCeiling in the Go algorithm (no branch-off).
+  function detectFlatDispatch(config) {
+    if (config.scaleUpDispatchRateEpsilon <= 0) {
+      suppressUntilMs = 0; flatSinceMs = 0; refRate = -1;
+      gatingStatus = 'off';
+      return false;
+    }
+
     const now = Date.now();
     const backlog = queue.length;
-    const dispatchRate = currentDispatchRate(now);
-    const elapsed = now - lastScaleUpTimeMs;
-    let candidate = false;
-    let reason = '';
+    const rate = currentDispatchRate(now);
 
-    if (backlog > config.scaleUpBacklogThreshold && elapsed >= config.scaleUpCooloffMs) {
-      candidate = true;
-      reason = 'Backlog > threshold';
-    } else if (backlog > config.scaleUpBacklogThreshold) {
-      reason = 'Scale-up cooloff';
+    const material = backlog > config.scaleUpBacklogThreshold;
+    const band = config.scaleUpDispatchRateEpsilon * refRate;         // RELATIVE band (fraction of dispatch)
+    const moved = refRate >= 0 && Math.abs(rate - refRate) > band;    // dispatch rose OR dropped
+
+    if (!material || moved || rate <= 0) {
+      suppressUntilMs = 0; flatSinceMs = 0; refRate = -1;             // resume: clear the verdict
+    } else if (flatSinceMs === 0) {
+      flatSinceMs = now; refRate = rate;                             // anchor the bar; start confirming
+    } else if (now - flatSinceMs >= config.dispatchConfirmMs) {
+      suppressUntilMs = now + config.dispatchSuppressMs;             // confirmed flat dispatch -> suppress
     }
 
-    if (!candidate && config.maxWorkerLifetimeMs > 0 && backlog > 0 && elapsed >= config.maxWorkerLifetimeMs) {
-      candidate = true;
-      reason = 'Worker lifetime refresh';
-    }
+    lastDispatchRate = rate;
+    const suppressed = suppressUntilMs > now;
+    gatingStatus = suppressed ? 'suppressed' : (flatSinceMs !== 0 ? 'confirming' : 'clear');
+    return suppressed;
+  }
 
-    if (candidate && config.scaleUpDispatchRateEpsilon > 0 && lastDispatchRate >= 0 &&
-        Math.abs(dispatchRate - lastDispatchRate) <= config.scaleUpDispatchRateEpsilon) {
-      candidate = false;
-      reason = 'Dispatch rate unchanged';
-    }
+  // One scale-up per poll: growth (gated by the suppression verdict) OR maintenance (lifetime refresh, never gated).
+  // Cadence backs off while suppressing. epsilon <= 0 -> detectFlatDispatch returns false -> exactly today's behavior.
+  function processMetricsPoll() {
+    const config = getConfig();
+    const suppressed = detectFlatDispatch(config);
+    nextPollIntervalMs = suppressed ? config.suppressPollIntervalMs : config.metricsPollIntervalMs;
 
-    lastDispatchRate = dispatchRate;
+    const now = Date.now();
+    const backlog = queue.length;
+    const growth = backlog > config.scaleUpBacklogThreshold && (now - lastScaleUpTimeMs) >= config.scaleUpCooloffMs;
+    const maintenance = config.maxWorkerLifetimeMs > 0 && backlog > 0 && (now - lastScaleUpTimeMs) >= config.maxWorkerLifetimeMs;
 
-    if (candidate) {
-      invokeWorker('Metrics poll: ' + reason);
-      return;
-    }
-
-    if (backlog === 0) {
-      logEvent('no-action', 'No action', 'Metrics poll: queue empty');
-    } else if (reason) {
-      logEvent('no-action', 'No action', 'Metrics poll: ' + reason);
+    if (growth && !suppressed) {
+      invokeWorker('Poll: backlog growth');
+    } else if (maintenance) {
+      invokeWorker('Poll: maintenance (lifetime refresh)');
+    } else if (suppressed) {
+      logEvent('suppressed', 'Suppressed', 'Poll: growth gated (flat dispatch rate)');
+    } else if (backlog === 0) {
+      logEvent('no-action', 'No action', 'Poll: queue empty');
     } else {
-      logEvent('no-action', 'No action', 'Metrics poll: below threshold');
+      logEvent('no-action', 'No action', 'Poll: ' + gatingStatus);
     }
   }
 
@@ -309,9 +358,8 @@
       queue.push(Object.assign(createWorkItem(config), { enqueuedAt: now }));
     }
     assignWorkToSlots(config);
-    if (queue.length > 0) {
-      processTaskAdd(Math.min(count, queue.length));
-    }
+    // a no-sync match this arrival → defer to the batch flush in tick() (the client batches no-sync signals)
+    if (queue.length > 0) noSyncPending = true;
   }
 
   function freeCompletedSlots() {
@@ -337,7 +385,16 @@
     expireWorkers(config);
     assignWorkToSlots(config);
 
-    if (nowReal - lastMetricsPollRealTime >= config.metricsPollIntervalMs) {
+    // fast path fires once per batch window (the client batches no-sync signals; fixed ~500ms)
+    if (nowReal - lastBatchRealTime >= TASK_ADD_BATCH_MS) {
+      lastBatchRealTime = nowReal;
+      if (noSyncPending) processTaskAdd(1);
+      noSyncPending = false;
+    }
+
+    const pollInterval = (config.scaleUpDispatchRateEpsilon > 0 && nextPollIntervalMs > 0)
+      ? nextPollIntervalMs : config.metricsPollIntervalMs;
+    if (nowReal - lastMetricsPollRealTime >= pollInterval) {
       lastMetricsPollRealTime = nowReal;
       processMetricsPoll();
     }
@@ -355,10 +412,37 @@
     if (n > 0) addItems(n);
   }
 
+  // shade the Workers & backlog chart during flat-dispatch suppression windows
+  const suppressionShadePlugin = {
+    id: 'suppressionShade',
+    beforeDatasetsDraw: function (c) {
+      const area = c.chartArea;
+      if (!area || chartData.length === 0) return;
+      const ctx = c.ctx;
+      const xs = c.scales.x;
+      ctx.save();
+      ctx.fillStyle = 'rgba(199, 146, 234, 0.13)';   // translucent purple = suppressed
+      let start = null;
+      for (let i = 0; i <= chartData.length; i++) {
+        const sup = i < chartData.length && chartData[i].suppressed;
+        if (sup && start === null) {
+          start = chartData[i].t;
+        } else if (!sup && start !== null) {
+          const end = (i < chartData.length ? chartData[i] : chartData[i - 1]).t;
+          const x0 = Math.max(area.left, xs.getPixelForValue(start));
+          const x1 = Math.min(area.right, xs.getPixelForValue(end));
+          if (x1 > x0) ctx.fillRect(x0, area.top, x1 - x0, area.bottom - area.top);
+          start = null;
+        }
+      }
+      ctx.restore();
+    }
+  };
+
   function initChart() {
     const canvas = document.getElementById('chart');
     if (!canvas) return;
-    chart = new Chart(canvas, createChartConfig(
+    const cfg = createChartConfig(
       [
         {
           label: 'Workers',
@@ -397,7 +481,9 @@
           grid: { drawOnChartArea: false }
         }
       }
-    ));
+    );
+    cfg.plugins = [suppressionShadePlugin];
+    chart = new Chart(canvas, cfg);
   }
 
   function renderChart() {
@@ -463,7 +549,7 @@
 
     if (now - lastChartSampleTime >= CHART_SAMPLE_MS) {
       lastChartSampleTime = now;
-      chartData.push({ t: now, consumers: consumers.length, queue: queue.length });
+      chartData.push({ t: now, consumers: consumers.length, queue: queue.length, suppressed: gatingStatus === 'suppressed' });
       chartData = chartData.filter(function (d) { return d.t >= now - CHART_WINDOW_MS; });
       rateChartData.push({
         t: now,
@@ -504,11 +590,20 @@
     document.getElementById('dispatchRate').textContent = dispatchTimestamps.length > 0 ? dispatchRateVal : '—';
     document.getElementById('oldestQueueAge').textContent = oldestAge;
 
+    const detectorEl = document.getElementById('detectorState');
+    if (detectorEl) {
+      const on = config.scaleUpDispatchRateEpsilon > 0;
+      const state = on ? gatingStatus : 'off';
+      detectorEl.textContent = on ? state : 'off (ε=0)';
+      detectorEl.className = 'metric-value detector-' + state;
+    }
+
     const container = document.getElementById('consumersSlots');
     if (consumers.length === 0) {
       container.innerHTML = '<p class="muted">No workers. Start the simulation or add tasks.</p>';
     } else {
       container.innerHTML = consumers.map(function (c) {
+        const warming = c.readyAt !== undefined && simTime < c.readyAt;
         const bar = c.slots.map(function (s) {
           if (s !== null) {
             const tooltip = 'Task #' + s.workItem.id +
@@ -516,11 +611,11 @@
               '\nEnd:   ' + formatSimTime(s.endTime);
             return '<span class="slot busy" title="' + tooltip + '"></span>';
           }
-          return '<span class="slot"></span>';
+          return '<span class="slot' + (warming ? ' warming' : '') + '"></span>';
         }).join('');
         return (
           '<div class="consumer-row">' +
-          '<span class="consumer-id">Worker ' + c.id + '</span>' +
+          '<span class="consumer-id">Worker ' + c.id + (warming ? ' ⏳' : '') + '</span>' +
           '<span class="slot-bar">' + bar + '</span>' +
           '</div>'
         );
@@ -571,9 +666,18 @@
     pause();
     queue = [];
     consumers = [];
+    nextConsumerId = 1;
+    nextWorkId = 1;
     lastScaleUpTimeMs = 0;
     lastMetricsPollRealTime = 0;
     lastDispatchRate = -1;
+    flatSinceMs = 0;
+    suppressUntilMs = 0;
+    refRate = -1;
+    nextPollIntervalMs = 0;
+    gatingStatus = 'off';
+    noSyncPending = false;
+    lastBatchRealTime = 0;
     creationHistory = [];
     simTime = 0;
     lastRealTime = 0;
@@ -585,6 +689,43 @@
     lastChartSampleTime = 0;
     render();
   }
+
+  // One-click parameter presets. Realistic ceiling and its ε=0 baseline share the same workload
+  // (arrival 30 vs dispatch cap 15) and differ only in the detector epsilon, so flipping between
+  // them shows the detector's effect directly. Fills the inputs, resets, and starts.
+  const PROFILES = {
+    realistic: {
+      slotsPerConsumer: 5, workDurationMin: 8, workDurationMax: 12,
+      arrivalRate: 30, itemsPerClick: 1, maxDispatchRate: 15,
+      workerExitAfter: 120, coldStart: 3, maxWorkers: 150,
+      scaleUpCooloff: 200, metricsPollInterval: 15000, scaleUpBacklogThreshold: 200,
+      maxWorkerLifetime: 90000, scaleUpDispatchRateEpsilon: 0.05,
+      dispatchConfirm: 15000, dispatchSuppress: 60000, suppressPollInterval: 15000
+    },
+    baseline: {
+      slotsPerConsumer: 5, workDurationMin: 8, workDurationMax: 12,
+      arrivalRate: 30, itemsPerClick: 1, maxDispatchRate: 15,
+      workerExitAfter: 120, coldStart: 3, maxWorkers: 150,
+      scaleUpCooloff: 200, metricsPollInterval: 15000, scaleUpBacklogThreshold: 200,
+      maxWorkerLifetime: 90000, scaleUpDispatchRateEpsilon: 0,
+      dispatchConfirm: 15000, dispatchSuppress: 60000, suppressPollInterval: 15000
+    }
+  };
+
+  function applyProfile(name) {
+    const p = PROFILES[name];
+    if (!p) return;
+    Object.keys(p).forEach(function (id) {
+      const el = document.getElementById(id);
+      if (el) el.value = p[id];
+    });
+    reset();
+    start();
+  }
+
+  document.querySelectorAll('.profile-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () { applyProfile(btn.getAttribute('data-profile')); });
+  });
 
   document.getElementById('btnStart').addEventListener('click', start);
   document.getElementById('btnPause').addEventListener('click', pause);
