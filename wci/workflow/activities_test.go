@@ -18,6 +18,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/auto-scaled-workers/wci/client"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
@@ -27,6 +28,7 @@ import (
 	sdkworkflow "go.temporal.io/sdk/workflow"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/dynamicconfig"
+	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/sdk"
 )
@@ -897,10 +899,19 @@ func rateBasedWorkerSetGroup(t *testing.T, taskType enumspb.TaskQueueType, initi
 	}
 }
 
+func NewTestDynamicConfigCollection() *dynamicconfig.Collection {
+	staticConfig := map[dynamicconfig.Key]any{
+		client.WorkerControllerEnabledComputeProviders.Key(): []string{
+			string(iface.ComputeProviderTypeTestWorkerSet),
+		},
+	}
+	return dynamicconfig.NewCollection(dynamicconfig.StaticClient(staticConfig), log.NewNoopLogger())
+}
+
 func runInvokeWorkersToRegisterTaskQueues(t *testing.T, fake *fakeWorkflowServiceClient, spec iface.WorkerControllerInstanceSpec, scalingStatus map[string]iface.ScalingAlgorithmStatus) *InvokeWorkersToRegisterTaskQueuesResponse {
 	t.Helper()
 	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
-	activities := NewActivities(ns, dynamicconfig.NewNoopCollection(), fake)
+	activities := NewActivities(ns, NewTestDynamicConfigCollection(), fake)
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()
@@ -925,7 +936,7 @@ func runInvokeWorkersToRegisterTaskQueues(t *testing.T, fake *fakeWorkflowServic
 func runInvokeWorkersToRegisterTaskQueuesErr(t *testing.T, fake *fakeWorkflowServiceClient, spec iface.WorkerControllerInstanceSpec) (*InvokeWorkersToRegisterTaskQueuesResponse, error) {
 	t.Helper()
 	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
-	activities := NewActivities(ns, dynamicconfig.NewNoopCollection(), fake)
+	activities := NewActivities(ns, NewTestDynamicConfigCollection(), fake)
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()
