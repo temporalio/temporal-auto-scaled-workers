@@ -62,7 +62,7 @@ func RegisterComputeProvider(providerType iface.ComputeProviderType, ctor Comput
 
 func GetComputeProvider(ctx context.Context, providerType iface.ComputeProviderType, dc *dynamicconfig.Collection) (ComputeProvider, error) {
 	enabledProviders := client.WorkerControllerEnabledComputeProviders.Get(dc)()
-	if enabledProviders != nil && !slices.Contains(enabledProviders, string(providerType)) {
+	if !slices.Contains(enabledProviders, string(providerType)) {
 		return nil, nil
 	}
 
