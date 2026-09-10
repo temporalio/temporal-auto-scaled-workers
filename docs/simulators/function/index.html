@@ -27,6 +27,7 @@
             </ol>
           </li>
         </ol>
+        <p class="detector-note"><strong>ε &gt; 0 enables the flat dispatch rate detection (proposal):</strong> the poll's "dispatch flat despite a backlog" verdict is confirmed over a window, persisted, and read by the <em>task-add</em> path, which simply obeys the suppression lease — so growth is gated on both paths, while <em>lifetime maintenance</em> stays on the poll path; the poll backs off (re-checks less often) while suppressing. <strong>ε = 0 is exactly today's behavior.</strong> Cold start and the dispatch-rate window model real-world physics; the fast path fires per ~500&nbsp;ms no-sync signal batch (fixed).</p>
       </div>
       <div>
         <h3>Scale-down</h3>
@@ -45,6 +46,11 @@
     <div class="column-left">
     <section class="controls panel">
       <h2>Parameters</h2>
+      <div class="profiles">
+        <span class="profiles-label">Presets:</span>
+        <button type="button" class="profile-btn" data-profile="realistic">Realistic ceiling</button>
+        <button type="button" class="profile-btn" data-profile="baseline">Ceiling, ε=0 (today)</button>
+      </div>
       <div class="control-group">
         <h3>Simulation Parameters</h3>
         <div class="control-grid">
@@ -77,6 +83,10 @@
             <input type="number" id="workerExitAfter" min="0" step="1" value="50">
           </label>
           <label>
+            <span>Worker cold start (s, 0=none)</span>
+            <input type="number" id="coldStart" min="0" step="0.5" value="0">
+          </label>
+          <label>
             <span>Max workers (sim guard)</span>
             <input type="number" id="maxWorkers" min="1" max="50" value="10">
           </label>
@@ -102,8 +112,25 @@
             <input type="number" id="maxWorkerLifetime" min="0" value="600000">
           </label>
           <label>
-            <span>Dispatch rate epsilon (items/s)</span>
-            <input type="number" id="scaleUpDispatchRateEpsilon" min="0" step="0.1" value="0">
+            <span>Dispatch-rate ε (0=off; &gt;0 enables detector, relative band)</span>
+            <input type="number" id="scaleUpDispatchRateEpsilon" min="0" step="0.01" value="0">
+          </label>
+        </div>
+      </div>
+      <div class="control-group">
+        <h3>Flat dispatch rate detection <span class="detector-hint">— engages when ε &gt; 0</span></h3>
+        <div class="control-grid">
+          <label>
+            <span>Confirm window (ms)</span>
+            <input type="number" id="dispatchConfirm" min="0" value="90000">
+          </label>
+          <label>
+            <span>Suppress TTL (ms)</span>
+            <input type="number" id="dispatchSuppress" min="0" value="120000">
+          </label>
+          <label>
+            <span>Suppress poll interval (ms, back-off)</span>
+            <input type="number" id="suppressPollInterval" min="5000" value="90000">
           </label>
         </div>
       </div>
@@ -133,12 +160,12 @@
           <span id="slotUtilization" class="metric-value">0 / 0 slots in use</span>
         </div>
         <div class="metric-col">
-          <span class="metric-label">Arrival rate <span class="metric-note">(last 10s)</span></span>
+          <span class="metric-label">Arrival rate <span class="metric-note">(30s avg)</span></span>
           <span id="actualArrivalRate" class="metric-value">—</span>
           <span class="metric-unit">items/s</span>
         </div>
         <div class="metric-col">
-          <span class="metric-label">Dispatch rate <span class="metric-note">(last 10s)</span></span>
+          <span class="metric-label">Dispatch rate <span class="metric-note">(30s avg)</span></span>
           <span id="dispatchRate" class="metric-value">—</span>
           <span class="metric-unit">items/s</span>
         </div>
@@ -146,6 +173,10 @@
           <span class="metric-label">Age of oldest Task</span>
           <span id="oldestQueueAge" class="metric-value">—</span>
           <span class="metric-unit">s</span>
+        </div>
+        <div class="metric-col">
+          <span class="metric-label">Flat dispatch rate detection</span>
+          <span id="detectorState" class="metric-value detector-off">off</span>
         </div>
       </div>
       <div class="consumers-slots" id="consumersSlots">
