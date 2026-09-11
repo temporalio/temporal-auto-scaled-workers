@@ -29,7 +29,8 @@ const (
 	UpdateWorkerSetSizeActivityTimeout           = 2 * time.Minute
 	RegisterTaskQueuesViaWorkersActivityTimeout  = 30 * time.Second
 
-	periodicValidationInterval = 6 * time.Hour
+	workerControllerEnabledPollInterval = 5 * time.Minute
+	periodicValidationInterval          = 6 * time.Hour
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -53,6 +54,10 @@ const (
 	// which, on deletion, will mark the future as failed and prevent the body of
 	// the associated callback from running.
 	CancelTimersOnDeleteVersion
+
+	// Blocks the version workflow from doing anything if workercontroller.enabled is false
+	// in the dynamic config.
+	CheckWorkerControllerEnabledVersion
 )
 
 type (
@@ -94,7 +99,15 @@ type (
 // history clean so that we have less concern about backwards and forwards compatibility.
 // In steady state (i.e. absence of ongoing updates or signals) the wf should only have
 // a single wft in the history.
-func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion, unsafeMaxVersion func() int, unsafePeriodicValidationInterval func() time.Duration, args *iface.WorkerControllerInstanceWorkflowArgs, activities *Activities) error {
+func Workflow(
+	ctx workflow.Context,
+	unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion,
+	unsafeWorkerControllerEnabledGetter func() bool,
+	unsafeMaxVersion func() int,
+	unsafePeriodicValidationInterval func() time.Duration,
+	args *iface.WorkerControllerInstanceWorkflowArgs,
+	activities *Activities,
+) error {
 	// compute_provider is always present as a base tag (the "none" sentinel here)
 	// so that every workflow metric carries a stable tag key-set; emissions made in
 	// the context of a single scaling group override it with that group's provider
@@ -120,7 +133,23 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 		},
 	}
 
-	err := workflowRunner.run(ctx)
+	var err error
+	if workflowRunner.workerControllerEnabled(ctx, unsafeWorkerControllerEnabledGetter) {
+		err = workflowRunner.run(ctx)
+	} else {
+		// The worker controller is disabled; sleep for a bit before triggering a CaN.
+		//
+		// Since the setting is from dynamic config, it could change at any time, so the
+		// workflow itself needs to poll it periodically to be able to react.
+		//
+		// The timeout is set to 5 minutes, the same as the PullStats maxPollInterval.
+		// This will create a new workflow run (via CaN) per WCI every 5 minutes, even if WCI
+		// is disabled, but this is no worse than what would happen if it were enabled because
+		// the workflow would CaN at least every 5 minutes anyway after each PullStats.
+		// It's acceptable that the workflow may take up to 5 minutes to notice a config change.
+		workflow.Sleep(ctx, workerControllerEnabledPollInterval)
+		return workflow.NewContinueAsNewError(ctx, iface.WorkerControllerInstanceWorkflowType, workflowRunner.WorkerControllerInstanceWorkflowArgs)
+	}
 
 	var continueAsNewErr *workflow.ContinueAsNewError
 	if err != nil && !errors.As(err, &continueAsNewErr) {
@@ -836,6 +865,25 @@ func getWorkflowVersion(ctx workflow.Context, unsafeWorkflowVersionGetter func()
 		logger.Warn("failed to retrieve intended workflow version", "error", err)
 	}
 	return 0
+}
+
+func (d *WorkflowRunner) workerControllerEnabled(ctx workflow.Context, unsafeWorkerControllerEnabledGetter func() bool) bool {
+	if !d.hasMinVersion(CheckWorkerControllerEnabledVersion) {
+		return true // prior to this version, we weren't checking this flag, which is equivalent to if it were true
+	}
+	var enabled bool
+	err := workflow.MutableSideEffect(ctx, "workerControllerEnabled",
+		func(_ workflow.Context) any { return unsafeWorkerControllerEnabledGetter() },
+		func(a, b any) bool { return a == b }).
+		Get(&enabled)
+	if err == nil {
+		return enabled
+	}
+
+	// To prevent failure to read the config flag from stalling serverless workers, default to true
+	logger := workflow.GetLogger(ctx)
+	logger.Warn("failed to retrieve workflow enabled flag", "error", err)
+	return true
 }
 
 // signalVersionWorkflow sends the current ValidationStatus to the version workflow
