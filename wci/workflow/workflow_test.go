@@ -96,6 +96,7 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 			testWorkflow := func(ctx sdkworkflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
 				return Workflow(ctx,
 					func() WorkerControllerInstanceWorkflowVersion { return tc.workflowVersion },
+					func() bool { return true },
 					func() int { return 100 },
 					func() time.Duration { return periodicValidationInterval },
 					args, activities)
