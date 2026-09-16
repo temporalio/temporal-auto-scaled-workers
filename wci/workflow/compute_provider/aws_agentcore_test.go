@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptrace"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcore"
@@ -168,10 +170,22 @@ func TestAWSAgentCoreInvokeWorker_InvokeError_Wrapped(t *testing.T) {
 	assert.ErrorIs(t, err, sentinel)
 }
 
-func TestAWSAgentCoreInvokeWorker_Non2xxStatus_ReturnsError(t *testing.T) {
+// shortenAgentCoreMaxRuntime keeps the timeout tests fast.
+func shortenAgentCoreMaxRuntime(t *testing.T) {
+	orig := agentCoreMaxRuntime
+	agentCoreMaxRuntime = 50 * time.Millisecond
+	t.Cleanup(func() { agentCoreMaxRuntime = orig })
+}
+
+func TestAWSAgentCoreInvokeWorker_TimeoutAfterRequestSent_TreatedAsInvoked(t *testing.T) {
+	shortenAgentCoreMaxRuntime(t)
+	// Mark WroteRequest despite hitting maxruntime timeout, no error
 	stubAgentCoreDataClient(t, &mockAgentCoreDataClient{
-		invokeFn: func(_ context.Context, _ *bedrockagentcore.InvokeAgentRuntimeInput, _ ...func(*bedrockagentcore.Options)) (*bedrockagentcore.InvokeAgentRuntimeOutput, error) {
-			return &bedrockagentcore.InvokeAgentRuntimeOutput{StatusCode: aws.Int32(500)}, nil
+		invokeFn: func(ctx context.Context, _ *bedrockagentcore.InvokeAgentRuntimeInput, _ ...func(*bedrockagentcore.Options)) (*bedrockagentcore.InvokeAgentRuntimeOutput, error) {
+			trace := httptrace.ContextClientTrace(ctx)
+			trace.WroteRequest(httptrace.WroteRequestInfo{})
+			<-ctx.Done()
+			return nil, &smithy.CanceledError{Err: ctx.Err()}
 		},
 	})
 
@@ -180,7 +194,47 @@ func TestAWSAgentCoreInvokeWorker_Non2xxStatus_ReturnsError(t *testing.T) {
 		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 	}
 
-	require.Error(t, p.InvokeWorker(t.Context(), RequestContext{}, cfg))
+	require.NoError(t, p.InvokeWorker(t.Context(), RequestContext{}, cfg))
+}
+
+func TestAWSAgentCoreInvokeWorker_TimeoutBeforeRequestSent_ReturnsError(t *testing.T) {
+	shortenAgentCoreMaxRuntime(t)
+	stubAgentCoreDataClient(t, &mockAgentCoreDataClient{
+		invokeFn: func(ctx context.Context, _ *bedrockagentcore.InvokeAgentRuntimeInput, _ ...func(*bedrockagentcore.Options)) (*bedrockagentcore.InvokeAgentRuntimeOutput, error) {
+			// Don't set WroteRequest, simulating a timeout from connect or TLS handshake.
+			<-ctx.Done()
+			return nil, &smithy.CanceledError{Err: ctx.Err()}
+		},
+	})
+
+	p := newAgentCoreProvider()
+	cfg := ComputeProviderConfig{
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
+	}
+
+	err := p.InvokeWorker(t.Context(), RequestContext{}, cfg)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+// Cancellation of the caller's context stays an error even once the request is out.
+func TestAWSAgentCoreInvokeWorker_CallerCanceled_ReturnsError(t *testing.T) {
+	stubAgentCoreDataClient(t, &mockAgentCoreDataClient{
+		invokeFn: func(ctx context.Context, _ *bedrockagentcore.InvokeAgentRuntimeInput, _ ...func(*bedrockagentcore.Options)) (*bedrockagentcore.InvokeAgentRuntimeOutput, error) {
+			httptrace.ContextClientTrace(ctx).WroteRequest(httptrace.WroteRequestInfo{})
+			<-ctx.Done()
+			return nil, &smithy.CanceledError{Err: ctx.Err()}
+		},
+	})
+
+	p := newAgentCoreProvider()
+	cfg := ComputeProviderConfig{
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.Error(t, p.InvokeWorker(ctx, RequestContext{}, cfg))
 }
 
 func TestAWSAgentCoreInvokeWorker_ClientBuildError_Propagated(t *testing.T) {
