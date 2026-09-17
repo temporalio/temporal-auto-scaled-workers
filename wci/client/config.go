@@ -32,7 +32,7 @@ var (
 	)
 	WorkerControllerInstanceWorkflowVersion = dynamicconfig.NewNamespaceIntSetting(
 		"workercontroller.instanceWorkflowVersion",
-		2,
+		3,
 		`WorkerControllerInstanceWorkflowVersion controls what version of the logic should the manager workflows use.`,
 	)
 	WorkerControllerMinSignalIntervalNoSyncMatchMilliseconds = dynamicconfig.NewNamespaceIntSetting(

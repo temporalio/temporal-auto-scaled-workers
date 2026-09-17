@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/tests/testcore"
 )
@@ -27,6 +28,10 @@ func createWCITestEnv(t *testing.T) *testcore.TestEnv {
 		testcore.WithDedicatedCluster(),
 		testcore.WithWorkerService("WCI"),
 		testcore.WithDynamicConfig(client.WorkerControllerEnabled, true),
+		testcore.WithDynamicConfig(client.WorkerControllerEnabledComputeProviders, []string{
+			string(iface.ComputeProviderTypeTestInvoke),
+			string(iface.ComputeProviderTypeTestWorkerSet),
+		}),
 		testcore.WithDynamicConfig(dynamicconfig.VersionDrainageStatusRefreshInterval, testVersionDrainageRefreshInterval),
 		testcore.WithDynamicConfig(dynamicconfig.VersionDrainageStatusVisibilityGracePeriod, testVersionDrainageVisibilityGracePeriod),
 		// Effectively disable no-sync-match signal batching so each backlogged

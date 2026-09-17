@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptrace"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
@@ -16,6 +19,13 @@ import (
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
 )
+
+// AgentCore has no async invocation mode and its blocking mechanism can max out our activity timeout, causing activity
+// retries and WDV failures. While customer config on the Runtime side can mitigate this, we can't rely on that.
+// Instead we combine this agentCoreMaxRuntime timeout with an HTTP trace giving us confidence that the invocation was
+// triggered. This is similar to Lambda's async invoke, we aren't concerned with the runtime operating successfully
+// beyond invocation. This timeout is the max time we'll wait for any runtime invocation.
+var agentCoreMaxRuntime = 5 * time.Second
 
 const (
 	configAWSAgentCoreEndpointARN    = "endpoint_arn"
@@ -137,15 +147,40 @@ func (p *awsAgentCoreComputeProvider) invokeWorker(ctx context.Context, rc Reque
 		Qualifier:       aws.String(params.EndpointName),
 	}
 
-	// AgentCore doesn't have an async invocation method. This aims to make the call and close the response stream on
-	// our end as soon as possible, preventing this activity from blocking.
-	resp, err := invokeClient.InvokeAgentRuntime(ctx, input)
+	// Setup agentCore ctx with timeout to prevent extended blocking
+	invokeCtx, cancel := context.WithTimeout(ctx, agentCoreMaxRuntime)
+	defer cancel()
+
+	// RequestSent enables us to discern between an SDK timeout due to connect or TLS and our max runtime timeout
+	// This is useful because the connect and TLS timeouts are both 3.1s, so if connect times out and then handshake
+	// takes `agentCoreMaxRuntime - 3.1`, the agentCoreMaxRuntime deadline would fire, but we didn't actually get to
+	// send the invoke. In that case, we want the failure to bubble up to activity retry and so on.
+	var requestSent atomic.Bool
+	invokeCtx = httptrace.WithClientTrace(invokeCtx, &httptrace.ClientTrace{
+		// Both hooks fire once per attempt, so reset here: otherwise a retry that
+		// stalls before sending still reads as sent from the previous attempt.
+		GetConn: func(string) { requestSent.Store(false) },
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				requestSent.Store(true)
+			}
+		},
+	})
+
+	resp, err := invokeClient.InvokeAgentRuntime(invokeCtx, input)
 	if err != nil {
+		// The invokeCtx timeout bubbles up as DeadlineExceeded here. The SDK timeouts will surface as different errors.
+		// This combined with requestSent can give us confidence the invocation succeeded vs other errors.
+		if requestSent.Load() && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil
+		}
 		return fmt.Errorf("failed to invoke AgentCore runtime: %w", err)
 	}
+
 	if resp.Response != nil {
 		_ = resp.Response.Close()
 	}
+
 	if resp.StatusCode != nil && (*resp.StatusCode < 200 || *resp.StatusCode >= 300) {
 		return fmt.Errorf("failed to invoke AgentCore runtime: status code %d", *resp.StatusCode)
 	}
