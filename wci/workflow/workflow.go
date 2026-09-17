@@ -30,6 +30,8 @@ const (
 	RegisterTaskQueuesViaWorkersActivityTimeout  = 30 * time.Second
 
 	periodicValidationInterval = 6 * time.Hour
+
+	errWorkerControllerDisabledMessage = "worker controller is disabled in namespace"
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -53,6 +55,10 @@ const (
 	// which, on deletion, will mark the future as failed and prevent the body of
 	// the associated callback from running.
 	CancelTimersOnDeleteVersion
+
+	// Skip most mutating operations on the version workflow if
+	// workercontroller.enabled is false in the dynamic config.
+	CheckWorkerControllerEnabledVersion
 )
 
 type (
@@ -71,6 +77,7 @@ type (
 		lock    workflow.Mutex
 
 		deleteInstance                   bool
+		unsafeWorkerControllerEnabled    func() bool
 		unsafeMaxVersion                 func() int
 		unsafePeriodicValidationInterval func() time.Duration
 
@@ -94,7 +101,15 @@ type (
 // history clean so that we have less concern about backwards and forwards compatibility.
 // In steady state (i.e. absence of ongoing updates or signals) the wf should only have
 // a single wft in the history.
-func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion, unsafeMaxVersion func() int, unsafePeriodicValidationInterval func() time.Duration, args *iface.WorkerControllerInstanceWorkflowArgs, activities *Activities) error {
+func Workflow(
+	ctx workflow.Context,
+	unsafeWorkflowVersionGetter func() WorkerControllerInstanceWorkflowVersion,
+	unsafeWorkerControllerEnabledGetter func() bool,
+	unsafeMaxVersion func() int,
+	unsafePeriodicValidationInterval func() time.Duration,
+	args *iface.WorkerControllerInstanceWorkflowArgs,
+	activities *Activities,
+) error {
 	// compute_provider is always present as a base tag (the "none" sentinel here)
 	// so that every workflow metric carries a stable tag key-set; emissions made in
 	// the context of a single scaling group override it with that group's provider
@@ -113,6 +128,7 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 		logger:                               sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName, "wf-deployment-name", args.DeploymentName, "wf-build-id", args.BuildId),
 		metrics:                              workflow.GetMetricsHandler(ctx).WithTags(metricTags),
 		lock:                                 workflow.NewMutex(ctx),
+		unsafeWorkerControllerEnabled:        unsafeWorkerControllerEnabledGetter,
 		unsafeMaxVersion:                     unsafeMaxVersion,
 		unsafePeriodicValidationInterval:     unsafePeriodicValidationInterval,
 		signalHandler: &SignalHandler{
@@ -278,6 +294,9 @@ func (d *WorkflowRunner) validateValidateSpec(args *iface.ValidateSpecRequest) e
 // handleValidateSpec is the handler for the validateSpec update request. It implements a dry-run for any submitted changes,
 // or validates the current configuration if no changes are provided.
 func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.ValidateSpecRequest) (*iface.ValidateSpecResponse, error) {
+	if err := d.ensureEnabled(ctx); err != nil {
+		return nil, err
+	}
 	if err := d.preUpdateChecks(ctx); err != nil {
 		return nil, err
 	}
@@ -346,6 +365,9 @@ func (d *WorkflowRunner) validateUpdateInstance(args *iface.UpdateWorkerControll
 }
 
 func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.UpdateWorkerControllerInstanceRequest) (*iface.UpdateWorkerControllerInstanceResponse, error) {
+	if err := d.ensureEnabled(ctx); err != nil {
+		return nil, err
+	}
 	if err := d.preUpdateChecks(ctx); err != nil {
 		return nil, err
 	}
@@ -460,6 +482,8 @@ func (d *WorkflowRunner) markDeleted() {
 }
 
 func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.DeleteWorkerControllerInstanceRequest) (*iface.DeleteWorkerControllerInstanceResponse, error) {
+	// purposely don't call d.ensureEnabled() to allow cleanup even if disabled
+
 	if err := d.preUpdateChecks(ctx); err != nil {
 		return &iface.DeleteWorkerControllerInstanceResponse{}, err
 	}
@@ -486,6 +510,9 @@ func (d *WorkflowRunner) handleDeleteInstance(ctx workflow.Context, args *iface.
 
 func (d *WorkflowRunner) pullStatsAndUpdate(ctx workflow.Context) time.Duration {
 	if d.State == nil || d.State.Spec == nil || len(d.State.Spec.ScalingGroupSpecs) == 0 {
+		return maxPollInterval
+	}
+	if err := d.ensureEnabled(ctx); err != nil {
 		return maxPollInterval
 	}
 
@@ -525,6 +552,10 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 	if d.State == nil || d.State.Spec == nil || len(d.State.Spec.ScalingGroupSpecs) == 0 {
 		return
 	}
+	if err := d.ensureEnabled(ctx); err != nil {
+		return
+	}
+
 	now := workflow.Now(ctx)
 
 	if err := workflow.ExecuteActivity(
@@ -560,6 +591,10 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 }
 
 func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *iface.SignalTaskAddRequest) {
+	if err := d.ensureEnabled(ctx); err != nil {
+		return
+	}
+
 	signalReceiptTime := workflow.Now(ctx)
 	if req == nil {
 		d.logger.Warn("Received nil task-add signal request; dropping")
@@ -782,6 +817,13 @@ func (d *WorkflowRunner) hasMinVersion(version WorkerControllerInstanceWorkflowV
 	return d.workflowVersion >= version
 }
 
+func (d *WorkflowRunner) ensureEnabled(ctx workflow.Context) error {
+	if !d.workerControllerEnabled(ctx) {
+		return temporal.NewNonRetryableApplicationError(errWorkerControllerDisabledMessage, iface.ErrFailedPrecondition, nil)
+	}
+	return nil
+}
+
 func (d *WorkflowRunner) preUpdateChecks(ctx workflow.Context) error {
 	err := d.ensureNotDeleted()
 	if err != nil {
@@ -836,6 +878,25 @@ func getWorkflowVersion(ctx workflow.Context, unsafeWorkflowVersionGetter func()
 		logger.Warn("failed to retrieve intended workflow version", "error", err)
 	}
 	return 0
+}
+
+func (d *WorkflowRunner) workerControllerEnabled(ctx workflow.Context) bool {
+	if !d.hasMinVersion(CheckWorkerControllerEnabledVersion) {
+		return true // prior to this version, we weren't checking this flag, which is equivalent to if it were true
+	}
+	var enabled bool
+	err := workflow.MutableSideEffect(ctx, "workerControllerEnabled",
+		func(_ workflow.Context) any { return d.unsafeWorkerControllerEnabled() },
+		func(a, b any) bool { return a == b }).
+		Get(&enabled)
+	if err == nil {
+		return enabled
+	}
+
+	// To prevent failure to read the config flag from stalling serverless workers, default to true
+	logger := workflow.GetLogger(ctx)
+	logger.Warn("failed to retrieve workflow enabled flag", "error", err)
+	return true
 }
 
 // signalVersionWorkflow sends the current ValidationStatus to the version workflow
