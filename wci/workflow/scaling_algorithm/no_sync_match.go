@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 )
@@ -34,40 +35,76 @@ const (
 	configNoSyncMaxWorkerLifetimeMsKey     = "max_worker_lifetime_ms"
 	configNoSyncMaxWorkerLifetimeMsDefault = 10 * 60 * 1000 // default is 10min
 
-	// configNoSyncScaleUpDispatchRateEpsilonKey: in ProcessMetricsPoll, skip scale-up when the current
-	// processing rate (QueueTypeScalingMetrics.LastProcessingRate) is within this epsilon of the previous
-	// poll's value, stored per queue under the state key "<queue>_last_dispatch_rate" (see stateLastDispatchRateKeyFmt).
-	// 0 means disabled. Suppression is skipped on the first poll for a queue when no prior rate is recorded in state.
+	// configNoSyncScaleUpDispatchRateEpsilonKey: When epsilon > 0, ProcessMetricsPoll skips scale-up for a queue
+	// while backlog > threshold defined by configNoSyncScaleUpBacklogThresholdKey and
+	// the processing rate (QueueTypeScalingMetrics.LastProcessingRate) stays within the epsilon band for the
+	// duration defined by configNoSyncScaleUpDispatchRateEpsilonConfirmMsKey.
+	// When ProcessMetricsPoll confirms such trend, it uses (see configNoSyncSuppressScaleUpMsKey) to calculate
+	// how long to suppress and persists the same in state as stateSuppressScaleUpUntilKeyFmt.
+	// ProcessTaskAdd path also reads and obeys stateSuppressScaleUpUntilKeyFmt,
+	// so any backlog based scale up is suppressed on both paths.
+	// Worker lifetime based maintenance (see configNoSyncMaxWorkerLifetimeMsKey) is never suppressed.
+	// 0 means disabled. Suppression only engages after the processing rate (QueueTypeScalingMetrics.LastProcessingRate)
+	// stays within the band for the full confirm window, so it never fires on the first poll for a queue.
 	configNoSyncScaleUpDispatchRateEpsilonKey     = "scale_up_dispatch_rate_epsilon"
 	configNoSyncScaleUpDispatchRateEpsilonDefault = 0
+	configNoSyncScaleUpDispatchRateEpsilonMax     = 0.10
+
+	// configNoSyncScaleUpDispatchRateEpsilonConfirmMsKey: how long the dispatch rate must stay within the band before
+	// suppression engages (see configNoSyncScaleUpDispatchRateEpsilonKey).
+	configNoSyncScaleUpDispatchRateEpsilonConfirmMsKey     = "scale_up_dispatch_rate_epsilon_confirm_ms"
+	configNoSyncScaleUpDispatchRateEpsilonConfirmMsDefault = int64(90_000)
 
 	// configNoSyncMetricsPollIntervalMsKey is the interval in milliseconds between metrics poll calls.
 	configNoSyncMetricsPollIntervalMsKey     = "metrics_poll_interval_ms"
 	configNoSyncMetricsPollIntervalMsDefault = int64(60_000) // 60s
 
 	stateLastScaleUpTimestampKey = "last_scale_up_time_ms"
-	// stateLastDispatchRateKeyFmt is a format string for per-queue dispatch rate state keys.
-	// The %s placeholder is replaced by the queue type name ("workflow", "activity", "nexus"),
-	// producing keys such as "workflow_last_dispatch_rate".
-	stateLastDispatchRateKeyFmt = "%s_last_dispatch_rate"
+
+	// configNoSyncSuppressScaleUpMsKey: see configNoSyncScaleUpDispatchRateEpsilonKey, when ProcessMetricsPoll
+	// confirms that the processing rate (QueueTypeScalingMetrics.LastProcessingRate) is within epsilon band,
+	// it calculates how long to suppress ( now + configNoSyncSuppressScaleUpMsKey) and persists the same in state as
+	// stateSuppressScaleUpUntilKeyFmt. This is re-set on each confirmed poll.
+	configNoSyncSuppressScaleUpMsKey     = "suppress_scale_up_ms"
+	configNoSyncSuppressScaleUpMsDefault = int64(120_000)
+
+	// configNoSyncSuppressPollIntervalMsKey: time for next poll while we are actively suppressing scale-ups.
+	configNoSyncSuppressPollIntervalMsKey     = "suppress_poll_interval_ms"
+	configNoSyncSuppressPollIntervalMsDefault = int64(90_000)
+
+	stateDispatchRateWithinEpsilonSinceKeyFmt = "%s_dispatch_rate_within_epsilon_since_ms"
+	stateSuppressScaleUpUntilKeyFmt           = "%s_suppress_scale_up_until_ms"
+	stateDispatchRefRateKeyFmt                = "%s_dispatch_ref_rate"
 )
 
 var _ ScalingAlgorithm = (*scalingAlgorithmNoSync)(nil)
 
 var noSyncValidConfigKeys = map[string]struct{}{
-	configNoSyncScaleUpCooloffMsKey:           {},
-	configNoSyncScaleUpBacklogThresholdKey:    {},
-	configNoSyncMaxWorkerLifetimeMsKey:        {},
-	configNoSyncScaleUpDispatchRateEpsilonKey: {},
-	configNoSyncMetricsPollIntervalMsKey:      {},
+	configNoSyncScaleUpCooloffMsKey:                    {},
+	configNoSyncScaleUpBacklogThresholdKey:             {},
+	configNoSyncMaxWorkerLifetimeMsKey:                 {},
+	configNoSyncScaleUpDispatchRateEpsilonKey:          {},
+	configNoSyncMetricsPollIntervalMsKey:               {},
+	configNoSyncScaleUpDispatchRateEpsilonConfirmMsKey: {},
+	configNoSyncSuppressScaleUpMsKey:                   {},
+	configNoSyncSuppressPollIntervalMsKey:              {},
 }
 
-var noSyncValidStateKeys = map[string]struct{}{
-	stateLastScaleUpTimestampKey:                         {},
-	fmt.Sprintf(stateLastDispatchRateKeyFmt, "workflow"): {},
-	fmt.Sprintf(stateLastDispatchRateKeyFmt, "activity"): {},
-	fmt.Sprintf(stateLastDispatchRateKeyFmt, "nexus"):    {},
+var queueTypeName = map[enumspb.TaskQueueType]string{
+	enumspb.TASK_QUEUE_TYPE_WORKFLOW: "workflow",
+	enumspb.TASK_QUEUE_TYPE_ACTIVITY: "activity",
+	enumspb.TASK_QUEUE_TYPE_NEXUS:    "nexus",
 }
+
+var noSyncValidStateKeys = func() map[string]struct{} {
+	keys := map[string]struct{}{stateLastScaleUpTimestampKey: {}}
+	for _, qName := range queueTypeName {
+		keys[fmt.Sprintf(stateDispatchRateWithinEpsilonSinceKeyFmt, qName)] = struct{}{}
+		keys[fmt.Sprintf(stateSuppressScaleUpUntilKeyFmt, qName)] = struct{}{}
+		keys[fmt.Sprintf(stateDispatchRefRateKeyFmt, qName)] = struct{}{}
+	}
+	return keys
+}()
 
 type (
 	scalingAlgorithmNoSync struct{}
@@ -120,6 +157,15 @@ func (a *scalingAlgorithmNoSync) ValidateConfig(ctx context.Context, config ifac
 	if err := config.ValidateInt64Field(configNoSyncMetricsPollIntervalMsKey, 10000); err != nil {
 		return err
 	}
+	if err := config.ValidateInt64Field(configNoSyncScaleUpDispatchRateEpsilonConfirmMsKey, 0); err != nil {
+		return err
+	}
+	if err := config.ValidateInt64Field(configNoSyncSuppressScaleUpMsKey, 0); err != nil {
+		return err
+	}
+	if err := config.ValidateInt64Field(configNoSyncSuppressPollIntervalMsKey, 0); err != nil {
+		return err
+	}
 
 	// Cross-field: if poll interval < cooloff, metric-driven scale-ups can never fire.
 	// The guard `cooloff > 0` reflects the "0 means disabled" semantics: when cooloff is
@@ -128,6 +174,24 @@ func (a *scalingAlgorithmNoSync) ValidateConfig(ctx context.Context, config ifac
 	cooloff := config.GetInt64Field(configNoSyncScaleUpCooloffMsKey, configNoSyncScaleUpCooloffMsDefault)
 	if cooloff > 0 && pollInterval < cooloff {
 		return fmt.Errorf("metrics_poll_interval_ms (%d) must be >= scale_up_cooloff_ms (%d), otherwise metric-driven scale-ups will never fire", pollInterval, cooloff)
+	}
+
+	if epsilon := config.GetFloat64Field(configNoSyncScaleUpDispatchRateEpsilonKey, configNoSyncScaleUpDispatchRateEpsilonDefault); epsilon > 0 {
+		if epsilon > configNoSyncScaleUpDispatchRateEpsilonMax {
+			return fmt.Errorf("scale_up_dispatch_rate_epsilon (%v) must be <= %v: it is a relative band (fraction of the dispatch rate)", epsilon, configNoSyncScaleUpDispatchRateEpsilonMax)
+		}
+		confirmMs := config.GetInt64Field(configNoSyncScaleUpDispatchRateEpsilonConfirmMsKey, configNoSyncScaleUpDispatchRateEpsilonConfirmMsDefault)
+		suppressMs := config.GetInt64Field(configNoSyncSuppressScaleUpMsKey, configNoSyncSuppressScaleUpMsDefault)
+		suppressPollMs := config.GetInt64Field(configNoSyncSuppressPollIntervalMsKey, configNoSyncSuppressPollIntervalMsDefault)
+		if confirmMs <= pollInterval {
+			return fmt.Errorf("scale_up_dispatch_rate_epsilon_confirm_ms (%d) must be > metrics_poll_interval_ms (%d): at or below one poll interval, suppression fires on the second poll regardless and the confirm window has no effect", confirmMs, pollInterval)
+		}
+		if suppressPollMs <= 0 {
+			return fmt.Errorf("suppress_poll_interval_ms (%d) must be > 0 when scale_up_dispatch_rate_epsilon > 0", suppressPollMs)
+		}
+		if suppressMs <= suppressPollMs {
+			return fmt.Errorf("suppress_scale_up_ms (%d) must be > suppress_poll_interval_ms (%d), otherwise the suppression decision expires between polls", suppressMs, suppressPollMs)
+		}
 	}
 
 	return nil
@@ -162,7 +226,15 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 		nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
 		elapsedMs := nowMs - lastScaleUpMs
 
-		if elapsedMs >= cooloffMs {
+		// Obey the poll's per-queue suppression decision for this task-add's queue type.
+		// The detector runs per queue type.
+		qName := queueTypeName[event.TaskQueueType]
+		suppressed := nowMs < priorState.GetInt64Field(fmt.Sprintf(stateSuppressScaleUpUntilKeyFmt, qName), 0)
+
+		if suppressed {
+			logger.Info("Suppressed scale-up ", "queue_type", qName, "elapsed_ms", elapsedMs)
+			throttledCount = event.NoSyncMatchSignalsSinceLast
+		} else if elapsedMs >= cooloffMs {
 			actions = append(actions, ScalingAction{Action: ActionTypeInvokeWorker})
 			updatedState[stateLastScaleUpTimestampKey] = nowMs
 		} else {
@@ -199,50 +271,103 @@ func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config 
 	}
 
 	pollIntervalMs := config.GetInt64Field(configNoSyncMetricsPollIntervalMsKey, configNoSyncMetricsPollIntervalMsDefault)
-	nextPoll := time.Duration(pollIntervalMs) * time.Millisecond
 	cooloffMs := config.GetInt64Field(configNoSyncScaleUpCooloffMsKey, configNoSyncScaleUpCooloffMsDefault)
 	backlogThreshold := config.GetInt64Field(configNoSyncScaleUpBacklogThresholdKey, configNoSyncScaleUpBacklogThresholdDefault)
 	maxWorkerLifetimeMs := config.GetInt64Field(configNoSyncMaxWorkerLifetimeMsKey, configNoSyncMaxWorkerLifetimeMsDefault)
-	epsilon := config.GetFloat64Field(configNoSyncScaleUpDispatchRateEpsilonKey, configNoSyncScaleUpDispatchRateEpsilonDefault)
 	lastScaleUpMs := priorState.GetInt64Field(stateLastScaleUpTimestampKey, 0)
 	nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
 	elapsedSinceScaleUp := nowMs - lastScaleUpMs
 
+	suppressedAny := false
 	scaleUp := false
 	for _, q := range []struct {
-		qName   string
+		qType   enumspb.TaskQueueType
 		metrics *iface.QueueTypeScalingMetrics
 	}{
-		{"workflow", metricsSnapshot.Workflow},
-		{"activity", metricsSnapshot.Activity},
-		{"nexus", metricsSnapshot.Nexus},
+		{enumspb.TASK_QUEUE_TYPE_WORKFLOW, metricsSnapshot.Workflow},
+		{enumspb.TASK_QUEUE_TYPE_ACTIVITY, metricsSnapshot.Activity},
+		{enumspb.TASK_QUEUE_TYPE_NEXUS, metricsSnapshot.Nexus},
 	} {
+		suppressed := a.shouldSuppressScaleUpWhenDispatchWithinEpsilon(ctx, config, priorState, updatedState, queueTypeName[q.qType], q.metrics, nowMs, backlogThreshold)
+		suppressedAny = suppressedAny || suppressed
 		if q.metrics == nil {
 			continue
 		}
 		backlog := q.metrics.LastBacklogCount
-		currentRate := float64(q.metrics.LastProcessingRate)
-		lastDispatchRateKey := fmt.Sprintf(stateLastDispatchRateKeyFmt, q.qName)
-		lastRate := priorState.GetFloat64Field(lastDispatchRateKey, -1)
 
 		perTypeScaleUp := false
 		if backlog > backlogThreshold && elapsedSinceScaleUp >= cooloffMs {
 			perTypeScaleUp = true
 		}
+		if perTypeScaleUp && suppressed {
+			perTypeScaleUp = false
+		}
 		if !perTypeScaleUp && maxWorkerLifetimeMs > 0 && backlog > 0 && elapsedSinceScaleUp >= maxWorkerLifetimeMs {
 			perTypeScaleUp = true
 		}
-		if perTypeScaleUp && epsilon > 0 && lastRate >= 0 && math.Abs(currentRate-lastRate) <= epsilon {
-			perTypeScaleUp = false
-		}
-
 		scaleUp = scaleUp || perTypeScaleUp
-		updatedState[lastDispatchRateKey] = currentRate
 	}
 	if scaleUp {
 		actions = append(actions, ScalingAction{Action: ActionTypeInvokeWorker})
 		updatedState[stateLastScaleUpTimestampKey] = nowMs
 	}
 
+	// Back off to the (longer) suppress interval while any queue is actively suppressing -- finer than the
+	// ~30s dispatch-rate averaging window adds no signal.
+	nextPollMs := pollIntervalMs
+	if suppressedAny {
+		nextPollMs = config.GetInt64Field(configNoSyncSuppressPollIntervalMsKey, configNoSyncSuppressPollIntervalMsDefault)
+	}
+	nextPoll := time.Duration(nextPollMs) * time.Millisecond
+
 	return &MetricsPollResponse{Actions: actions, Status: updatedState, NextPoll: &nextPoll}, nil
+}
+
+func (a *scalingAlgorithmNoSync) shouldSuppressScaleUpWhenDispatchWithinEpsilon(ctx context.Context, config iface.ScalingAlgorithmConfig, priorState iface.ScalingAlgorithmStatus, updatedState map[string]any, qName string, metrics *iface.QueueTypeScalingMetrics, nowMs int64, backlogThreshold int64) bool {
+	dispatchRateWithinEpsilonSinceKey := fmt.Sprintf(stateDispatchRateWithinEpsilonSinceKeyFmt, qName)
+	suppressUntilKey := fmt.Sprintf(stateSuppressScaleUpUntilKeyFmt, qName)
+	refRateKey := fmt.Sprintf(stateDispatchRefRateKeyFmt, qName)
+
+	epsilon := config.GetFloat64Field(configNoSyncScaleUpDispatchRateEpsilonKey, configNoSyncScaleUpDispatchRateEpsilonDefault)
+	if epsilon <= 0 {
+		delete(updatedState, suppressUntilKey)
+		delete(updatedState, dispatchRateWithinEpsilonSinceKey)
+		delete(updatedState, refRateKey)
+		return false
+	}
+
+	if metrics == nil {
+		return false
+	}
+	rate := float64(metrics.LastProcessingRate)
+	backlog := metrics.LastBacklogCount
+
+	dispatchRateWithinEpsilonSince := priorState.GetInt64Field(dispatchRateWithinEpsilonSinceKey, 0)
+	suppressUntil := priorState.GetInt64Field(suppressUntilKey, 0)
+	refRate := priorState.GetFloat64Field(refRateKey, -1)
+
+	confirmMs := config.GetInt64Field(configNoSyncScaleUpDispatchRateEpsilonConfirmMsKey, configNoSyncScaleUpDispatchRateEpsilonConfirmMsDefault)
+	suppressMs := config.GetInt64Field(configNoSyncSuppressScaleUpMsKey, configNoSyncSuppressScaleUpMsDefault)
+
+	scaleUpForBacklog := backlog > backlogThreshold
+	band := epsilon * refRate
+	dispatchRateOutsideEpsilonBand := refRate >= 0 && math.Abs(rate-refRate) > band
+
+	switch {
+	case !scaleUpForBacklog || dispatchRateOutsideEpsilonBand || rate <= 0:
+		suppressUntil, dispatchRateWithinEpsilonSince, refRate = 0, 0, -1
+	case dispatchRateWithinEpsilonSince == 0:
+		dispatchRateWithinEpsilonSince, refRate = nowMs, rate
+	case nowMs-dispatchRateWithinEpsilonSince >= confirmMs:
+		if suppressUntil <= nowMs {
+			safeActivityLogger(ctx).Info("dispatch rate within epsilon band: suppressing scale-up", "queue_type", qName, "dispatch_rate", rate, "backlog", backlog)
+		}
+		suppressUntil = nowMs + suppressMs
+	}
+
+	updatedState[dispatchRateWithinEpsilonSinceKey] = dispatchRateWithinEpsilonSince
+	updatedState[refRateKey] = refRate
+	updatedState[suppressUntilKey] = suppressUntil
+
+	return suppressUntil > nowMs
 }
