@@ -41,6 +41,7 @@ func ClientProvider(
 		visibilityManager:            visibilityManager,
 		maxIDLengthLimit:             dynamicconfig.MaxIDLengthLimit.Get(dc),
 		visibilityMaxPageSize:        dynamicconfig.FrontendVisibilityMaxPageSize.Get(dc),
+		workerControllerEnabled:      WorkerControllerEnabled.Get(dc),
 		maxWorkerControllerInstances: WorkerControllerMaxInstances.Get(dc),
 		testHooks:                    testHooks,
 		metricsHandler:               metricsHandler,
