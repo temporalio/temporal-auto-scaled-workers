@@ -355,7 +355,7 @@ main.two-column {
   color: var(--muted);
 }
 
-/* ---- flat-dispatch-rate detection extension ---- */
+/* ---- dispatch-rate-within-epsilon detection ---- */
 .slot-bar .slot.warming {
   background: repeating-linear-gradient(45deg, var(--border) 0 3px, rgba(255,152,0,0.45) 3px 6px);
 }

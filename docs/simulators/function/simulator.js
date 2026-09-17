@@ -14,12 +14,12 @@
   let nextWorkId = 1;
   let nextConsumerId = 1;
   let lastMetricsPollRealTime = 0;
-  // --- flat dispatch rate detection state (engages only when dispatch-rate epsilon > 0) ---
-  let flatSinceMs = 0;          // when dispatch first went flat with a backlog (0 = not flat)
-  let suppressUntilMs = 0;      // fast-path suppression flag: growth gated while now < this
-  let refRate = -1;             // dispatch rate anchored when flat began; must move off it to resume (-1 = none)
+  // --- dispatch-rate-within-epsilon detection state (epsilon > 0) ---
+  let dispatchRateWithinEpsilonSinceMs = 0;   // 0 = not within band
+  let suppressUntilMs = 0;      // growth gated while now < this
+  let refRate = -1;             // reference dispatch rate (-1 = none)
   let nextPollIntervalMs = 0;   // adaptive poll: 0 = use the configured interval
-  let gatingStatus = 'off';     // 'off' | 'clear' | 'confirming' | 'suppressed'
+  let suppressionStatus = 'off';     // 'off' | 'clear' | 'confirming' | 'suppressed'
   let noSyncPending = false;    // a no-sync match occurred this batch window (for ~500ms task-add batching)
   let lastBatchRealTime = 0;
   let arrivalTimestamps = [];
@@ -82,7 +82,7 @@
         var v = parseFloat(document.getElementById('coldStart').value);
         return (isNaN(v) || v < 0) ? 0 : v * 1000;
       })(),
-      // --- flat dispatch rate detection knobs (engage only when epsilon > 0) ---
+      // --- dispatch rate within epsilon band detection knobs (engage only when epsilon > 0) ---
       dispatchConfirmMs: (function () {
         var v = parseInt(document.getElementById('dispatchConfirm').value, 10);
         return (isNaN(v) || v < 0) ? 90000 : v;
@@ -278,9 +278,9 @@
     const config = getConfig();
     const now = Date.now();
 
-    // flat dispatch rate detection: the fast path just obeys the poll's persisted suppression lease.
+    // Fast path obeys the poll's suppression lease.
     if (now < suppressUntilMs) {
-      logEvent('suppressed', 'Suppressed', 'Task-add gated (flat dispatch rate)');
+      logEvent('suppressed', 'Suppressed', 'Task-add scale up suppressed (dispatch rate within epsilon band)');
       return;
     }
 
@@ -292,13 +292,11 @@
     }
   }
 
-  // Confirm whether dispatch is at a flat-rate ceiling; persists the verdict (flat_since, ref_rate, suppress lease)
-  // that the fast path reads, and returns whether growth is currently suppressed. epsilon <= 0 clears the verdict and
-  // returns false, reverting to today's behavior. Mirrors detectDispatchCeiling in the Go algorithm (no branch-off).
-  function detectFlatDispatch(config) {
+  // Mirrors shouldSuppressScaleUpWhenDispatchWithinEpsilon in no_sync_match.go.
+  function shouldSuppressScaleUpWhenDispatchWithinEpsilon(config) {
     if (config.scaleUpDispatchRateEpsilon <= 0) {
-      suppressUntilMs = 0; flatSinceMs = 0; refRate = -1;
-      gatingStatus = 'off';
+      suppressUntilMs = 0; dispatchRateWithinEpsilonSinceMs = 0; refRate = -1;
+      suppressionStatus = 'off';
       return false;
     }
 
@@ -306,45 +304,44 @@
     const backlog = queue.length;
     const rate = currentDispatchRate(now);
 
-    const material = backlog > config.scaleUpBacklogThreshold;
+    const scaleUpForBacklog = backlog > config.scaleUpBacklogThreshold;
     const band = config.scaleUpDispatchRateEpsilon * refRate;         // RELATIVE band (fraction of dispatch)
-    const moved = refRate >= 0 && Math.abs(rate - refRate) > band;    // dispatch rose OR dropped
+    const dispatchRateOutsideEpsilonBand = refRate >= 0 && Math.abs(rate - refRate) > band;
 
-    if (!material || moved || rate <= 0) {
-      suppressUntilMs = 0; flatSinceMs = 0; refRate = -1;             // resume: clear the verdict
-    } else if (flatSinceMs === 0) {
-      flatSinceMs = now; refRate = rate;                             // anchor the bar; start confirming
-    } else if (now - flatSinceMs >= config.dispatchConfirmMs) {
-      suppressUntilMs = now + config.dispatchSuppressMs;             // confirmed flat dispatch -> suppress
+    if (!scaleUpForBacklog || dispatchRateOutsideEpsilonBand || rate <= 0) {
+      suppressUntilMs = 0; dispatchRateWithinEpsilonSinceMs = 0; refRate = -1;
+    } else if (dispatchRateWithinEpsilonSinceMs === 0) {
+      dispatchRateWithinEpsilonSinceMs = now; refRate = rate;
+    } else if (now - dispatchRateWithinEpsilonSinceMs >= config.dispatchConfirmMs) {
+      suppressUntilMs = now + config.dispatchSuppressMs;
     }
 
     const suppressed = suppressUntilMs > now;
-    gatingStatus = suppressed ? 'suppressed' : (flatSinceMs !== 0 ? 'confirming' : 'clear');
+    suppressionStatus = suppressed ? 'suppressed' : (dispatchRateWithinEpsilonSinceMs !== 0 ? 'confirming' : 'clear');
     return suppressed;
   }
 
-  // One scale-up per poll: growth (gated by the suppression verdict) OR maintenance (lifetime refresh, never gated).
-  // Cadence backs off while suppressing. epsilon <= 0 -> detectFlatDispatch returns false -> exactly today's behavior.
+  // Mirrors ProcessMetricsPoll in no_sync_match.go.
   function processMetricsPoll() {
     const config = getConfig();
-    const suppressed = detectFlatDispatch(config);
+    const suppressed = shouldSuppressScaleUpWhenDispatchWithinEpsilon(config);
     nextPollIntervalMs = suppressed ? config.suppressPollIntervalMs : config.metricsPollIntervalMs;
 
     const now = Date.now();
     const backlog = queue.length;
-    const growth = backlog > config.scaleUpBacklogThreshold && (now - lastScaleUpTimeMs) >= config.scaleUpCooloffMs;
-    const maintenance = config.maxWorkerLifetimeMs > 0 && backlog > 0 && (now - lastScaleUpTimeMs) >= config.maxWorkerLifetimeMs;
+    const scaleUpForBacklog = backlog > config.scaleUpBacklogThreshold && (now - lastScaleUpTimeMs) >= config.scaleUpCooloffMs;
+    const workerLifetimeRefresh = config.maxWorkerLifetimeMs > 0 && backlog > 0 && (now - lastScaleUpTimeMs) >= config.maxWorkerLifetimeMs;
 
-    if (growth && !suppressed) {
+    if (scaleUpForBacklog && !suppressed) {
       invokeWorker('Poll: backlog growth');
-    } else if (maintenance) {
-      invokeWorker('Poll: maintenance (lifetime refresh)');
+    } else if (workerLifetimeRefresh) {
+      invokeWorker('Poll: worker lifetime refresh');
     } else if (suppressed) {
-      logEvent('suppressed', 'Suppressed', 'Poll: growth gated (flat dispatch rate)');
+      logEvent('suppressed', 'Suppressed', 'Poll: scale up suppressed (dispatch rate within epsilon band)');
     } else if (backlog === 0) {
       logEvent('no-action', 'No action', 'Poll: queue empty');
     } else {
-      logEvent('no-action', 'No action', 'Poll: ' + gatingStatus);
+      logEvent('no-action', 'No action', 'Poll: ' + suppressionStatus);
     }
   }
 
@@ -410,7 +407,7 @@
     if (n > 0) addItems(n);
   }
 
-  // shade the Workers & backlog chart during flat-dispatch suppression windows
+  // shade the Workers & backlog chart during scale-up suppression windows
   const suppressionShadePlugin = {
     id: 'suppressionShade',
     beforeDatasetsDraw: function (c) {
@@ -547,7 +544,7 @@
 
     if (now - lastChartSampleTime >= CHART_SAMPLE_MS) {
       lastChartSampleTime = now;
-      chartData.push({ t: now, consumers: consumers.length, queue: queue.length, suppressed: gatingStatus === 'suppressed' });
+      chartData.push({ t: now, consumers: consumers.length, queue: queue.length, suppressed: suppressionStatus === 'suppressed' });
       chartData = chartData.filter(function (d) { return d.t >= now - CHART_WINDOW_MS; });
       rateChartData.push({
         t: now,
@@ -591,7 +588,7 @@
     const detectorEl = document.getElementById('detectorState');
     if (detectorEl) {
       const on = config.scaleUpDispatchRateEpsilon > 0;
-      const state = on ? gatingStatus : 'off';
+      const state = on ? suppressionStatus : 'off';
       detectorEl.textContent = on ? state : 'off (ε=0)';
       detectorEl.className = 'metric-value detector-' + state;
     }
@@ -668,11 +665,11 @@
     nextWorkId = 1;
     lastScaleUpTimeMs = 0;
     lastMetricsPollRealTime = 0;
-    flatSinceMs = 0;
+    dispatchRateWithinEpsilonSinceMs = 0;
     suppressUntilMs = 0;
     refRate = -1;
     nextPollIntervalMs = 0;
-    gatingStatus = 'off';
+    suppressionStatus = 'off';
     noSyncPending = false;
     lastBatchRealTime = 0;
     creationHistory = [];
@@ -687,11 +684,11 @@
     render();
   }
 
-  // One-click parameter presets. Realistic ceiling and its ε=0 baseline share the same workload
+  // One-click parameter presets. The ε>0 preset and its ε=0 baseline share the same workload
   // (arrival 30 vs dispatch cap 15) and differ only in the detector epsilon, so flipping between
   // them shows the detector's effect directly. Fills the inputs, resets, and starts.
   const PROFILES = {
-    realistic: {
+    positiveEpsilon: {
       slotsPerConsumer: 5, workDurationMin: 8, workDurationMax: 12,
       arrivalRate: 30, itemsPerClick: 1, maxDispatchRate: 15,
       workerExitAfter: 120, coldStart: 3, maxWorkers: 150,
@@ -699,7 +696,7 @@
       maxWorkerLifetime: 90000, scaleUpDispatchRateEpsilon: 0.05,
       dispatchConfirm: 15000, dispatchSuppress: 60000, suppressPollInterval: 15000
     },
-    baseline: {
+    zeroEpsilon: {
       slotsPerConsumer: 5, workDurationMin: 8, workDurationMax: 12,
       arrivalRate: 30, itemsPerClick: 1, maxDispatchRate: 15,
       workerExitAfter: 120, coldStart: 3, maxWorkers: 150,

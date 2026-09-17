@@ -27,7 +27,7 @@
             </ol>
           </li>
         </ol>
-        <p class="detector-note"><strong>ε &gt; 0 enables the flat dispatch rate detection (proposal):</strong> the poll's "dispatch flat despite a backlog" verdict is confirmed over a window, persisted, and read by the <em>task-add</em> path, which simply obeys the suppression lease — so growth is gated on both paths, while <em>lifetime maintenance</em> stays on the poll path; the poll backs off (re-checks less often) while suppressing. <strong>ε = 0 is exactly today's behavior.</strong> Cold start and the dispatch-rate window model real-world physics; the fast path fires per ~500&nbsp;ms no-sync signal batch (fixed).</p>
+        <p class="detector-note"><strong>ε &gt; 0 enables dispatch-rate-within-epsilon suppression:</strong> when a queue's dispatch rate holds within the band under a backlog, scale-up is suppressed on both the poll and <em>task-add</em> paths (<em>lifetime maintenance</em> is not); the poll backs off while suppressing.</p>
       </div>
       <div>
         <h3>Scale-down</h3>
@@ -48,8 +48,8 @@
       <h2>Parameters</h2>
       <div class="profiles">
         <span class="profiles-label">Presets:</span>
-        <button type="button" class="profile-btn" data-profile="realistic">Realistic ceiling</button>
-        <button type="button" class="profile-btn" data-profile="baseline">Ceiling, ε=0 (today)</button>
+        <button type="button" class="profile-btn" data-profile="positiveEpsilon">ε &gt; 0</button>
+        <button type="button" class="profile-btn" data-profile="zeroEpsilon">ε = 0</button>
       </div>
       <div class="control-group">
         <h3>Simulation Parameters</h3>
@@ -118,7 +118,7 @@
         </div>
       </div>
       <div class="control-group">
-        <h3>Flat dispatch rate detection <span class="detector-hint">— engages when ε &gt; 0</span></h3>
+        <h3>Dispatch-within-ε detection <span class="detector-hint">— engages when ε &gt; 0</span></h3>
         <div class="control-grid">
           <label>
             <span>Confirm window (ms)</span>
@@ -175,7 +175,7 @@
           <span class="metric-unit">s</span>
         </div>
         <div class="metric-col">
-          <span class="metric-label">Flat dispatch rate detection</span>
+          <span class="metric-label">Dispatch-within-ε detection</span>
           <span id="detectorState" class="metric-value detector-off">off</span>
         </div>
       </div>
