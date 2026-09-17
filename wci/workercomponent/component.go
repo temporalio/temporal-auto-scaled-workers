@@ -57,7 +57,13 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 	}
 	registry.RegisterWorkflowWithOptions(versionWorkflow, workflow.RegisterOptions{Name: iface.WorkerControllerInstanceWorkflowType})
 	validateWorkflow := func(ctx workflow.Context, args *iface.ValidateWorkerControllerInstanceSpecWorkflowArgs) error {
-		return instancewf.ValidateSpecWorkflow(ctx, args, activities)
+		validateWorkflowVersionGetter := func() instancewf.WorkerControllerValidateWorkflowVersion {
+			return instancewf.WorkerControllerValidateWorkflowVersion(client.WorkerControllerValidateWorkflowVersion.Get(s.dynamicConfig)(ns.Name().String()))
+		}
+		workerControllerEnabledGetter := func() bool {
+			return client.WorkerControllerEnabled.Get(s.dynamicConfig)(ns.Name().String())
+		}
+		return instancewf.ValidateSpecWorkflow(ctx, validateWorkflowVersionGetter, workerControllerEnabledGetter, args, activities)
 	}
 	registry.RegisterWorkflowWithOptions(validateWorkflow, workflow.RegisterOptions{Name: iface.WorkerControllerInstanceValidateWorkflowType})
 	registry.RegisterActivity(activities)

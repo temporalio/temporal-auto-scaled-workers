@@ -35,6 +35,11 @@ var (
 		4,
 		`WorkerControllerInstanceWorkflowVersion controls what version of the logic should the manager workflows use.`,
 	)
+	WorkerControllerValidateWorkflowVersion = dynamicconfig.NewNamespaceIntSetting(
+		"workercontroller.validateWorkflowVersion",
+		1,
+		`WorkerControllerValidateWorkflowVersion controls what version of the logic should the validate workflows use.`,
+	)
 	WorkerControllerMinSignalIntervalNoSyncMatchMilliseconds = dynamicconfig.NewNamespaceIntSetting(
 		"workercontroller.hook.min_signal_interval_no_sync_match",
 		500,
