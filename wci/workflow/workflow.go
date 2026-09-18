@@ -230,6 +230,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 				return
 			}
 			nextPollDuration := d.pullStatsAndUpdate(timerCtx)
+			d.logger.Info("WCI-DEBUG poll fired (pullStats)", "next_poll", nextPollDuration)
 
 			// for now we don't want to mark things as dirty to avoid excessive CaN
 			// d.stateChanged = true
@@ -279,10 +280,15 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	// timer, then block on Await until a new signal (channel Len), a ready timer (HasPending), or a
 	// CaN condition. Await reads the channel's Len() directly, so the task-add channel needs no
 	// selector branch and the poll timer can never lose a Select race to the signal.
+	d.logger.Info("WCI-DEBUG run loop entered",
+		"limit_pending", d.limitPendingTaskAddSignals,
+		"chan_len", d.signalHandler.taskAddSignalChannel.Len())
 	for !d.shouldContinueAsNew(ctx) {
+		processed := 0
 		if d.limitPendingTaskAddSignals {
 			d.drainTaskAddSignalChannelToQueue()
 			for i := 0; i < maxTaskAddDrainPerLap && d.processNextQueuedTaskAddSignal(ctx); i++ {
+				processed++
 			}
 		} else {
 			for i := 0; i < maxTaskAddDrainPerLap; i++ {
@@ -291,12 +297,22 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 					break
 				}
 				d.handleNoSyncMatchSignal(ctx, req)
+				processed++
 			}
 		}
 
 		if d.signalHandler.signalSelector.HasPending() {
 			d.signalHandler.signalSelector.Select(ctx)
 		}
+
+		queueLen := 0
+		if d.State != nil {
+			queueLen = len(d.State.PendingTaskAddSignals)
+		}
+		d.logger.Info("WCI-DEBUG loop lap",
+			"processed", processed,
+			"queue_len", queueLen,
+			"chan_len", d.signalHandler.taskAddSignalChannel.Len())
 
 		// Continue immediately (Await won't yield) while a batch remains; block only when idle.
 		if awaitErr := workflow.Await(ctx, func() bool {
