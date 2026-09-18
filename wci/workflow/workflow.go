@@ -36,6 +36,12 @@ const (
 	// seems like a reasonable cutoff while managing workflow state size.
 	maxPendingTaskAddSignals = 4000
 
+	// maxTaskAddDrainPerLap bounds how many task-add signals a single run-loop lap processes
+	// before re-checking timers and continue-as-new, so a large backlog can't monopolize the
+	// loop. The remaining backlog is picked up on the next lap (Await returns without yielding
+	// while work remains, so the batch still drains within one workflow task).
+	maxTaskAddDrainPerLap = 100
+
 	taskAddSignalQueueLimitPatch = "taskAddSignalQueueLimit"
 )
 
@@ -205,21 +211,16 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		d.processPendingTaskAddSignals(ctx)
 	}
 
-	// Setup the signal handler for the two signals we are dealing with
-	d.signalHandler.taskAddSignalChannel = workflow.GetSignalChannel(ctx, iface.SignalTaskAdd)
-	d.signalHandler.signalSelector.AddReceive(d.signalHandler.taskAddSignalChannel, func(c workflow.ReceiveChannel, more bool) {
-		var req *iface.SignalTaskAddRequest
-		c.Receive(ctx, &req)
-
-		if d.limitPendingTaskAddSignals {
-			d.queueTaskAddSignal(req)
-		} else {
-			d.handleNoSyncMatchSignal(ctx, req)
-		}
-	})
-
+	// The poll timer lives in the selector; the task-add channel does not (see the run loop). The
+	// loop drains the channel with ReceiveAsync and blocks on workflow.Await, so the timer never
+	// competes with the signal in a Select and cannot be starved.
 	var addStatsPullTimer func(nextPoll time.Duration)
 	addStatsPullTimer = func(nextPoll time.Duration) {
+		// Persist the deadline so the poll cadence survives continue-as-new: the next run
+		// re-arms for the remaining time instead of a fresh full interval.
+		if d.State != nil {
+			d.State.NextPollTime = timestamppb.New(workflow.Now(ctx).Add(nextPoll))
+		}
 		timerFuture := workflow.NewTimer(timerCtx, nextPoll)
 		d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
 			if err = f.Get(timerCtx, nil); err != nil {
@@ -235,7 +236,21 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 			addStatsPullTimer(nextPollDuration)
 		})
 	}
-	addStatsPullTimer(maxPollInterval)
+	// Arm for the time left on the persisted deadline so a CaN doesn't reset the cadence
+	// (bootstrap to maxPollInterval on the first run, when there is no deadline yet).
+	if d.State != nil && d.State.NextPollTime != nil {
+		remaining := d.State.NextPollTime.AsTime().Sub(workflow.Now(ctx))
+		if remaining < 0 {
+			remaining = 0
+		}
+		addStatsPullTimer(remaining)
+	} else {
+		addStatsPullTimer(maxPollInterval)
+	}
+
+	// Setup the task-add signal channel. It is intentionally NOT added to the selector: the run loop
+	// drains it with ReceiveAsync and wakes on its Len() in the Await condition below.
+	d.signalHandler.taskAddSignalChannel = workflow.GetSignalChannel(ctx, iface.SignalTaskAdd)
 
 	if d.hasMinVersion(PeriodicValidationVersion) {
 		// Read once at run start. Dynamic config changes take effect at the next
@@ -260,22 +275,38 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		addPeriodicValidationTimer()
 	}
 
-	// before we start processing, we quickly drain the task add signals into the queue to make sure
-	// they get processed in this workflow task and not further queued for the next one. This makes
-	// it easier to debug the resulting queue.
-	if d.limitPendingTaskAddSignals {
-		d.drainTaskAddSignalChannelToQueue()
-	}
-
-	// Keep waiting for signals, when it's time to CaN the main goroutine will exit.
+	// Run loop. Each lap: drain buffered task-adds (ReceiveAsync), process the queue, run any ready
+	// timer, then block on Await until a new signal (channel Len), a ready timer (HasPending), or a
+	// CaN condition. Await reads the channel's Len() directly, so the task-add channel needs no
+	// selector branch and the poll timer can never lose a Select race to the signal.
 	for !d.shouldContinueAsNew(ctx) {
-		if d.limitPendingTaskAddSignals && d.processNextQueuedTaskAddSignal(ctx) {
-			continue
+		if d.limitPendingTaskAddSignals {
+			d.drainTaskAddSignalChannelToQueue()
+			for i := 0; i < maxTaskAddDrainPerLap && d.processNextQueuedTaskAddSignal(ctx); i++ {
+			}
+		} else {
+			for i := 0; i < maxTaskAddDrainPerLap; i++ {
+				var req *iface.SignalTaskAddRequest
+				if !d.signalHandler.taskAddSignalChannel.ReceiveAsync(&req) {
+					break
+				}
+				d.handleNoSyncMatchSignal(ctx, req)
+			}
 		}
 
-		// process signals after the queue, as any signals that don't go into the queue
-		// are background processes and so should only be done if there is no more urgent work
-		d.signalHandler.signalSelector.Select(ctx)
+		if d.signalHandler.signalSelector.HasPending() {
+			d.signalHandler.signalSelector.Select(ctx)
+		}
+
+		// Continue immediately (Await won't yield) while a batch remains; block only when idle.
+		if awaitErr := workflow.Await(ctx, func() bool {
+			return d.shouldContinueAsNew(ctx) ||
+				d.signalHandler.taskAddSignalChannel.Len() > 0 ||
+				(d.State != nil && len(d.State.PendingTaskAddSignals) > 0) ||
+				d.signalHandler.signalSelector.HasPending()
+		}); awaitErr != nil {
+			break
+		}
 	}
 
 	// instance is deleted -> it's ok to drop all signals and updates.
