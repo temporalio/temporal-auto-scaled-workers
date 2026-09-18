@@ -114,6 +114,7 @@ type (
 		visibilityManager            manager.VisibilityManager
 		maxIDLengthLimit             dynamicconfig.IntPropertyFn
 		visibilityMaxPageSize        dynamicconfig.IntPropertyFnWithNamespaceFilter
+		workerControllerEnabled      dynamicconfig.BoolPropertyFnWithNamespaceFilter
 		maxWorkerControllerInstances dynamicconfig.IntPropertyFnWithNamespaceFilter
 		testHooks                    testhooks.TestHooks
 		metricsHandler               metrics.Handler
@@ -255,6 +256,9 @@ func (d *clientImpl) UpdateWorkerControllerInstance(
 	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, version.BuildId, d.maxIDLengthLimit()); err != nil {
 		return nil, err
 	}
+	if err := d.checkWorkerControllerEnabled(ctx, namespaceEntry); err != nil {
+		return nil, err
+	}
 	if err := d.checkInstanceCount(ctx, namespaceEntry, version); err != nil {
 		return nil, err
 	}
@@ -354,6 +358,10 @@ func (d *clientImpl) ValidateWorkerControllerInstanceSpec(
 
 	if len(upsertScalingGroups) == 0 || len(removeScalingGroups) > 0 {
 		return serviceerror.NewInvalidArgument("No prior compute config found, which means nothing can be removed and something needs to be added to be valid")
+	}
+
+	if err := d.checkWorkerControllerEnabled(ctx, namespaceEntry); err != nil {
+		return err
 	}
 
 	workflowID := uuid.NewString()
@@ -534,6 +542,13 @@ func (d *clientImpl) convertAndRecordError(operation string, version *deployment
 			)
 		}
 	}
+}
+
+func (d *clientImpl) checkWorkerControllerEnabled(ctx context.Context, namespaceEntry *namespace.Namespace) error {
+	if !d.workerControllerEnabled(namespaceEntry.Name().String()) {
+		return serviceerror.NewFailedPrecondition("worker controller is disabled in namespace")
+	}
+	return nil
 }
 
 func (d *clientImpl) checkInstanceCount(ctx context.Context, namespaceEntry *namespace.Namespace, version *deploymentpb.WorkerDeploymentVersion) error {
