@@ -29,9 +29,10 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name              string
-		workflowVersion   WorkerControllerInstanceWorkflowVersion
-		wantPullStatsCall bool
+		name                string
+		reliablePollCadence bool // false = shared-selector loop; true = separate-selector loop
+		workflowVersion     WorkerControllerInstanceWorkflowVersion
+		wantPullStatsCall   bool
 		// wantPromptCompletion distinguishes the fix from the empty-spec short-circuit
 		// in pullStatsAndUpdate: for the implicit-delete path, that short-circuit alone
 		// already keeps PullStats from firing regardless of this fix, since the update
@@ -41,8 +42,10 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 		updateName           string
 		updateArgs           any
 	}{
+		// Shared-selector loop: delete is a timer race, resolved by CancelTimersOnDelete.
 		{
-			name:                 "explicit delete, pre-fix version leaves the timer pending; PullStats still fires once after delete",
+			name:                 "shared-selector, explicit delete, pre-fix leaves the timer pending; PullStats fires once",
+			reliablePollCadence:  false,
 			workflowVersion:      SignalVersionWorkflowVersion,
 			wantPullStatsCall:    true,
 			wantPromptCompletion: false,
@@ -50,7 +53,8 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 			updateArgs:           &iface.DeleteWorkerControllerInstanceRequest{},
 		},
 		{
-			name:                 "explicit delete, fixed version cancels the pending timer; PullStats never fires after delete",
+			name:                 "shared-selector, explicit delete, fixed cancels the pending timer; PullStats never fires",
+			reliablePollCadence:  false,
 			workflowVersion:      CancelTimersOnDeleteVersion,
 			wantPullStatsCall:    false,
 			wantPromptCompletion: true,
@@ -58,7 +62,8 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 			updateArgs:           &iface.DeleteWorkerControllerInstanceRequest{},
 		},
 		{
-			name:                 "implicit delete (last scaling group removed), pre-fix version waits out the pending timer before completing",
+			name:                 "shared-selector, implicit delete, pre-fix waits out the pending timer",
+			reliablePollCadence:  false,
 			workflowVersion:      SignalVersionWorkflowVersion,
 			wantPullStatsCall:    false,
 			wantPromptCompletion: false,
@@ -66,7 +71,28 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 			updateArgs:           &iface.UpdateWorkerControllerInstanceRequest{RemoveScalingGroups: []string{"workflow"}},
 		},
 		{
-			name:                 "implicit delete (last scaling group removed), fixed version cancels the pending timer and completes promptly",
+			name:                 "shared-selector, implicit delete, fixed cancels the pending timer and completes promptly",
+			reliablePollCadence:  false,
+			workflowVersion:      CancelTimersOnDeleteVersion,
+			wantPullStatsCall:    false,
+			wantPromptCompletion: true,
+			updateName:           iface.UpdateWorkerControllerInstance,
+			updateArgs:           &iface.UpdateWorkerControllerInstanceRequest{RemoveScalingGroups: []string{"workflow"}},
+		},
+		// Separate-selector loop: Await wakes on the delete flag directly, so completion is prompt
+		// with no post-delete PullStats — independent of the enum version (no timer-cancel needed).
+		{
+			name:                 "separate-selector, explicit delete completes promptly via Await; no PullStats",
+			reliablePollCadence:  true,
+			workflowVersion:      CancelTimersOnDeleteVersion,
+			wantPullStatsCall:    false,
+			wantPromptCompletion: true,
+			updateName:           iface.DeleteWorkerControllerInstance,
+			updateArgs:           &iface.DeleteWorkerControllerInstanceRequest{},
+		},
+		{
+			name:                 "separate-selector, implicit delete completes promptly via Await; no PullStats",
+			reliablePollCadence:  true,
 			workflowVersion:      CancelTimersOnDeleteVersion,
 			wantPullStatsCall:    false,
 			wantPromptCompletion: true,
@@ -104,6 +130,14 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 			var suite testsuite.WorkflowTestSuite
 			env := suite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(testWorkflow)
+
+			// Pin the patch per case so each runs against its target loop: off = shared-selector
+			// loop, on = separate-selector loop.
+			patchVer := sdkworkflow.DefaultVersion
+			if tc.reliablePollCadence {
+				patchVer = 1
+			}
+			env.OnGetVersion(reliablePollCadencePatch, sdkworkflow.DefaultVersion, 1).Return(patchVer)
 
 			pullStatsCalled := false
 			env.OnActivity(activities.PullStats, mock.Anything, mock.Anything).
