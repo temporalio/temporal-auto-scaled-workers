@@ -36,7 +36,16 @@ const (
 	// seems like a reasonable cutoff while managing workflow state size.
 	maxPendingTaskAddSignals = 4000
 
+	tasBatchSizePerLoopRun = 100
+
 	taskAddSignalQueueLimitPatch = "taskAddSignalQueueLimit"
+
+	// reliablePollCadence: the poll/validation timers move to their own
+	// selector (timerSelector), leaving the task-add signal alone in signalSelector, so the timers
+	// never share a Select with the always ready signal under sustained load. The run loop drains signals and fires due
+	// timers independently and blocks on workflow.Await, so the poll can't be starved; the poll
+	// deadline is persisted across CaN.
+	reliablePollCadencePatch = "reliablePollCadence"
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -66,6 +75,7 @@ type (
 	// SignalHandler encapsulates the signal handling logic
 	SignalHandler struct {
 		signalSelector       workflow.Selector
+		timerSelector        workflow.Selector
 		taskAddSignalChannel workflow.ReceiveChannel
 	}
 
@@ -90,6 +100,7 @@ type (
 		forceCAN      bool
 
 		limitPendingTaskAddSignals bool
+		reliablePollCadence        bool
 
 		// workflowVersion is set at workflow start based on the dynamic config of the worker
 		// that completes the first task. It remains constant for the lifetime of the run and
@@ -126,6 +137,7 @@ func Workflow(ctx workflow.Context, unsafeWorkflowVersionGetter func() WorkerCon
 		unsafePeriodicValidationInterval:     unsafePeriodicValidationInterval,
 		signalHandler: &SignalHandler{
 			signalSelector: workflow.NewSelector(ctx),
+			timerSelector:  workflow.NewSelector(ctx),
 		},
 	}
 
@@ -205,7 +217,13 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		d.processPendingTaskAddSignals(ctx)
 	}
 
-	// Setup the signal handler for the two signals we are dealing with
+	d.reliablePollCadence = d.limitPendingTaskAddSignals && workflow.GetVersion(ctx, reliablePollCadencePatch, workflow.DefaultVersion, 1) > workflow.DefaultVersion
+	timerSel := d.signalHandler.signalSelector
+	if d.reliablePollCadence {
+		timerSel = d.signalHandler.timerSelector
+	}
+
+	// Setup the signal handler for the two signals we are dealing with.
 	d.signalHandler.taskAddSignalChannel = workflow.GetSignalChannel(ctx, iface.SignalTaskAdd)
 	d.signalHandler.signalSelector.AddReceive(d.signalHandler.taskAddSignalChannel, func(c workflow.ReceiveChannel, more bool) {
 		var req *iface.SignalTaskAddRequest
@@ -218,10 +236,16 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		}
 	})
 
+	// Periodic stats-pull timer, re-arming itself on each fire.
 	var addStatsPullTimer func(nextPoll time.Duration)
 	addStatsPullTimer = func(nextPoll time.Duration) {
+		if d.reliablePollCadence && d.State != nil {
+			// persist the next poll time so the poll cadence survives continue-as-new
+			// (the next run re-arms for the remaining time instead of a fresh full interval).
+			d.State.NextPollTime = timestamppb.New(workflow.Now(ctx).Add(nextPoll))
+		}
 		timerFuture := workflow.NewTimer(timerCtx, nextPoll)
-		d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
+		timerSel.AddFuture(timerFuture, func(f workflow.Future) {
 			if err = f.Get(timerCtx, nil); err != nil {
 				d.logger.Debug("Periodic stats timer cancelled, not re-arming", "error", err)
 
@@ -235,7 +259,16 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 			addStatsPullTimer(nextPollDuration)
 		})
 	}
-	addStatsPullTimer(maxPollInterval)
+	if d.reliablePollCadence && d.State != nil && d.State.NextPollTime != nil {
+		remaining := d.State.NextPollTime.AsTime().Sub(workflow.Now(ctx))
+		// Past due timer needs to be armed to get the subsequent ones going on.
+		if remaining < 0 {
+			remaining = 0
+		}
+		addStatsPullTimer(remaining)
+	} else {
+		addStatsPullTimer(maxPollInterval)
+	}
 
 	if d.hasMinVersion(PeriodicValidationVersion) {
 		// Read once at run start. Dynamic config changes take effect at the next
@@ -246,7 +279,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		var addPeriodicValidationTimer func()
 		addPeriodicValidationTimer = func() {
 			timerFuture := workflow.NewTimer(timerCtx, validationInterval)
-			d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
+			timerSel.AddFuture(timerFuture, func(f workflow.Future) {
 				if err = f.Get(timerCtx, nil); err != nil {
 					d.logger.Debug("Periodic validation timer cancelled, not re-arming", "error", err)
 
@@ -260,22 +293,39 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		addPeriodicValidationTimer()
 	}
 
-	// before we start processing, we quickly drain the task add signals into the queue to make sure
-	// they get processed in this workflow task and not further queued for the next one. This makes
-	// it easier to debug the resulting queue.
-	if d.limitPendingTaskAddSignals {
-		d.drainTaskAddSignalChannelToQueue()
-	}
+	if d.reliablePollCadence {
+		for !d.shouldContinueAsNew(ctx) {
+			for i := 0; i < tasBatchSizePerLoopRun && d.processNextQueuedTaskAddSignal(ctx); i++ {
+			}
 
-	// Keep waiting for signals, when it's time to CaN the main goroutine will exit.
-	for !d.shouldContinueAsNew(ctx) {
-		if d.limitPendingTaskAddSignals && d.processNextQueuedTaskAddSignal(ctx) {
-			continue
+			for d.signalHandler.signalSelector.HasPending() {
+				d.signalHandler.signalSelector.Select(ctx)
+			}
+
+			if timerSel.HasPending() {
+				timerSel.Select(ctx)
+			}
+
+			if awaitErr := workflow.Await(ctx, func() bool {
+				return d.shouldContinueAsNew(ctx) ||
+					d.signalHandler.signalSelector.HasPending() ||
+					(d.State != nil && len(d.State.PendingTaskAddSignals) > 0) ||
+					timerSel.HasPending()
+			}); awaitErr != nil {
+				break
+			}
 		}
-
-		// process signals after the queue, as any signals that don't go into the queue
-		// are background processes and so should only be done if there is no more urgent work
-		d.signalHandler.signalSelector.Select(ctx)
+	} else {
+		if d.limitPendingTaskAddSignals {
+			// Drain buffered task-adds into the queue so they're processed in this task, not the next.
+			d.drainTaskAddSignalChannelToQueue()
+		}
+		for !d.shouldContinueAsNew(ctx) {
+			if d.limitPendingTaskAddSignals && d.processNextQueuedTaskAddSignal(ctx) {
+				continue
+			}
+			d.signalHandler.signalSelector.Select(ctx)
+		}
 	}
 
 	// instance is deleted -> it's ok to drop all signals and updates.

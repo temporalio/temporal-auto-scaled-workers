@@ -86,6 +86,10 @@ type (
 
 		PendingTaskAddSignals []*SignalTaskAddRequest `json:"pending_task_add_signals,omitempty"`
 
+		// NextPollTime is the persisted deadline for the next metrics poll; carried across
+		// continue-as-new so the poll cadence survives CaN.
+		NextPollTime *timestamppb.Timestamp `json:"next_poll_time,omitempty"`
+
 		ConflictToken        []byte                 `json:"conflict_token,omitempty"`
 		CreateTime           *timestamppb.Timestamp `json:"create_time,omitempty"`
 		LastModifierIdentity string                 `json:"last_modifier_identity,omitempty"`
