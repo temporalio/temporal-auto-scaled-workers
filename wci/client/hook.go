@@ -2,10 +2,12 @@ package client
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
@@ -95,6 +97,13 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 
 	exists, err := th.client.WorkerControllerInstanceExists(ctx, th.namespace, event.DeploymentVersion)
 	if err != nil {
+		var resourceExhaustedErr *serviceerror.ResourceExhausted
+		if errors.As(err, &resourceExhaustedErr) && resourceExhaustedErr.Cause == enumspb.RESOURCE_EXHAUSTED_CAUSE_BUSY_WORKFLOW {
+			th.logger.Warn("Matching service busy when checking WCI workflow existence", tag.Error(err), tag.WorkflowID(workflowID))
+			iface.WorkerControllerInstanceMatchingServiceBusyCount.With(th.metricsHandler).Record(1)
+			return
+		}
+
 		th.logger.Error("Failed to check for existence of worker controller instance workflow", tag.Error(err), tag.WorkflowID(workflowID))
 		iface.WorkerControllerInstanceProcessTaskMatchErrorCount.With(th.metricsHandler).Record(1)
 		return
