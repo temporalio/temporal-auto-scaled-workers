@@ -139,8 +139,8 @@ func TestProcessTaskAdd_ExistsErrorClassification(t *testing.T) {
 			})
 
 			snapshot := capture.Snapshot()
-			require.Equal(t, tc.wantBusy, countMetric(snapshot, iface.WorkerControllerInstanceMatchingServiceBusyCount.Name()),
-				"matching-busy count")
+			require.Equal(t, tc.wantBusy, countMetric(snapshot, iface.WorkerControllerInstanceWorkflowBusyCount.Name()),
+				"workflow-busy count")
 			require.Equal(t, tc.wantError, countMetric(snapshot, iface.WorkerControllerInstanceProcessTaskMatchErrorCount.Name()),
 				"task-match error count")
 			require.Zero(t, client.signalCalls, "no signal should be sent when the existence check fails")
@@ -164,6 +164,6 @@ func TestProcessTaskAdd_ExistingInstanceSignals(t *testing.T) {
 
 	snapshot := capture.Snapshot()
 	require.Equal(t, 1, client.signalCalls)
-	require.Zero(t, countMetric(snapshot, iface.WorkerControllerInstanceMatchingServiceBusyCount.Name()))
+	require.Zero(t, countMetric(snapshot, iface.WorkerControllerInstanceWorkflowBusyCount.Name()))
 	require.Zero(t, countMetric(snapshot, iface.WorkerControllerInstanceProcessTaskMatchErrorCount.Name()))
 }
