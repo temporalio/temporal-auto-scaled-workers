@@ -8,7 +8,7 @@ require (
 	go.temporal.io/api v1.62.15-0.20260622232249-060670b1b866
 	go.temporal.io/auto-scaled-workers v0.0.0
 	go.temporal.io/sdk v1.41.1
-	go.temporal.io/server v1.29.0-135.0.0.20260625053956-d4cab6b2b2ff
+	go.temporal.io/server v1.31.1
 	google.golang.org/protobuf v1.36.11
 )
 
