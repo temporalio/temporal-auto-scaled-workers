@@ -46,10 +46,10 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name                string
-		reliablePollCadence bool
-		workflowVersion     WorkerControllerInstanceWorkflowVersion
-		wantPullStatsCall   bool
+		name              string
+		useTimerSelector  bool
+		workflowVersion   WorkerControllerInstanceWorkflowVersion
+		wantPullStatsCall bool
 		// wantPromptCompletion distinguishes the fix from the empty-spec short-circuit
 		// in pullStatsAndUpdate: for the implicit-delete path, that short-circuit alone
 		// already keeps PullStats from firing regardless of this fix, since the update
@@ -91,10 +91,10 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 			updateName:           iface.UpdateWorkerControllerInstance,
 			updateArgs:           &iface.UpdateWorkerControllerInstanceRequest{RemoveScalingGroups: []string{"workflow"}},
 		},
-		// The reliable poll cadence loop wakes on the delete flag directly, without needing the timer cancelled.
+		// The timer selector loop wakes on the delete flag directly, without needing the timer cancelled.
 		{
-			name:                 "reliable poll cadence, explicit delete completes promptly; PullStats never fires after delete",
-			reliablePollCadence:  true,
+			name:                 "timer selector, explicit delete completes promptly; PullStats never fires after delete",
+			useTimerSelector:     true,
 			workflowVersion:      CancelTimersOnDeleteVersion,
 			wantPullStatsCall:    false,
 			wantPromptCompletion: true,
@@ -102,8 +102,8 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 			updateArgs:           &iface.DeleteWorkerControllerInstanceRequest{},
 		},
 		{
-			name:                 "reliable poll cadence, implicit delete (last scaling group removed) completes promptly",
-			reliablePollCadence:  true,
+			name:                 "timer selector, implicit delete (last scaling group removed) completes promptly",
+			useTimerSelector:     true,
 			workflowVersion:      CancelTimersOnDeleteVersion,
 			wantPullStatsCall:    false,
 			wantPromptCompletion: true,
@@ -142,11 +142,11 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 			var suite testsuite.WorkflowTestSuite
 			env := suite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(testWorkflow)
-			reliablePollCadenceVersion := sdkworkflow.DefaultVersion
-			if tc.reliablePollCadence {
-				reliablePollCadenceVersion = 1
+			timerSelectorVersion := sdkworkflow.DefaultVersion
+			if tc.useTimerSelector {
+				timerSelectorVersion = 1
 			}
-			env.OnGetVersion(reliablePollCadencePatch, sdkworkflow.DefaultVersion, 1).Return(reliablePollCadenceVersion)
+			env.OnGetVersion(timerSelectorPatch, sdkworkflow.DefaultVersion, 1).Return(timerSelectorVersion)
 
 			pullStatsCalled := false
 			env.OnActivity(activities.PullStats, mock.Anything, mock.Anything).
@@ -229,8 +229,8 @@ func newEnabledTestEnv(t *testing.T, workflowVersion WorkerControllerInstanceWor
 	h.env = suite.NewTestWorkflowEnvironment()
 	h.env.SetWorkflowRunTimeout(enabledTestRunTimeout)
 	h.env.RegisterWorkflow(h.testWorkflow)
-	// The reliable poll cadence loop CaNs as soon as an update lands, before these tests' follow-up delete.
-	h.env.OnGetVersion(reliablePollCadencePatch, sdkworkflow.DefaultVersion, 1).Return(sdkworkflow.DefaultVersion)
+	// The timer selector loop CaNs as soon as an update lands, before these tests' follow-up delete.
+	h.env.OnGetVersion(timerSelectorPatch, sdkworkflow.DefaultVersion, 1).Return(sdkworkflow.DefaultVersion)
 
 	// Track when each mock activity is called
 	h.env.OnActivity(activities.PullStats, mock.Anything, mock.Anything).

@@ -38,15 +38,14 @@ const (
 	// seems like a reasonable cutoff while managing workflow state size.
 	maxPendingTaskAddSignals = 4000
 
-	tasBatchSizePerLoopRun = 100
+	taskAddSignalBatchSizePerRunLoopIteration = 100
 
 	taskAddSignalQueueLimitPatch = "taskAddSignalQueueLimit"
 
-	// reliablePollCadence: the poll/validation timers move to their own
-	// selector (timerSelector), leaving the task-add signal alone in signalSelector, so the timers
-	// never share a Select with the always ready signal under sustained load.
-	// the poll deadline is persisted across CaN.
-	reliablePollCadencePatch = "reliablePollCadence"
+	// timerSelector: the poll/validation timers move to their own selector, leaving the task-add
+	// signal alone in signalSelector, so the timers never share a Select with the always ready
+	// signal under sustained load. The poll deadline is persisted across CaN.
+	timerSelectorPatch = "timerSelector"
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -106,7 +105,7 @@ type (
 		forceCAN      bool
 
 		limitPendingTaskAddSignals bool
-		reliablePollCadence        bool
+		useTimerSelector           bool
 
 		// workflowVersion is set at workflow start based on the dynamic config of the worker
 		// that completes the first task. It remains constant for the lifetime of the run and
@@ -232,9 +231,9 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		d.processPendingTaskAddSignals(ctx)
 	}
 
-	d.reliablePollCadence = d.limitPendingTaskAddSignals && workflow.GetVersion(ctx, reliablePollCadencePatch, workflow.DefaultVersion, 1) > workflow.DefaultVersion
+	d.useTimerSelector = d.limitPendingTaskAddSignals && workflow.GetVersion(ctx, timerSelectorPatch, workflow.DefaultVersion, 1) > workflow.DefaultVersion
 	timerSel := d.signalHandler.signalSelector
-	if d.reliablePollCadence {
+	if d.useTimerSelector {
 		timerSel = d.signalHandler.timerSelector
 	}
 
@@ -253,7 +252,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 
 	var addStatsPullTimer func(nextPoll time.Duration)
 	addStatsPullTimer = func(nextPoll time.Duration) {
-		if d.reliablePollCadence && d.State != nil {
+		if d.useTimerSelector && d.State != nil {
 			// persist the next poll time so the poll cadence survives continue-as-new
 			// (the next run re-arms for the remaining time instead of a fresh full interval).
 			d.State.NextPollTime = timestamppb.New(workflow.Now(ctx).Add(nextPoll))
@@ -273,7 +272,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 			addStatsPullTimer(nextPollDuration)
 		})
 	}
-	if d.reliablePollCadence && d.State != nil && d.State.NextPollTime != nil {
+	if d.useTimerSelector && d.State != nil && d.State.NextPollTime != nil {
 		remaining := d.State.NextPollTime.AsTime().Sub(workflow.Now(ctx))
 		// Past due timer needs to be armed to get the subsequent ones going on.
 		if remaining < 0 {
@@ -314,8 +313,8 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		d.drainTaskAddSignalChannelToQueue()
 	}
 
-	if d.reliablePollCadence {
-		d.runReliablePollCadenceLoop(ctx, timerSel)
+	if d.useTimerSelector {
+		d.runTimerSelectorLoop(ctx, timerSel)
 	} else {
 		// Keep waiting for signals, when it's time to CaN the main goroutine will exit.
 		for !d.shouldContinueAsNew(ctx) {
@@ -353,12 +352,12 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	return workflow.NewContinueAsNewError(ctx, iface.WorkerControllerInstanceWorkflowType, d.WorkerControllerInstanceWorkflowArgs)
 }
 
-func (d *WorkflowRunner) runReliablePollCadenceLoop(ctx workflow.Context, timerSel workflow.Selector) {
+func (d *WorkflowRunner) runTimerSelectorLoop(ctx workflow.Context, timerSel workflow.Selector) {
 	signalSel := d.signalHandler.signalSelector
 	for !d.shouldContinueAsNew(ctx) {
 		d.processTaskAddBatch(ctx)
 
-		if timerSel.HasPending() {
+		if !d.shouldContinueAsNew(ctx) && timerSel.HasPending() {
 			timerSel.Select(ctx)
 		}
 
@@ -373,7 +372,7 @@ func (d *WorkflowRunner) runReliablePollCadenceLoop(ctx workflow.Context, timerS
 
 func (d *WorkflowRunner) processTaskAddBatch(ctx workflow.Context) {
 	signalSel := d.signalHandler.signalSelector
-	for range tasBatchSizePerLoopRun {
+	for range taskAddSignalBatchSizePerRunLoopIteration {
 		if d.shouldContinueAsNew(ctx) {
 			return
 		}

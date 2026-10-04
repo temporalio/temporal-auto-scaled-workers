@@ -16,7 +16,7 @@ import (
 	"go.temporal.io/server/common/sdk"
 )
 
-type reliablePollCadenceTest struct {
+type timerSelectorTest struct {
 	t                *testing.T
 	env              *testsuite.TestWorkflowEnvironment
 	activities       *Activities
@@ -25,14 +25,14 @@ type reliablePollCadenceTest struct {
 	pullStatsCalled  bool
 }
 
-func newReliablePollCadenceTest(t *testing.T) *reliablePollCadenceTest {
+func newTimerSelectorTest(t *testing.T) *timerSelectorTest {
 	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
 	computeConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{})
 	require.NoError(t, err)
 
 	var suite testsuite.WorkflowTestSuite
-	rt := &reliablePollCadenceTest{
+	rt := &timerSelectorTest{
 		t:          t,
 		env:        suite.NewTestWorkflowEnvironment(),
 		activities: NewActivities(nil, nil, nil),
@@ -50,7 +50,7 @@ func newReliablePollCadenceTest(t *testing.T) *reliablePollCadenceTest {
 		},
 	}
 
-	rt.env.OnGetVersion(reliablePollCadencePatch, sdkworkflow.DefaultVersion, 1).Return(sdkworkflow.Version(1))
+	rt.env.OnGetVersion(timerSelectorPatch, sdkworkflow.DefaultVersion, 1).Return(sdkworkflow.Version(1))
 	rt.env.OnActivity(rt.activities.HandleTaskAddSignal, mock.Anything, mock.Anything).
 		Return(func(_ context.Context, _ HandleTaskAddSignalActivityRequest) (*HandleTaskAddSignalActivityResponse, error) {
 			rt.signalsProcessed++
@@ -62,19 +62,19 @@ func newReliablePollCadenceTest(t *testing.T) *reliablePollCadenceTest {
 	return rt
 }
 
-func (rt *reliablePollCadenceTest) signalAfter(delay time.Duration) {
+func (rt *timerSelectorTest) signalAfter(delay time.Duration) {
 	rt.env.RegisterDelayedCallback(func() {
 		rt.env.SignalWorkflow(iface.SignalTaskAdd, namedTaskAddSignal("workflow"))
 	}, delay)
 }
 
-func (rt *reliablePollCadenceTest) deleteAfter(delay time.Duration) {
+func (rt *timerSelectorTest) deleteAfter(delay time.Duration) {
 	rt.env.RegisterDelayedCallback(func() {
 		rt.env.UpdateWorkflowNoRejection(iface.DeleteWorkerControllerInstance, "del-1", rt.t, &iface.DeleteWorkerControllerInstanceRequest{})
 	}, delay)
 }
 
-func (rt *reliablePollCadenceTest) run() error {
+func (rt *timerSelectorTest) run() error {
 	testWorkflow := func(ctx sdkworkflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
 		return Workflow(ctx,
 			func() WorkerControllerInstanceWorkflowVersion { return CancelTimersOnDeleteVersion },
@@ -111,7 +111,7 @@ func TestPollDeadlineSurvivesContinueAsNew(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rt := newReliablePollCadenceTest(t)
+			rt := newTimerSelectorTest(t)
 			if tc.carriedDeadline > 0 {
 				rt.args.State.NextPollTime = timestamppb.New(rt.env.Now().Add(tc.carriedDeadline))
 			}
@@ -125,8 +125,8 @@ func TestPollDeadlineSurvivesContinueAsNew(t *testing.T) {
 
 // The loop processes at most one batch per lap, so a due poll fires while a multi-batch backlog drains.
 func TestRunLoopPollsWhileDrainingSignalBacklog(t *testing.T) {
-	const backlog = 2*tasBatchSizePerLoopRun + 50
-	rt := newReliablePollCadenceTest(t)
+	const backlog = 2*taskAddSignalBatchSizePerRunLoopIteration + 50
+	rt := newTimerSelectorTest(t)
 	rt.args.State.PendingTaskAddSignals = queuedTaskAddSignals(backlog)
 	rt.args.State.NextPollTime = timestamppb.New(time.Unix(1, 0))
 	rt.deleteAfter(time.Second)
@@ -137,7 +137,7 @@ func TestRunLoopPollsWhileDrainingSignalBacklog(t *testing.T) {
 }
 
 func TestRunLoopWakesOnSignalAndPollTimer(t *testing.T) {
-	rt := newReliablePollCadenceTest(t)
+	rt := newTimerSelectorTest(t)
 	rt.args.State.NextPollTime = timestamppb.New(rt.env.Now().Add(2 * time.Second))
 	rt.signalAfter(time.Second)
 	rt.deleteAfter(5 * time.Second)
@@ -150,8 +150,8 @@ func TestRunLoopWakesOnSignalAndPollTimer(t *testing.T) {
 // More than one batch arrives together with a state-changing update, so the run continues-as-new
 // with signals still buffered in the channel.
 func TestContinueAsNewCarriesBufferedTaskAddSignals(t *testing.T) {
-	const signalsSent = tasBatchSizePerLoopRun + 5
-	rt := newReliablePollCadenceTest(t)
+	const signalsSent = taskAddSignalBatchSizePerRunLoopIteration + 5
+	rt := newTimerSelectorTest(t)
 	rt.env.RegisterDelayedCallback(func() {
 		for range signalsSent {
 			rt.env.SignalWorkflow(iface.SignalTaskAdd, namedTaskAddSignal("workflow"))
@@ -209,7 +209,7 @@ func TestProcessTaskAddBatchDoesNotDropFromFullQueue(t *testing.T) {
 
 	var remaining []string
 	require.NoError(t, env.GetWorkflowResult(&remaining))
-	require.Len(t, remaining, maxPendingTaskAddSignals-tasBatchSizePerLoopRun+1)
+	require.Len(t, remaining, maxPendingTaskAddSignals-taskAddSignalBatchSizePerRunLoopIteration+1)
 	require.Equal(t, "new", remaining[len(remaining)-1])
 }
 
