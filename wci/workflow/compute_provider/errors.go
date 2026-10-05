@@ -37,6 +37,9 @@ const (
 	// FailureInternal means the failure is attributable to worker-controller's own
 	// configuration or credentials rather than the customer's.
 	FailureInternal
+	// FailureConflict means an earlier update of ours is still in flight. The
+	// config is valid; the write is safe to retry once it settles.
+	FailureConflict
 )
 
 // ProviderError carries a FailureClass alongside the underlying error. It is

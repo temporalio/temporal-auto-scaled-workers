@@ -35,6 +35,15 @@ func TestClassifyGCPFailure(t *testing.T) {
 		// Throttles: valid config, capacity unavailable right now.
 		{"resource exhausted", status.Error(codes.ResourceExhausted, "quota"), FailureThrottled},
 
+		// Second case mirrors the shape Cloud Run returns for a version conflict.
+		{"aborted", status.Error(codes.Aborted, "conflict"), FailureConflict},
+		{"aborted version conflict", status.Error(codes.Aborted,
+			"Conflict for resource 'my-worker-pool': version '1' was specified but current version is '2'."),
+			FailureConflict},
+
+		// Not narrowed by ownership: a conflict is a conflict either way.
+		{"wci-owned aborted", wciOwned(status.Error(codes.Aborted, "conflict")), FailureConflict},
+
 		// A rejected token is worker-controller's own credential problem.
 		{"unauthenticated", status.Error(codes.Unauthenticated, "bad token"), FailureInternal},
 		{"creds fetch 401", status.Error(codes.Unauthenticated, credsFetchErr(401)), FailureInternal},
@@ -56,7 +65,6 @@ func TestClassifyGCPFailure(t *testing.T) {
 		{"permission denied", status.Error(codes.PermissionDenied, "denied"), FailureAccessDenied},
 		{"invalid argument", status.Error(codes.InvalidArgument, "bad"), FailureRejected},
 		{"failed precondition", status.Error(codes.FailedPrecondition, "state"), FailureRejected},
-		{"aborted", status.Error(codes.Aborted, "conflict"), FailureRejected},
 
 		// WCI-owned client faults are not narrowed: our own missing resource and our
 		// own denied permission page the same on-call.

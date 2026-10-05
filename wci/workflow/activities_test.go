@@ -1082,6 +1082,7 @@ func TestComputeProviderErrorType(t *testing.T) {
 		{"unavailable", computeprovider.NewProviderError(computeprovider.FailureUnavailable, cause), wcimetrics.ErrorTypeComputeProviderServiceUnavailable},
 		{"throttled", computeprovider.NewProviderError(computeprovider.FailureThrottled, cause), wcimetrics.ErrorTypeComputeProviderThrottled},
 		{"internal", computeprovider.NewProviderError(computeprovider.FailureInternal, cause), wcimetrics.ErrorTypeComputeProviderInternal},
+		{"conflict", computeprovider.NewProviderError(computeprovider.FailureConflict, cause), wcimetrics.ErrorTypeComputeProviderConflict},
 		{"unclassified", computeprovider.NewProviderError(computeprovider.FailureUnclassified, cause), wcimetrics.ErrorTypeComputeProviderFailed},
 		// A provider that doesn't classify falls back rather than being misattributed.
 		{"unwrapped", cause, wcimetrics.ErrorTypeComputeProviderFailed},

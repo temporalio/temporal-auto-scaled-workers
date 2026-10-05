@@ -42,6 +42,10 @@ func classifyGCPFailure(err error) FailureClass {
 		switch st.Code() {
 		case codes.Unavailable, codes.DeadlineExceeded, codes.Internal, codes.Unknown:
 			return FailureUnavailable
+		case codes.Aborted:
+			// Cloud Run rejects a masked update against the version an earlier,
+			// still-reconciling update of ours holds.
+			return FailureConflict
 		case codes.ResourceExhausted:
 			return FailureThrottled
 		case codes.Unauthenticated:

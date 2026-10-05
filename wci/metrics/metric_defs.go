@@ -115,6 +115,9 @@ const (
 	// ErrorTypeComputeProviderThrottled means the provider rate- or
 	// concurrency-limited the request.
 	ErrorTypeComputeProviderThrottled ErrorType = "compute_provider_throttled"
+	// ErrorTypeComputeProviderConflict means an earlier update of ours was still
+	// reconciling. Self-contention, not the customer's config nor a provider outage.
+	ErrorTypeComputeProviderConflict ErrorType = "compute_provider_conflict"
 	// ErrorTypeComputeProviderInternal means the compute provider call failed on
 	// worker-controller-instances's own configuration or credentials rather than the
 	// customer's.
