@@ -100,7 +100,10 @@ A group with no `task_types` acts as a catch-all for any task type not claimed b
 | `scale_up_backlog_threshold` | `0` | Scale up when backlog exceeds this value |
 | `scale_up_cooloff_ms` | `100` | Minimum milliseconds between scale-up actions |
 | `max_worker_lifetime_ms` | `600000` | Re-invoke workers at least this often (10 min) |
-| `scale_up_dispatch_rate_epsilon` | `0` | Suppress scale-up if dispatch rate is stable within this margin |
+| `scale_up_dispatch_rate_epsilon` | `0` | Relative band (a fraction of the dispatch rate, capped at `0.10`); `0` disables it. When set, a queue type's scale-up is suppressed on both the metrics-poll and task-add paths while its dispatch rate holds within this band under a backlog above the scale-up threshold. Worker-lifetime refresh is not suppressed. |
+| `scale_up_dispatch_rate_epsilon_confirm_ms` | `90000` | How long the dispatch rate must stay within the band before scale-up is suppressed. Must be greater than `metrics_poll_interval_ms` when `scale_up_dispatch_rate_epsilon > 0`. |
+| `suppress_scale_up_ms` | `120000` | How long each confirming poll suppresses scale-up for. Must be greater than `suppress_poll_interval_ms` when `scale_up_dispatch_rate_epsilon > 0`. |
+| `suppress_poll_interval_ms` | `90000` | Metrics poll interval while any queue type is suppressed. |
 | `metrics_poll_interval_ms` | `60000` | How often to poll task queue metrics |
 
 ## Client API
