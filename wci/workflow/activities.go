@@ -711,6 +711,8 @@ func computeProviderErrorType(err error) wcimetrics.ErrorType {
 		return wcimetrics.ErrorTypeComputeProviderServiceUnavailable
 	case computeprovider.FailureThrottled:
 		return wcimetrics.ErrorTypeComputeProviderThrottled
+	case computeprovider.FailureConflict:
+		return wcimetrics.ErrorTypeComputeProviderConflict
 	case computeprovider.FailureInternal:
 		return wcimetrics.ErrorTypeComputeProviderInternal
 	default:
