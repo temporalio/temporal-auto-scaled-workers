@@ -1,14 +1,17 @@
 package client
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"google.golang.org/grpc"
 
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/api/historyservicemock/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/log"
@@ -101,4 +104,62 @@ func TestValidateWorkerControllerInstanceSpec_DisabledNamespace(t *testing.T) {
 	var failedPrecondition *serviceerror.FailedPrecondition
 	require.ErrorAs(t, err, &failedPrecondition)
 	require.Contains(t, err.Error(), "worker controller is disabled")
+}
+
+// Test that Describe fails fast instead of querying a workflow that has no worker
+func TestDescribeWorkerControllerInstance_DisabledNamespace(t *testing.T) {
+	d := newTestClient(t, false)
+
+	_, _, err := d.DescribeWorkerControllerInstance(t.Context(), newTestNamespace(), newTestVersion())
+
+	var failedPrecondition *serviceerror.FailedPrecondition
+	require.ErrorAs(t, err, &failedPrecondition)
+	require.Contains(t, err.Error(), "worker controller is disabled")
+}
+
+// Test that Delete terminates the workflow directly when WCI is disabled
+func TestDeleteWorkerControllerInstance_DisabledNamespaceTerminates(t *testing.T) {
+	version := newTestVersion()
+	expectedWorkflowID := GenerateWorkerControllerInstanceWorkflowID(version)
+
+	for _, tc := range []struct {
+		name         string
+		terminateErr error
+		wantErr      bool
+	}{
+		{name: "terminated", terminateErr: nil},
+		{name: "already gone", terminateErr: serviceerror.NewNotFound("not found")},
+		{name: "terminate error", terminateErr: serviceerror.NewUnavailable("unavailable"), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestClient(t, false)
+			historyClient := d.historyClient.(*historyservicemock.MockHistoryServiceClient)
+			historyClient.EXPECT().
+				TerminateWorkflowExecution(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, req *historyservice.TerminateWorkflowExecutionRequest, _ ...grpc.CallOption) (*historyservice.TerminateWorkflowExecutionResponse, error) {
+					require.Equal(t, "test-namespace-id", req.GetNamespaceId())
+					require.Equal(t, expectedWorkflowID, req.GetTerminateRequest().GetWorkflowExecution().GetWorkflowId())
+					require.Equal(t, "test-identity", req.GetTerminateRequest().GetIdentity())
+					return &historyservice.TerminateWorkflowExecutionResponse{}, tc.terminateErr
+				})
+
+			err := d.DeleteWorkerControllerInstance(t.Context(), newTestNamespace(), version, "test-identity")
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// Test that Delete keeps using the update path when WCI is enabled
+func TestDeleteWorkerControllerInstance_EnabledNamespaceUsesUpdate(t *testing.T) {
+	d := newTestClient(t, true)
+	historyClient := d.historyClient.(*historyservicemock.MockHistoryServiceClient)
+	historyClient.EXPECT().
+		UpdateWorkflowExecution(gomock.Any(), gomock.Any()).
+		Return(nil, serviceerror.NewNotFound("not found"))
+
+	require.NoError(t, d.DeleteWorkerControllerInstance(t.Context(), newTestNamespace(), newTestVersion(), "test-identity"))
 }

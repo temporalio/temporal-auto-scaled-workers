@@ -148,6 +148,10 @@ The `TaskHookFactory` returned by `ClientProvider` must be registered with the T
 
 Enable per namespace via the `WorkerControllerEnabled` dynamic config setting.
 
+The WCI service only runs a per-namespace worker where `WorkerControllerEnabled` is true. Workers are reconciled on namespace and membership changes and otherwise every 10 minutes, so after enabling a namespace it can take up to 10 minutes before WCIs make progress.
+
+Disabling a namespace pauses its existing WCIs: update, validate, and describe return `FailedPrecondition`, and scaling stops. Delete still works; it terminates the WCI workflow directly. Re-enabling resumes paused WCIs from their persisted state.
+
 ## Building
 
 ```bash

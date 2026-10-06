@@ -26,9 +26,11 @@ func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory s
 	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory}
 }
 
+// DedicatedWorkerOptions only allocates a worker where WCI is enabled. The manager re-evaluates this on
+// namespace/membership changes and every 10 minutes, so flag flips take effect within that window.
 func (s *workerComponent) DedicatedWorkerOptions(ns *namespace.Namespace) *workercommon.PerNSDedicatedWorkerOptions {
 	return &workercommon.PerNSDedicatedWorkerOptions{
-		Enabled: true,
+		Enabled: client.WorkerControllerEnabled.Get(s.dynamicConfig)(ns.Name().String()),
 	}
 }
 

@@ -352,6 +352,32 @@ func workflowIsRunning(
 	return res.GetWorkflowExecutionInfo().GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil
 }
 
+// terminateWorkflow terminates the current run of workflowID. A missing or already-closed workflow is not an error.
+func terminateWorkflow(
+	ctx context.Context,
+	historyClient historyservice.HistoryServiceClient,
+	namespaceEntry *namespace.Namespace,
+	workflowID string,
+	reason string,
+	identity string,
+) error {
+	_, err := historyClient.TerminateWorkflowExecution(ctx, &historyservice.TerminateWorkflowExecutionRequest{
+		NamespaceId: namespaceEntry.ID().String(),
+		TerminateRequest: &workflowservice.TerminateWorkflowExecutionRequest{
+			Namespace: namespaceEntry.Name().String(),
+			WorkflowExecution: &commonpb.WorkflowExecution{
+				WorkflowId: workflowID,
+			},
+			Reason:   reason,
+			Identity: identity,
+		},
+	})
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return nil
+	}
+	return err
+}
+
 func countWorkerControllerInstances(
 	ctx context.Context,
 	visibilityManager manager.VisibilityManager,

@@ -154,6 +154,10 @@ func (d *clientImpl) DescribeWorkerControllerInstance(
 	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, version.BuildId, d.maxIDLengthLimit()); err != nil {
 		return nil, nil, err
 	}
+	// No worker runs for disabled namespaces, so the query would only time out.
+	if err := d.checkWorkerControllerEnabled(ctx, namespaceEntry); err != nil {
+		return nil, nil, err
+	}
 
 	res, err := queryWorkflowWithRetry(ctx, d.historyClient, namespaceEntry, version, iface.QueryDescribeWorkerControllerInstance, nil)
 	if err != nil {
@@ -401,6 +405,12 @@ func (d *clientImpl) DeleteWorkerControllerInstance(
 	}
 
 	workflowID := GenerateWorkerControllerInstanceWorkflowID(version)
+
+	// No worker runs for disabled namespaces, so the delete update would never complete. The update
+	// handler only ends the workflow, so terminating it is equivalent.
+	if !d.workerControllerEnabled(namespaceEntry.Name().String()) {
+		return terminateWorkflow(ctx, d.historyClient, namespaceEntry, workflowID, "worker controller instance deleted while disabled", identity)
+	}
 
 	requestID := uuid.NewString()
 	updatePayload, err := sdk.PreferProtoDataConverter.ToPayloads(&iface.DeleteWorkerControllerInstanceRequest{
