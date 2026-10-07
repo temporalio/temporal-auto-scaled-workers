@@ -200,7 +200,7 @@ func TestHandleTaskAddSignalReturnsDeferredAction(t *testing.T) {
 		"activity": {"phase": "untouched"},
 	}
 
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	req := HandleTaskAddSignalActivityRequest{
 		Request: event,
 		Spec: &iface.WorkerControllerInstanceSpec{
@@ -245,7 +245,7 @@ func TestHandleDeferredScalingDecisionProcessesAction(t *testing.T) {
 	event := newTestSignalTaskAddEvent()
 	priorStatus := iface.ScalingAlgorithmStatus{"phase": "process"}
 
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	req := HandleDeferredScalingDecisionActivityRequest{
 		Request:            event,
 		ScalingGroupKey:    "workflow",
@@ -334,7 +334,7 @@ func TestHandleDeferredScalingDecisionDropsOnInputErrors(t *testing.T) {
 		},
 	}
 
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	var suite testsuite.WorkflowTestSuite
 
 	for _, tc := range cases {
@@ -384,7 +384,7 @@ func TestHandleDeferredScalingDecisionPropagatesAlgorithmError(t *testing.T) {
 	deferredErr := errors.New("simulated deferred algorithm failure")
 	algo.deferredErr = deferredErr
 
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	req := HandleDeferredScalingDecisionActivityRequest{
 		Request:            newTestSignalTaskAddEvent(),
 		ScalingGroupKey:    "workflow",
@@ -415,7 +415,7 @@ func TestHandleActionsProcessesDeferredScalingDecision(t *testing.T) {
 	computeConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{})
 	require.NoError(t, err)
 
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	event := newTestSignalTaskAddEvent()
 	args := &iface.WorkerControllerInstanceWorkflowArgs{
 		NamespaceName:  "test-namespace",
@@ -517,7 +517,7 @@ func TestHandleActionsDropsDeferredActionGuards(t *testing.T) {
 				currentDeferredScalingDecisionTestAlgorithm = nil
 			})
 
-			activities := NewActivities(nil, nil, nil)
+			activities := NewActivities(nil, nil, nil, nil)
 			args := &iface.WorkerControllerInstanceWorkflowArgs{
 				NamespaceName:  "test-namespace",
 				DeploymentName: "test-deployment",
@@ -583,7 +583,7 @@ func TestHandleNoSyncMatchSignalAppliesStatusBeforeDeferredDispatch(t *testing.T
 	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
 
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	event := newTestSignalTaskAddEvent()
 	args := &iface.WorkerControllerInstanceWorkflowArgs{
 		NamespaceName:  "test-namespace",
@@ -655,7 +655,7 @@ func TestPullStatsAppliesStatusBeforeHandleActions(t *testing.T) {
 	computeConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{})
 	require.NoError(t, err)
 
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	args := &iface.WorkerControllerInstanceWorkflowArgs{
 		NamespaceName:  "test-namespace",
 		DeploymentName: "test-deployment",
@@ -758,7 +758,7 @@ func runDeferredActivityWithFakeClient(t *testing.T, algo *deferredScalingDecisi
 	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
 
-	activities := NewActivities(nil, nil, fake)
+	activities := NewActivities(nil, nil, fake, nil)
 	req := HandleDeferredScalingDecisionActivityRequest{
 		RequestContext: RequestContext{
 			NamespaceName:     "test-namespace",
@@ -911,7 +911,7 @@ func NewTestDynamicConfigCollection() *dynamicconfig.Collection {
 func runInvokeWorkersToRegisterTaskQueues(t *testing.T, fake *fakeWorkflowServiceClient, spec iface.WorkerControllerInstanceSpec, scalingStatus map[string]iface.ScalingAlgorithmStatus) *InvokeWorkersToRegisterTaskQueuesResponse {
 	t.Helper()
 	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
-	activities := NewActivities(ns, NewTestDynamicConfigCollection(), fake)
+	activities := NewActivities(ns, NewTestDynamicConfigCollection(), fake, nil)
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()
@@ -936,7 +936,7 @@ func runInvokeWorkersToRegisterTaskQueues(t *testing.T, fake *fakeWorkflowServic
 func runInvokeWorkersToRegisterTaskQueuesErr(t *testing.T, fake *fakeWorkflowServiceClient, spec iface.WorkerControllerInstanceSpec) (*InvokeWorkersToRegisterTaskQueuesResponse, error) {
 	t.Helper()
 	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
-	activities := NewActivities(ns, NewTestDynamicConfigCollection(), fake)
+	activities := NewActivities(ns, NewTestDynamicConfigCollection(), fake, nil)
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()

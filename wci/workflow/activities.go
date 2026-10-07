@@ -15,7 +15,9 @@ import (
 	"go.temporal.io/api/serviceerror"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	"go.temporal.io/auto-scaled-workers/wci/hostconfig"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
+	"go.temporal.io/auto-scaled-workers/wci/region"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
@@ -46,6 +48,7 @@ type (
 		dc                    *dynamicconfig.Collection
 		namespace             *namespace.Namespace
 		workflowserviceClient workflowservice.WorkflowServiceClient
+		hostConfig            *hostconfig.Config
 	}
 
 	// RequestContext aliases the compute-provider request context so activity
@@ -64,6 +67,8 @@ type (
 		RequestContext
 
 		ComputeConfig *iface.ComputeProviderSpec `json:"compute_config"`
+		// Regions of the scaling group this action targets; the action is skipped when running outside them.
+		RegionIds []string `json:"region_ids,omitempty"`
 	}
 
 	UpdateWorkerSetSizeActivityRequest struct {
@@ -71,6 +76,8 @@ type (
 
 		ComputeConfig *iface.ComputeProviderSpec `json:"compute_config"`
 		UpdatedSize   int32                      `json:"updated_size"`
+		// Regions of the scaling group this action targets; the action is skipped when running outside them.
+		RegionIds []string `json:"region_ids,omitempty"`
 	}
 
 	HandleTaskAddSignalActivityRequest struct {
@@ -170,11 +177,13 @@ func NewActivities(
 	namespace *namespace.Namespace,
 	dc *dynamicconfig.Collection,
 	workflowserviceClient workflowservice.WorkflowServiceClient,
+	hostConfig *hostconfig.Config,
 ) *Activities {
 	return &Activities{
 		dc:                    dc,
 		namespace:             namespace,
 		workflowserviceClient: workflowserviceClient,
+		hostConfig:            hostConfig,
 	}
 }
 
@@ -199,6 +208,16 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	for key, entry := range req.Spec.ScalingGroupSpecs {
 		// Errors here are attributable to this specific scaling group's provider.
 		recordError, _, _ := newActivityRecorders(computeProviderMetrics(metricsHandler, entry.Compute.ProviderType))
+
+		// Without a valid host region, region_ids could never match and the group would be silently ignored.
+		if len(entry.RegionIds) > 0 && a.regionID() == "" {
+			recordError(wcimetrics.ErrorTypeInvalidRequest)
+			reason := "this server has no region configured"
+			if a.hostConfig != nil && a.hostConfig.RegionID != "" {
+				reason = fmt.Sprintf("this server's region %q is not a valid region ID", a.hostConfig.RegionID)
+			}
+			return temporal.NewApplicationError(fmt.Sprintf("%s: region_ids is not supported because %s", key, reason), "InvalidArgument")
+		}
 
 		provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.namespace.Name().String(), a.dc)
 		if err != nil {
@@ -289,9 +308,16 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 			updatedScalingStatus[k] = prior
 		}
 
+		effectiveTaskTypes := req.EffectiveTaskTypesForGroup(k, a.regionID())
+		// A group scoped to other regions, or whose task types other groups all serve here, has nothing to register.
+		if len(effectiveTaskTypes) == 0 {
+			logger.Debug("Scaling group serves no task types in this region; skipping worker invocation", "scaling_group_key", k, "region_id", a.regionID())
+			continue
+		}
+
 		// Skip groups whose task types are all already registered: a worker of that type
 		// has polled before, so the queue exists and any live worker set must not be disturbed.
-		if taskTypesAllRegistered(req.EffectiveTaskTypesForGroup(k), registered) {
+		if taskTypesAllRegistered(effectiveTaskTypes, registered) {
 			logger.Debug("Task queues already registered; skipping worker invocation", "scaling_group_key", k)
 			continue
 		}
@@ -358,6 +384,21 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 	return &InvokeWorkersToRegisterTaskQueuesResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 }
 
+// regionID returns the region this worker controller is hosted in, or "" if the host supplied none or a malformed one,
+// which could never match a group's region_ids.
+func (a *Activities) regionID() string {
+	if a.hostConfig == nil || !region.ValidRegionID(a.hostConfig.RegionID) {
+		return ""
+	}
+	return a.hostConfig.RegionID
+}
+
+// regionMatches reports whether a scaling group applies on this host. A host without a valid region never matches a
+// region-scoped group, so actions decided in another region can't scale it from here.
+func (a *Activities) regionMatches(groupRegionIDs []string) bool {
+	return len(groupRegionIDs) == 0 || (a.regionID() != "" && slices.Contains(groupRegionIDs, a.regionID()))
+}
+
 func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivityRequest) error {
 	if req == nil || req.ComputeConfig == nil {
 		return errors.Errorf("Invalid activity request")
@@ -365,7 +406,13 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 
 	logger := activity.GetLogger(ctx)
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorker, req.ComputeConfig.ProviderType)
-	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
+	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
+
+	if !a.regionMatches(req.RegionIds) {
+		logger.Info("Skipping worker invocation for a scaling group in another region", "group_region_ids", req.RegionIds, "region_id", a.regionID())
+		recordSkipped(wcimetrics.SkippedReasonRegionMismatch)
+		return nil
+	}
 
 	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.namespace.Name().String(), a.dc)
 	if err != nil {
@@ -403,7 +450,13 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 
 	logger := activity.GetLogger(ctx)
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeUpdateWorkerSetSize, req.ComputeConfig.ProviderType)
-	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
+	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
+
+	if !a.regionMatches(req.RegionIds) {
+		logger.Info("Skipping worker set resize for a scaling group in another region", "group_region_ids", req.RegionIds, "region_id", a.regionID())
+		recordSkipped(wcimetrics.SkippedReasonRegionMismatch)
+		return nil
+	}
 
 	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.namespace.Name().String(), a.dc)
 	if err != nil {
@@ -440,6 +493,13 @@ func (a *Activities) HandleDeferredScalingDecision(ctx context.Context, req Hand
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
 	scalingStatus := maps.Clone(req.ScalingStatus)
+
+	// A failover since the task-add matched this group can leave it scoped to another region.
+	if !a.regionMatches(req.ScalingGroupSpec.RegionIds) {
+		logger.Info("Skipping deferred scaling decision for a scaling group in another region", "scaling_group_key", req.ScalingGroupKey, "group_region_ids", req.ScalingGroupSpec.RegionIds, "region_id", a.regionID())
+		recordSkipped(wcimetrics.SkippedReasonRegionMismatch)
+		return &HandleDeferredScalingDecisionActivityResponse{UpdatedScalingStatus: scalingStatus}, nil
+	}
 
 	if !slices.Contains(req.EffectiveTaskTypes, req.Request.TaskQueueType) {
 		logger.Warn("Deferred scaling decision does not match scaling group task types", "scaling_group_key", req.ScalingGroupKey, "task_queue_type", req.Request.TaskQueueType)
@@ -517,57 +577,57 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 	}
 
-	for key, entry := range req.Spec.ScalingGroupSpecs {
-		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key)
+	key := req.Spec.ScalingGroupKeyForTaskQueueType(req.Request.TaskQueueType, a.regionID())
+	if key == "" {
+		// no scaler configuration for the task type found, so nothing to do
+		recordSkipped(wcimetrics.SkippedReasonNoMatchingScaler)
+		return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
+	}
+	entry := req.Spec.ScalingGroupSpecs[key]
 
-		if !slices.Contains(scalingGroupEffectiveTaskTypes, req.Request.TaskQueueType) {
-			continue
-		}
+	// This task-add matched this scaling group; attribute its metrics to the group's provider.
+	groupMetrics := computeProviderMetrics(metricsHandler, entry.Compute.ProviderType)
+	_, recordSkippedForGroup, recordSuccess := newActivityRecorders(groupMetrics)
 
-		// This task-add matched this scaling group; attribute its metrics to the group's provider.
-		groupMetrics := computeProviderMetrics(metricsHandler, entry.Compute.ProviderType)
-		_, recordSkippedForGroup, recordSuccess := newActivityRecorders(groupMetrics)
-
-		scalingAlgo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, entry)
-		if err != nil {
-			logger.Error("failed to get scaling algorithm", "error", err)
-			recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmUnavailable)
-			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
-		}
-
-		scalingStatus := req.ScalingStatus[key]
-
-		response, err := scalingAlgo.ProcessTaskAdd(ctx, scalingConfig, scalingStatus, req.Request)
-		if err != nil {
-			logger.Error("failed to process task add", "error", err)
-			recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmFailed)
-			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
-		}
-		if response == nil {
-			logger.Error("task-add scaling algorithm returned nil response", "scaling_group_key", key)
-			recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmFailed)
-			return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
-		}
-
-		updatedScalingStatus[key] = response.Status
-		updatedActions := []scalingalgorithm.ScalingAction{}
-		for _, act := range response.Actions {
-			act.ScalingGroupKey = key
-			updatedActions = append(updatedActions, act)
-		}
-
-		if response.ThrottledCount > 0 {
-			groupMetrics.Counter(wcimetrics.ScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
-		}
-
-		recordSuccess()
-
-		return &HandleTaskAddSignalActivityResponse{Actions: updatedActions, UpdatedScalingStatus: updatedScalingStatus}, nil
+	scalingAlgo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, entry)
+	if err != nil {
+		logger.Error("failed to get scaling algorithm", "error", err)
+		recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmUnavailable)
+		return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 	}
 
-	// no scaler configuration for the task type found, so nothing to do
-	recordSkipped(wcimetrics.SkippedReasonNoMatchingScaler)
-	return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
+	scalingStatus := req.ScalingStatus[key]
+
+	response, err := scalingAlgo.ProcessTaskAdd(ctx, scalingConfig, scalingStatus, req.Request)
+	if err != nil {
+		logger.Error("failed to process task add", "error", err)
+		recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmFailed)
+		return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
+	}
+	if response == nil {
+		logger.Error("task-add scaling algorithm returned nil response", "scaling_group_key", key)
+		recordSkippedForGroup(wcimetrics.SkippedReasonAlgorithmFailed)
+		return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
+	}
+
+	updatedScalingStatus[key] = response.Status
+	updatedActions := []scalingalgorithm.ScalingAction{}
+	effectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key, a.regionID())
+	for _, act := range response.Actions {
+		act.ScalingGroupKey = key
+		if act.Action == scalingalgorithm.ActionTypeDeferredScalingDecision {
+			act.EffectiveTaskTypes = effectiveTaskTypes
+		}
+		updatedActions = append(updatedActions, act)
+	}
+
+	if response.ThrottledCount > 0 {
+		groupMetrics.Counter(wcimetrics.ScaleUpThrottledCount.Name()).Inc(int64(response.ThrottledCount))
+	}
+
+	recordSuccess()
+
+	return &HandleTaskAddSignalActivityResponse{Actions: updatedActions, UpdatedScalingStatus: updatedScalingStatus}, nil
 }
 
 func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityRequest) (*PullStatsActivityResponse, error) {
@@ -612,8 +672,13 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	nextPoll := maxPollInterval
 
 	for key, entry := range req.Spec.ScalingGroupSpecs {
+		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key, a.regionID())
+		if len(scalingGroupEffectiveTaskTypes) == 0 {
+			// Scoped to other regions, or other groups serve all of its task types here. Its status is dropped, since
+			// it would be stale by the time the group serves here again.
+			continue
+		}
 		scalingStatus := req.ScalingStatus[key]
-		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key)
 
 		scalingMetricsSnapshot := filterScalingMetricsSnapshotByTaskTypes(metricsSnapshot, scalingGroupEffectiveTaskTypes)
 		if scalingMetricsSnapshot == nil {

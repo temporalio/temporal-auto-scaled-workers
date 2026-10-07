@@ -114,7 +114,7 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			activities := NewActivities(nil, nil, nil)
+			activities := NewActivities(nil, nil, nil, nil)
 			args := &iface.WorkerControllerInstanceWorkflowArgs{
 				NamespaceName:  "test-namespace",
 				DeploymentName: "test-deployment",
@@ -215,7 +215,7 @@ func newEnabledTestEnv(t *testing.T, workflowVersion WorkerControllerInstanceWor
 		},
 	}
 
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	h.testWorkflow = func(ctx sdkworkflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
 		return Workflow(ctx,
 			func() WorkerControllerInstanceWorkflowVersion { return workflowVersion },

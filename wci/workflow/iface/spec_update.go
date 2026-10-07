@@ -16,6 +16,8 @@ func applyFieldMask(dst, src *ScalingGroupSpec, paths []string) error {
 		switch path {
 		case "task_queue_types":
 			dst.TaskTypes = src.TaskTypes
+		case "region_ids":
+			dst.RegionIds = src.RegionIds
 		case "provider":
 			dst.Compute = src.Compute
 			if src.Compute.Config != nil {
