@@ -61,7 +61,7 @@ func pendingTaskAddSignalNames(requests []*iface.SignalTaskAddRequest) []string 
 }
 
 func TestQueuedTaskAddSignalsProcessOneAtATimeFromState(t *testing.T) {
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	args := newSignalQueueTestArgs(namedTaskAddSignal("first"), namedTaskAddSignal("second"))
 
 	var processed []string
@@ -100,7 +100,7 @@ func TestQueuedTaskAddSignalsProcessOneAtATimeFromState(t *testing.T) {
 }
 
 func TestQueuedTaskAddSignalsStopAfterCANCondition(t *testing.T) {
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	args := newSignalQueueTestArgs(namedTaskAddSignal("first"), namedTaskAddSignal("second"))
 
 	var processed []string
@@ -142,7 +142,7 @@ func TestQueuedTaskAddSignalsStopAfterCANCondition(t *testing.T) {
 }
 
 func TestQueueTaskAddSignalDropsNilRequests(t *testing.T) {
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	args := newSignalQueueTestArgs()
 
 	testWorkflow := func(ctx sdkworkflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) ([]string, error) {
@@ -166,7 +166,7 @@ func TestQueueTaskAddSignalDropsNilRequests(t *testing.T) {
 }
 
 func TestQueueTaskAddSignalDropsWhenQueueFull(t *testing.T) {
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	pending := make([]*iface.SignalTaskAddRequest, maxPendingTaskAddSignals)
 	for i := range pending {
 		pending[i] = namedTaskAddSignal("queued")

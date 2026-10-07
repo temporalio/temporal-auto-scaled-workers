@@ -16,6 +16,10 @@ type (
 	GCPIAMServiceAccountRequest struct {
 		ServiceAccountEmail string
 	}
+
+	StaticConfig struct {
+		RegionID string // <cloud provider>-<region>, e.g. "aws-us-west-2"
+	}
 )
 
 // Namespace-scoped settings.
