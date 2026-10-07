@@ -10,6 +10,7 @@ import (
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -139,9 +140,9 @@ func TestProcessTaskAdd_ExistsErrorClassification(t *testing.T) {
 			})
 
 			snapshot := capture.Snapshot()
-			require.Equal(t, tc.wantBusy, countMetric(snapshot, iface.WorkerControllerInstanceWorkflowBusyCount.Name()),
+			require.Equal(t, tc.wantBusy, countMetric(snapshot, wcimetrics.WorkflowBusyCount.Name()),
 				"workflow-busy count")
-			require.Equal(t, tc.wantError, countMetric(snapshot, iface.WorkerControllerInstanceProcessTaskMatchErrorCount.Name()),
+			require.Equal(t, tc.wantError, countMetric(snapshot, wcimetrics.TaskMatchErrorCount.Name()),
 				"task-match error count")
 			require.Zero(t, client.signalCalls, "no signal should be sent when the existence check fails")
 		})
@@ -164,6 +165,6 @@ func TestProcessTaskAdd_ExistingInstanceSignals(t *testing.T) {
 
 	snapshot := capture.Snapshot()
 	require.Equal(t, 1, client.signalCalls)
-	require.Zero(t, countMetric(snapshot, iface.WorkerControllerInstanceWorkflowBusyCount.Name()))
-	require.Zero(t, countMetric(snapshot, iface.WorkerControllerInstanceProcessTaskMatchErrorCount.Name()))
+	require.Zero(t, countMetric(snapshot, wcimetrics.WorkflowBusyCount.Name()))
+	require.Zero(t, countMetric(snapshot, wcimetrics.TaskMatchErrorCount.Name()))
 }

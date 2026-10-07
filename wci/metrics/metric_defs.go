@@ -3,6 +3,18 @@ package metrics
 import "go.temporal.io/server/common/metrics"
 
 var (
+	InstanceCreated = metrics.NewCounterDef(
+		"worker_controller_instance_created",
+		metrics.WithDescription("The number of worker controller instance workflows started."))
+
+	// Emitted by the matching service task hook, not the WCI workflow.
+	TaskMatchErrorCount = metrics.NewCounterDef(
+		"worker_controller_instance_task_match_error_count",
+		metrics.WithDescription("The number of task match events that encountered errors during processing."))
+	WorkflowBusyCount = metrics.NewCounterDef(
+		"worker_controller_instance_workflow_busy_count",
+		metrics.WithDescription("The number of task match events dropped because the worker controller instance workflow was busy."))
+
 	BacklogCount = metrics.NewGaugeDef(
 		"worker_controller_instance_backlog_count",
 		metrics.WithDescription("The total detected backlog size for a worker controller instance."))
