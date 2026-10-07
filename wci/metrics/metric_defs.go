@@ -150,6 +150,7 @@ const (
 	SkippedReasonNoSourceRequest      SkippedReason = "no_source_request"
 	SkippedReasonTaskTypeMismatch     SkippedReason = "task_type_mismatch"
 	SkippedReasonQueueFull            SkippedReason = "queue_full"
+	SkippedReasonRegionMismatch       SkippedReason = "region_mismatch"
 	// SkippedReasonNone is the sentinel used when a metric's fixed tag schema requires the
 	// skip_reason tag on a non-skip path.
 	SkippedReasonNone SkippedReason = "none"
