@@ -8,6 +8,7 @@ import (
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
@@ -100,12 +101,12 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 		var resourceExhaustedErr *serviceerror.ResourceExhausted
 		if errors.As(err, &resourceExhaustedErr) && resourceExhaustedErr.Cause == enumspb.RESOURCE_EXHAUSTED_CAUSE_BUSY_WORKFLOW {
 			// 'Workflow is busy' error - emit a metric and move on
-			iface.WorkerControllerInstanceWorkflowBusyCount.With(th.metricsHandler).Record(1)
+			wcimetrics.WorkflowBusyCount.With(th.metricsHandler).Record(1)
 			return
 		}
 
 		th.logger.Error("Failed to check for existence of worker controller instance workflow", tag.Error(err), tag.WorkflowID(workflowID))
-		iface.WorkerControllerInstanceProcessTaskMatchErrorCount.With(th.metricsHandler).Record(1)
+		wcimetrics.TaskMatchErrorCount.With(th.metricsHandler).Record(1)
 		return
 	}
 	if !exists {
@@ -122,7 +123,7 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 
 	if err := th.client.SignalTaskAddEvent(ctx, th.namespace, event.DeploymentVersion, request); err != nil {
 		th.logger.Error("Failed to signal task add event", tag.Error(err), tag.WorkflowID(workflowID))
-		iface.WorkerControllerInstanceProcessTaskMatchErrorCount.With(th.metricsHandler).Record(1)
+		wcimetrics.TaskMatchErrorCount.With(th.metricsHandler).Record(1)
 	}
 }
 

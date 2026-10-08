@@ -189,7 +189,7 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	if err = d.updateMemo(ctx); err != nil {
 		return err
 	}
-	d.metrics.Counter(iface.WorkerControllerInstanceCreated.Name()).Inc(1)
+	d.metrics.Counter(wcimetrics.InstanceCreated.Name()).Inc(1)
 
 	if err = workflow.SetQueryHandler(ctx, iface.QueryDescribeWorkerControllerInstance, func() (*iface.QueryDescribeWorkerControllerInstanceResponse, error) {
 		if d.deleteInstance {
