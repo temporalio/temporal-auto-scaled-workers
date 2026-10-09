@@ -11,7 +11,7 @@ Each WCI manages a single deployment version (deployment name + build ID). It:
 3. Applies a configurable scaling algorithm to decide when to act
 4. Invokes workers on the configured compute provider
 
-Multiple **scaling groups** can be defined per WCI, each mapping a set of task queue types (workflow, activity, nexus) to a compute provider and scaling algorithm. One group can act as a catch-all for task types not claimed by other groups.
+Multiple **scaling groups** can be defined per WCI, each mapping a set of task queue types (workflow, activity, nexus), and optionally regions, to a compute provider and scaling algorithm. A group without task types acts as a catch-all, and a group scoped to regions is only used by a worker controller hosted in one of them.
 
 ## Supported Compute Providers
 
@@ -75,6 +75,18 @@ A WCI spec is a map of named scaling groups:
         }
       }
     },
+    "workflows-west": {
+      "task_types": ["WORKFLOW"],
+      "region_ids": ["aws-us-west-2"],
+      "compute": {
+        "provider_type": "aws-lambda",
+        "config": {
+          "arn": "arn:aws:lambda:us-west-2:123456789012:function:my-worker",
+          "role": "arn:aws:iam::123456789012:role/temporal-wci",
+          "role_external_id": "my-external-id"
+        }
+      }
+    },
     "activities": {
       "task_types": ["ACTIVITY", "NEXUS"],
       "compute": {
@@ -91,7 +103,21 @@ A WCI spec is a map of named scaling groups:
 }
 ```
 
-A group with no `task_types` acts as a catch-all for any task type not claimed by another group. At most one catch-all group is allowed. The `scaling` block is optional; omitting it leaves the group with the default scaling configuration for the given compute provider.
+Each group covers a set of `task_types`, or none to act as a catch-all, and optionally `region_ids`.
+A group with `region_ids` is only used by a worker controller hosted in one of those regions, which in a replicated namespace is where the namespace is active; groups without them apply in any region.
+In the example above, workflow tasks use the `us-west-2` Lambda while the namespace is active in `aws-us-west-2`, and the `us-east-1` Lambda anywhere else.
+The hosting binary supplies its region by providing a `*hostconfig.Config` through fx; without a well-formed one, specs that set `region_ids` are rejected.
+Region IDs use the form `<provider>-<region>` in lowercase letters, digits and single hyphens, e.g. `aws-us-east-1`.
+The OSS Temporal server doesn't supply a region, so region-scoped groups are only available where the hosting binary does, such as Temporal Cloud.
+
+For each task type, the serving group is the first match in this order:
+
+1. A group whose `region_ids` include this host's region and that lists the task type
+2. The catch-all group whose `region_ids` include this host's region
+3. A group without `region_ids` that lists the task type
+4. The catch-all group without `region_ids`
+
+Within each region, and among groups without `region_ids` (including the catch-all group without any region set), a task type may appear in at most one group and at most one group may be a catch-all. A catch-all must serve at least one task type where it applies, so a spec whose other groups list workflow, activity and nexus everywhere the catch-all applies is rejected. The `scaling` block is optional; omitting it leaves the group with the default scaling configuration for the given compute provider.
 
 ### `no-sync` algorithm config
 

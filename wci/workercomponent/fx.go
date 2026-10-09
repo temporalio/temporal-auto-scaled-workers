@@ -3,6 +3,7 @@ package workercomponent
 import (
 	"go.uber.org/fx"
 
+	"go.temporal.io/auto-scaled-workers/wci/hostconfig"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/sdk"
 	workercommon "go.temporal.io/server/service/worker/common"
@@ -12,6 +13,7 @@ type (
 	componentDeps struct {
 		fx.In
 		ClientFactory sdk.ClientFactory
+		HostConfig    *hostconfig.Config `optional:"true"`
 	}
 
 	fxResult struct {
@@ -29,6 +31,6 @@ func NewResult(
 	params componentDeps,
 ) fxResult {
 	return fxResult{
-		Component: NewWCIPerNSWorkerComponent(dc, params.ClientFactory),
+		Component: NewWCIPerNSWorkerComponent(dc, params.ClientFactory, params.HostConfig),
 	}
 }

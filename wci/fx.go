@@ -5,6 +5,7 @@ import (
 	"go.uber.org/fx"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	"go.temporal.io/auto-scaled-workers/wci/hostconfig"
 	"go.temporal.io/auto-scaled-workers/wci/workercomponent"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/server/common"
@@ -130,6 +131,11 @@ func ThrottledLoggerRpsFnProvider(serviceConfig *worker.Config) resource.Throttl
 	return func() float64 { return float64(serviceConfig.ThrottledLogRPS()) }
 }
 
+type hostConfigDeps struct {
+	fx.In
+	HostConfig *hostconfig.Config `optional:"true"`
+}
+
 func PerNamespaceWorkerManagerProvider(
 	logger log.Logger,
 	sdkClientFactory sdk.ClientFactory,
@@ -138,9 +144,10 @@ func PerNamespaceWorkerManagerProvider(
 	config *worker.Config,
 	clusterMetadata cluster.Metadata,
 	dynamicConfig *dynamicconfig.Collection,
+	host hostConfigDeps,
 ) *worker.PerNamespaceWorkerManager {
 	components := []workercommon.PerNSWorkerComponent{
-		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory),
+		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory, host.HostConfig),
 	}
 
 	return worker.NewPerNamespaceWorkerManager(
