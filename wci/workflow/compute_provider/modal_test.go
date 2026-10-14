@@ -166,9 +166,9 @@ func stubModalClient(t *testing.T, c *fakeModalClient) {
 
 func newModalProvider() *modalComputeProvider {
 	return &modalComputeProvider{
-		vaultConfig:  ModalVaultConfig{OAuthClientID: testModalClientID},
-		reloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
-		clientPolicy: modalClientPolicy{functionTTL: 10 * time.Minute, idleTimeout: 30 * time.Minute},
+		vaultConfig:            ModalVaultConfig{OAuthClientID: testModalClientID},
+		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
+		clientPolicy:           modalClientPolicy{functionTTL: 10 * time.Minute, idleTimeout: 30 * time.Minute},
 	}
 }
 
@@ -346,7 +346,7 @@ func TestModalInvokeWorker_StopsReadingWhenCredentialsStayRejected(t *testing.T)
 	stubModalClient(t, c)
 
 	p := newModalProvider()
-	p.reloadPolicy = modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Hour}
+	p.credentialReloadPolicy = modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Hour}
 
 	for range 10 {
 		require.Error(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
@@ -681,8 +681,8 @@ func TestModalInvokeWorker_FailsWithoutDeploymentConfig(t *testing.T) {
 	stubModalClient(t, c)
 
 	p := &modalComputeProvider{
-		reloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
-		clientPolicy: modalClientPolicy{functionTTL: time.Minute, idleTimeout: time.Hour},
+		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
+		clientPolicy:           modalClientPolicy{functionTTL: time.Minute, idleTimeout: time.Hour},
 	}
 
 	err := p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig())

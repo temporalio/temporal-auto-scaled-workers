@@ -48,9 +48,9 @@ type (
 	}
 
 	modalComputeProvider struct {
-		vaultConfig  ModalVaultConfig
-		reloadPolicy modalCredentialPolicy
-		clientPolicy modalClientPolicy
+		vaultConfig            ModalVaultConfig
+		credentialReloadPolicy modalCredentialPolicy
+		clientPolicy           modalClientPolicy
 	}
 )
 
@@ -66,7 +66,7 @@ func init() {
 
 func NewModalComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (ComputeProvider, error) {
 	p := &modalComputeProvider{
-		reloadPolicy: modalCredentialPolicy{
+		credentialReloadPolicy: modalCredentialPolicy{
 			reloadLimit:    2,
 			reloadCooldown: 15 * time.Minute,
 		},
@@ -76,8 +76,8 @@ func NewModalComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (C
 		},
 	}
 	if dc != nil {
-		p.reloadPolicy.reloadLimit = client.WorkerControllerModalCredentialReloadLimit.Get(dc)()
-		p.reloadPolicy.reloadCooldown = time.Duration(client.WorkerControllerModalCredentialReloadCooldownSeconds.Get(dc)()) * time.Second
+		p.credentialReloadPolicy.reloadLimit = client.WorkerControllerModalCredentialReloadLimit.Get(dc)()
+		p.credentialReloadPolicy.reloadCooldown = time.Duration(client.WorkerControllerModalCredentialReloadCooldownSeconds.Get(dc)()) * time.Second
 		p.clientPolicy.functionTTL = time.Duration(client.WorkerControllerModalFunctionCacheTTLSeconds.Get(dc)()) * time.Second
 		p.clientPolicy.idleTimeout = time.Duration(client.WorkerControllerModalClientIdleTimeoutSeconds.Get(dc)()) * time.Second
 	}
@@ -152,7 +152,7 @@ func (p *modalComputeProvider) withFunction(
 	}
 
 	key := modalGrantKey{accountID: accountID, workspaceID: params.WorkspaceID}
-	creds, digest, err := modalCredentials.get(ctx, source, p.vaultConfig.OAuthClientID, key, p.reloadPolicy)
+	creds, digest, err := modalCredentials.get(ctx, source, p.vaultConfig.OAuthClientID, key, p.credentialReloadPolicy)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
@@ -173,7 +173,7 @@ func (p *modalComputeProvider) withFunction(
 		return err
 	}
 
-	rotated, changed, reloadErr := modalCredentials.reload(ctx, source, p.vaultConfig.OAuthClientID, key, digest, p.reloadPolicy)
+	rotated, changed, reloadErr := modalCredentials.reload(ctx, source, p.vaultConfig.OAuthClientID, key, digest, p.credentialReloadPolicy)
 	if reloadErr != nil {
 		return fmt.Errorf("%w: Modal rejected the credentials and they could not be re-read: %w", errWCIOwned, reloadErr)
 	}
