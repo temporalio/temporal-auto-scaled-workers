@@ -785,8 +785,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				continue
 			}
 
-			// HandleTaskAddSignal resolves the types for the host region, which workflow code must not read.
-			// Actions recorded by older builds carry none; resolve those region-agnostically, as those builds did.
+			// Actions recorded before ScalingAction.EffectiveTaskTypes existed don't carry it; resolve their task types here, region-agnostically.
 			effectiveTaskTypes := action.EffectiveTaskTypes
 			if effectiveTaskTypes == nil {
 				effectiveTaskTypes = d.State.Spec.EffectiveTaskTypesForGroup(action.ScalingGroupKey, "")
@@ -834,7 +833,6 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				InvokeWorkerActivityRequest{
 					RequestContext: d.requestContext(),
 					ComputeConfig:  &spec.Compute,
-					RegionIds:      spec.RegionIds,
 				},
 			).Get(ctx, nil); err != nil {
 				d.logger.Warn("Failed to execute new worker instance activity", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "error", err)
@@ -871,7 +869,6 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 					RequestContext: d.requestContext(),
 					ComputeConfig:  &spec.Compute,
 					UpdatedSize:    count,
-					RegionIds:      spec.RegionIds,
 				},
 			).Get(ctx, nil); err != nil {
 				d.logger.Warn("Failed to execute update worker-set size activity", "namespace", d.NamespaceName, "deployment_name", d.DeploymentName, "error", err)

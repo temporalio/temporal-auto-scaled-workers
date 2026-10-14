@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -12,7 +11,6 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/auto-scaled-workers/wci/client"
-	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
 	"go.temporal.io/sdk/testsuite"
@@ -20,7 +18,6 @@ import (
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
-	"go.temporal.io/server/common/metrics/metricstest"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/sdk"
 )
@@ -31,9 +28,8 @@ const (
 )
 
 var (
-	east     = []string{testRegionEast}
-	west     = []string{testRegionWest}
-	eastWest = []string{testRegionEast, testRegionWest}
+	east = []string{testRegionEast}
+	west = []string{testRegionWest}
 )
 
 func runHandleTaskAddSignal(t *testing.T, regionID string, req HandleTaskAddSignalActivityRequest) (*deferredScalingDecisionTestAlgorithm, HandleTaskAddSignalActivityResponse) {
@@ -97,7 +93,6 @@ func TestHandleTaskAddSignalSelectsGroupForRegion(t *testing.T) {
 		{testRegionEast, "east"},
 		{testRegionWest, "default"},
 		{"", "default"},
-		{"AWS-us-east-1", "default"},
 	}
 	for _, tc := range tests {
 		t.Run("region="+tc.region, func(t *testing.T) {
@@ -109,69 +104,6 @@ func TestHandleTaskAddSignalSelectsGroupForRegion(t *testing.T) {
 			require.Len(t, resp.Actions, 1)
 			assert.Equal(t, tc.wantGroup, resp.Actions[0].ScalingGroupKey)
 			assert.Contains(t, resp.UpdatedScalingStatus, tc.wantGroup)
-		})
-	}
-}
-
-func TestHandleDeferredScalingDecisionSkipsWhenRegionDoesNotMatch(t *testing.T) {
-	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
-	require.NoError(t, err)
-
-	workflowTypes := []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_WORKFLOW}
-	priorStatus := iface.ScalingAlgorithmStatus{"phase": "prior"}
-	deferredStatus := iface.ScalingAlgorithmStatus{"phase": "deferred"}
-
-	tests := []struct {
-		name              string
-		groupRegionIDs    []string
-		hostRegionID      string
-		effectiveTypes    []enumspb.TaskQueueType
-		wantDeferredCalls int
-		wantStatus        iface.ScalingAlgorithmStatus
-		wantSkipReason    wcimetrics.SkippedReason
-	}{
-		{"group for this region", east, testRegionEast, workflowTypes, 1, deferredStatus, wcimetrics.SkippedReasonNone},
-		{"group listing this region among others", eastWest, testRegionWest, workflowTypes, 1, deferredStatus, wcimetrics.SkippedReasonNone},
-		{"after failover to another region", east, testRegionWest, workflowTypes, 0, priorStatus, wcimetrics.SkippedReasonRegionMismatch},
-		{"group without region", nil, testRegionWest, workflowTypes, 1, deferredStatus, wcimetrics.SkippedReasonNone},
-		{"host without region", east, "", workflowTypes, 0, priorStatus, wcimetrics.SkippedReasonRegionMismatch},
-		{"host with malformed region", east, "AWS-us-east-1", workflowTypes, 0, priorStatus, wcimetrics.SkippedReasonRegionMismatch},
-		{"region checked before task types", east, testRegionWest, nil, 0, priorStatus, wcimetrics.SkippedReasonRegionMismatch},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			algo := &deferredScalingDecisionTestAlgorithm{}
-			currentDeferredScalingDecisionTestAlgorithm = algo
-			t.Cleanup(func() {
-				currentDeferredScalingDecisionTestAlgorithm = nil
-			})
-
-			group := newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, nil)
-			group.RegionIds = tc.groupRegionIDs
-			activities := NewActivities(nil, nil, nil, &client.StaticConfig{RegionID: tc.hostRegionID})
-			captureHandler := metricstest.NewCaptureHandler()
-			capture := captureHandler.StartCapture()
-
-			var suite testsuite.WorkflowTestSuite
-			suite.SetMetricsHandler(sdk.NewMetricsHandler(captureHandler))
-			env := suite.NewTestActivityEnvironment()
-			env.RegisterActivity(activities.HandleDeferredScalingDecision)
-			encodedResp, err := env.ExecuteActivity(activities.HandleDeferredScalingDecision, HandleDeferredScalingDecisionActivityRequest{
-				Request:            newTestSignalTaskAddEvent(),
-				ScalingGroupKey:    "workflows",
-				ScalingGroupSpec:   group,
-				EffectiveTaskTypes: tc.effectiveTypes,
-				ScalingStatus:      priorStatus,
-			})
-			require.NoError(t, err)
-
-			var resp HandleDeferredScalingDecisionActivityResponse
-			require.NoError(t, encodedResp.Get(&resp))
-			assert.Equal(t, tc.wantDeferredCalls, algo.deferredCalls)
-			assert.Equal(t, tc.wantStatus, resp.UpdatedScalingStatus)
-			recordings := capture.Snapshot()[wcimetrics.Activities.Name()]
-			require.Len(t, recordings, 1)
-			assert.Equal(t, string(tc.wantSkipReason), recordings[0].Tags[wcimetrics.SkipReasonTagName])
 		})
 	}
 }
@@ -194,14 +126,14 @@ func TestInvokeWorkersToRegisterTaskQueues_SkipsGroupsOutsideRegion(t *testing.T
 		"east-workflows": {stateWorkerCountKey: int64(4)},
 	}
 
-	t.Run("host in another region", func(t *testing.T) {
+	t.Run("worker controller in another region", func(t *testing.T) {
 		resp := runInvokeWorkersToRegisterTaskQueuesInRegion(t, fake, spec, scalingStatus, testRegionWest)
 		assert.Equal(t, int64(3), resp.UpdatedScalingStatus["west-workflows"].GetInt64Field(stateWorkerCountKey, -1))
 		assert.NotContains(t, resp.UpdatedScalingStatus, "east-activities", "a group scoped to another region must not be resized")
 		assert.Equal(t, int64(4), resp.UpdatedScalingStatus["east-workflows"].GetInt64Field(stateWorkerCountKey, -1), "its status must be carried forward")
 	})
 
-	t.Run("host without region", func(t *testing.T) {
+	t.Run("worker controller without regionId", func(t *testing.T) {
 		resp := runInvokeWorkersToRegisterTaskQueuesInRegion(t, fake, spec, scalingStatus, "")
 		assert.NotContains(t, resp.UpdatedScalingStatus, "west-workflows")
 		assert.NotContains(t, resp.UpdatedScalingStatus, "east-activities")
@@ -228,7 +160,7 @@ func TestInvokeWorkersToRegisterTaskQueues_SkipsGroupsShadowedByRegionScopedGrou
 		"east-activities":      group(east, enumspb.TASK_QUEUE_TYPE_ACTIVITY),
 	}}
 
-	t.Run("host region with overrides", func(t *testing.T) {
+	t.Run("worker controller regionId with overrides", func(t *testing.T) {
 		resp := runInvokeWorkersToRegisterTaskQueuesInRegion(t, fake, spec, nil, testRegionEast)
 		assert.NotContains(t, resp.UpdatedScalingStatus, "workflows", "a group whose task types are all served by region-scoped groups must not be invoked")
 		assert.Contains(t, resp.UpdatedScalingStatus, "activities-and-nexus", "a group still serving nexus here must register it")
@@ -236,7 +168,7 @@ func TestInvokeWorkersToRegisterTaskQueues_SkipsGroupsShadowedByRegionScopedGrou
 		assert.Contains(t, resp.UpdatedScalingStatus, "east-activities")
 	})
 
-	t.Run("host region without overrides", func(t *testing.T) {
+	t.Run("worker controller regionId without overrides", func(t *testing.T) {
 		resp := runInvokeWorkersToRegisterTaskQueuesInRegion(t, fake, spec, nil, testRegionWest)
 		assert.Contains(t, resp.UpdatedScalingStatus, "workflows")
 		assert.Contains(t, resp.UpdatedScalingStatus, "activities-and-nexus")
@@ -253,7 +185,7 @@ func TestInvokeWorkersToRegisterTaskQueues_SkipsGroupsShadowedByRegionScopedGrou
 	})
 }
 
-// The registered check must use the host region, or a region-scoped group would be re-bootstrapped on every update.
+// The registered check must use the worker controller's regionId, or a region-scoped group would be re-bootstrapped on every update.
 func TestInvokeWorkersToRegisterTaskQueues_SkipsRegisteredGroupInItsRegion(t *testing.T) {
 	fake := &fakeWorkflowServiceClient{describeFn: func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
 		return describeResponseWithTypes(enumspb.TASK_QUEUE_TYPE_WORKFLOW), nil
@@ -306,7 +238,7 @@ func TestHandleTaskAddSignalCatchAllIgnoresUnspecifiedTaskType(t *testing.T) {
 	assert.Empty(t, resp.Actions)
 }
 
-// The east group claims workflows only in east, so the catch-all's task types depend on the host region.
+// The east group claims workflows only in east, so the catch-all's task types depend on the worker controller's regionId.
 func newRegionDependentCatchAllSpec(t *testing.T) *iface.WorkerControllerInstanceSpec {
 	t.Helper()
 	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
@@ -541,7 +473,7 @@ func TestPullStatsSkipsGroupsOutsideRegion(t *testing.T) {
 		assert.Equal(t, iface.ScalingAlgorithmStatus{"polled": true}, resp.UpdatedScalingStatus["any"])
 	})
 
-	t.Run("host without region ignores region-scoped groups", func(t *testing.T) {
+	t.Run("worker controller without regionId ignores region-scoped groups", func(t *testing.T) {
 		resp := runPullStatsInRegion(t, spec, scalingStatus, "")
 		assert.NotContains(t, currentRecordMetricsPollAlgorithm.snapshots, "east")
 		assert.NotContains(t, resp.UpdatedScalingStatus, "east")
@@ -559,13 +491,13 @@ func TestPullStatsSkipsGroupsShadowedByRegionScopedGroups(t *testing.T) {
 	priorStatus := iface.ScalingAlgorithmStatus{"phase": "prior"}
 	scalingStatus := map[string]iface.ScalingAlgorithmStatus{"workflows": priorStatus}
 
-	t.Run("host region with an override", func(t *testing.T) {
+	t.Run("worker controller regionId with an override", func(t *testing.T) {
 		resp := runPullStatsInRegion(t, spec, scalingStatus, testRegionEast)
 		assert.NotContains(t, currentRecordMetricsPollAlgorithm.snapshots, "workflows")
 		assert.NotContains(t, resp.UpdatedScalingStatus, "workflows")
 	})
 
-	t.Run("host region without an override", func(t *testing.T) {
+	t.Run("worker controller regionId without an override", func(t *testing.T) {
 		resp := runPullStatsInRegion(t, spec, scalingStatus, testRegionWest)
 		assert.NotNil(t, currentRecordMetricsPollAlgorithm.snapshots["workflows"].Workflow)
 		assert.Equal(t, iface.ScalingAlgorithmStatus{"polled": true}, resp.UpdatedScalingStatus["workflows"])
@@ -573,109 +505,15 @@ func TestPullStatsSkipsGroupsShadowedByRegionScopedGroups(t *testing.T) {
 
 }
 
-// The test-invoke provider is not enabled in NewTestDynamicConfigCollection, so an executor that proceeds
-// fails on it, while one that skips returns nil.
-func TestExecutorsSkipWhenRegionDoesNotMatch(t *testing.T) {
+func TestValidateSpecRejectsRegionIdsWithoutRegionID(t *testing.T) {
 	tests := []struct {
 		name           string
 		groupRegionIDs []string
-		hostRegionID   string
-		wantSkipped    bool
-	}{
-		{"group for another region", east, testRegionWest, true},
-		{"group for this region", east, testRegionEast, false},
-		{"group listing this region first", eastWest, testRegionEast, false},
-		{"group listing this region last", eastWest, testRegionWest, false},
-		{"group listing only other regions", eastWest, "gcp-us-central1", true},
-		{"group without region", nil, testRegionWest, false},
-		{"host without region", east, "", true},
-		{"host with malformed region", east, "AWS-us-east-1", true},
-	}
-	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
-	compute := &iface.ComputeProviderSpec{ProviderType: iface.ComputeProviderTypeTestInvoke}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			activities := NewActivities(ns, NewTestDynamicConfigCollection(), nil, &client.StaticConfig{RegionID: tc.hostRegionID})
-			var suite testsuite.WorkflowTestSuite
-			env := suite.NewTestActivityEnvironment()
-			env.RegisterActivity(activities.InvokeWorker)
-			env.RegisterActivity(activities.UpdateWorkerSetSize)
-
-			_, invokeErr := env.ExecuteActivity(activities.InvokeWorker, &InvokeWorkerActivityRequest{ComputeConfig: compute, RegionIds: tc.groupRegionIDs})
-			_, resizeErr := env.ExecuteActivity(activities.UpdateWorkerSetSize, &UpdateWorkerSetSizeActivityRequest{ComputeConfig: compute, UpdatedSize: 3, RegionIds: tc.groupRegionIDs})
-			if tc.wantSkipped {
-				assert.NoError(t, invokeErr)
-				assert.NoError(t, resizeErr)
-				return
-			}
-			assert.Error(t, invokeErr)
-			assert.Error(t, resizeErr)
-		})
-	}
-}
-
-func TestHandleActionsPassesGroupRegionIdsToExecutors(t *testing.T) {
-	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
-	require.NoError(t, err)
-	group := newTestScalingGroupSpec(enumspb.TASK_QUEUE_TYPE_WORKFLOW, scalingConfigPayload, nil)
-	group.RegionIds = eastWest
-
-	activities := NewActivities(nil, nil, nil, nil)
-	args := &iface.WorkerControllerInstanceWorkflowArgs{
-		NamespaceName:  "test-namespace",
-		DeploymentName: "test-deployment",
-		BuildId:        "test-build",
-		State: &iface.WorkerControllerInstanceLocalState{
-			Spec:          &iface.WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{"regional": group}},
-			ScalingStatus: map[string]iface.ScalingAlgorithmStatus{},
-		},
-	}
-	size := int32(2)
-	actions := []scalingalgorithm.ScalingAction{
-		{ScalingGroupKey: "regional", Action: scalingalgorithm.ActionTypeInvokeWorker},
-		{ScalingGroupKey: "regional", Action: scalingalgorithm.ActionTypeUpdateWorkerSetSize, Count: &size},
-	}
-	testWorkflow := func(ctx sdkworkflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs, actions []scalingalgorithm.ScalingAction) error {
-		runner := &WorkflowRunner{
-			WorkerControllerInstanceWorkflowArgs: args,
-			a:                                    activities,
-			logger:                               sdkworkflow.GetLogger(ctx),
-			metrics:                              sdkworkflow.GetMetricsHandler(ctx),
-		}
-		runner.handleActions(ctx, actions, nil, scalingActionProcessingLatencyOrigin{path: wcimetrics.PathPullStats, start: time.Time{}})
-		return nil
-	}
-
-	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
-	env.RegisterWorkflow(testWorkflow)
-	var invokeRegions, resizeRegions []string
-	env.OnActivity(activities.InvokeWorker, mock.Anything, mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		invokeRegions = args.Get(1).(*InvokeWorkerActivityRequest).RegionIds
-	})
-	env.OnActivity(activities.UpdateWorkerSetSize, mock.Anything, mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		resizeRegions = args.Get(1).(*UpdateWorkerSetSizeActivityRequest).RegionIds
-	})
-
-	env.ExecuteWorkflow(testWorkflow, args, actions)
-
-	require.True(t, env.IsWorkflowCompleted())
-	require.NoError(t, env.GetWorkflowError())
-	assert.Equal(t, eastWest, invokeRegions)
-	assert.Equal(t, eastWest, resizeRegions)
-}
-
-func TestValidateSpecRejectsRegionIdsWithoutValidHostRegion(t *testing.T) {
-	tests := []struct {
-		name           string
-		groupRegionIDs []string
-		hostRegionID   string
+		wciRegionID    string
 		wantErr        string
 	}{
-		{"host without region", east, "", "region_ids is not supported because this server has no region configured"},
-		{"host with malformed region", east, "AWS-us-east-1", `region_ids is not supported because this server's region "AWS-us-east-1" is not a valid region ID`},
-		{"host with region", east, testRegionWest, ""},
+		{"worker controller without regionId", east, "", "region_ids is not supported because this server has no region configured"},
+		{"worker controller with regionId", east, testRegionWest, ""},
 		{"group without region", nil, "", ""},
 	}
 	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
@@ -684,7 +522,7 @@ func TestValidateSpecRejectsRegionIdsWithoutValidHostRegion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			group := rateBasedWorkerSetGroup(t, enumspb.TASK_QUEUE_TYPE_WORKFLOW, 1)
 			group.RegionIds = tc.groupRegionIDs
-			activities := NewActivities(ns, NewTestDynamicConfigCollection(), nil, &client.StaticConfig{RegionID: tc.hostRegionID})
+			activities := NewActivities(ns, NewTestDynamicConfigCollection(), nil, &client.StaticConfig{RegionID: tc.wciRegionID})
 			var suite testsuite.WorkflowTestSuite
 			env := suite.NewTestActivityEnvironment()
 			env.RegisterActivity(activities.ValidateSpec)

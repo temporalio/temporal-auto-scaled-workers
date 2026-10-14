@@ -11,7 +11,7 @@ Each WCI manages a single deployment version (deployment name + build ID). It:
 3. Applies a configurable scaling algorithm to decide when to act
 4. Invokes workers on the configured compute provider
 
-Multiple **scaling groups** can be defined per WCI, each mapping a set of task queue types (workflow, activity, nexus), and optionally regions, to a compute provider and scaling algorithm. A group without task types acts as a catch-all, and a group scoped to regions is only used by a worker controller hosted in one of them.
+Multiple **scaling groups** can be defined per WCI, each mapping a set of task queue types (workflow, activity, nexus), and optionally regions, to a compute provider and scaling algorithm. A group without task types acts as a catch-all, and a group scoped to regions is only used by a worker controller whose regionId is one of them.
 
 ## Supported Compute Providers
 
@@ -105,15 +105,15 @@ A WCI spec is a map of named scaling groups:
 
 Each group covers a set of `task_types`, or none to act as a catch-all, and optionally `region_ids`.
 Region-scoped scaling isn't enabled yet: any spec that sets `region_ids` is rejected until support is complete.
-A group with `region_ids` is only used by a worker controller hosted in one of those regions, which in a replicated namespace is where the namespace is active; groups without them apply in any region.
+A group with `region_ids` is only used by a worker controller whose regionId is one of them, which in a replicated namespace is where the namespace is active; groups without them apply in any region.
 In the example above, workflow tasks use the `us-west-2` Lambda while the namespace is active in `aws-us-west-2`, and the `us-east-1` Lambda anywhere else.
-The worker controller gets its region from a `*client.StaticConfig` that the server it runs in provides through fx; without a valid one, specs that set `region_ids` are rejected.
-Region IDs use the form `<provider>-<region>` in lowercase letters, digits and single hyphens, e.g. `aws-us-east-1`.
+The worker controller gets its region from a `*client.StaticConfig` that the server it runs in provides through fx; without one, specs that set `region_ids` are rejected.
+Region IDs use the form `<provider>-<region>`, e.g. `aws-us-east-1`.
 
 For each task type, the serving group is the first match in this order:
 
-1. A group whose `region_ids` include this host's region and that lists the task type
-2. The catch-all group whose `region_ids` include this host's region
+1. A group whose `region_ids` include the worker controller's regionId and that lists the task type
+2. The catch-all group whose `region_ids` include the worker controller's regionId
 3. A group without `region_ids` that lists the task type
 4. The catch-all group without `region_ids`
 
