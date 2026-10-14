@@ -19,11 +19,12 @@ type (
 	workerComponent struct {
 		dynamicConfig    *dynamicconfig.Collection
 		sdkClientFactory sdk.ClientFactory
+		staticConfig     *client.StaticConfig
 	}
 )
 
-func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory) workercommon.PerNSWorkerComponent {
-	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory}
+func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory, staticConfig *client.StaticConfig) workercommon.PerNSWorkerComponent {
+	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory, staticConfig: staticConfig}
 }
 
 func (s *workerComponent) DedicatedWorkerOptions(ns *namespace.Namespace) *workercommon.PerNSDedicatedWorkerOptions {
@@ -38,7 +39,7 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 		DataConverter: sdk.PreferProtoDataConverter,
 	})
 
-	activities := instancewf.NewActivities(ns, s.dynamicConfig, sdkClient.WorkflowService())
+	activities := instancewf.NewActivities(ns, s.dynamicConfig, sdkClient.WorkflowService(), s.staticConfig)
 	versionWorkflow := func(ctx workflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
 		workflowVersionGetter := func() instancewf.WorkerControllerInstanceWorkflowVersion {
 			return instancewf.WorkerControllerInstanceWorkflowVersion(client.WorkerControllerInstanceWorkflowVersion.Get(s.dynamicConfig)(ns.Name().String()))
