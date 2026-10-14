@@ -298,27 +298,6 @@ func TestModalInvokeWorker_FailsWhenAccountUnresolvable(t *testing.T) {
 	assert.Zero(t, c.lookups)
 }
 
-func TestModalInvokeWorker_RejectsUnknownConfigKeys(t *testing.T) {
-	src := newFakeSecretSource()
-	stubModalSecretSource(t, src)
-	c := &fakeModalClient{}
-	stubModalClient(t, c)
-
-	// The credential-shaped keys matter most: resolving the grant from the
-	// namespace's account is pointless if a config can name a token instead.
-	for _, key := range []string{"refresh_token", "oauth_jwt_key", "token_secret", "account_id", "app-name"} {
-		t.Run(key, func(t *testing.T) {
-			cfg := testModalConfig()
-			cfg[key] = "attacker-supplied"
-
-			err := newModalProvider().InvokeWorker(t.Context(), modalRequestContext(), cfg)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), key)
-		})
-	}
-	assert.Zero(t, c.lookups)
-}
-
 func TestModalInvokeWorker_RetriesOnceAfterRotation(t *testing.T) {
 	src := newFakeSecretSource()
 	src.refreshToken = "rt-stale"

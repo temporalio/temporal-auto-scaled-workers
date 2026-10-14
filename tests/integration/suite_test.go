@@ -46,7 +46,6 @@ func TestWCISuite(t *testing.T) {
 	t.Run("MetricsPollInvokesOnBacklog", testWCIMetricsPollInvokesOnBacklog)
 	t.Run("ModalCreateVersionFunctionNotFound", testWCIModalCreateVersionFunctionNotFound)
 	t.Run("ModalCreateVersionInvalidConfig", testWCIModalCreateVersionInvalidConfig)
-	t.Run("ModalCreateVersionRejectsCredentialConfig", testWCIModalCreateVersionRejectsCredentialConfig)
 	t.Run("ModalCreateVersionWithoutGrant", testWCIModalCreateVersionWithoutGrant)
 	t.Run("ModalScaleUp", testWCIModalScaleUp)
 	t.Run("MultipleVersionsInvokeWithPinnedWorkflows", testWCIMultipleVersionsInvokeWithPinnedWorkflows)

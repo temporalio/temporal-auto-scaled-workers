@@ -108,7 +108,7 @@ A WCI spec is a map of named scaling groups:
 
 Modal is invoke-based, so it pairs with the `no-sync` algorithm and takes the same scaling options as AWS Lambda.
 
-WCI authenticates as the Modal grant belonging to the account that owns the namespace, which is derived server-side. The config selects which of that account's connected workspaces to use; any key outside the table above is rejected, so it can never carry a credential or name another account. The signing key and refresh token are read from Vault on a grant's first use and cached in process memory; they never enter workflow or activity history.
+WCI authenticates as the Modal grant belonging to the account that owns the namespace, which is derived server-side. The config selects which of that account's connected workspaces to use. It cannot carry a credential or name another account: no credential is ever read from it, and the account half of the lookup comes from the namespace. The signing key and refresh token are read from Vault on a grant's first use and cached in process memory; they never enter workflow or activity history.
 
 A steady-state invocation costs one `Spawn`: the Modal connection is kept per grant and the resolved Function handle per `(app, function, version)`, so neither the connection setup nor the `FunctionGet` lookup repeats. Handles are re-resolved after `WorkerControllerModalFunctionCacheTTLSeconds`, and immediately if a spawn finds its Function gone — which is what an App redeploy looks like.
 

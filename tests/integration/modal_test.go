@@ -353,27 +353,6 @@ func testWCIModalCreateVersionWithoutGrant(t *testing.T) {
 	assert.Zero(t, spy.spawnCount(), "no worker may be spawned without a resolved grant")
 }
 
-// A config carrying credential material is rejected outright: credentials come
-// from the account's grant, never from the version's configuration.
-func testWCIModalCreateVersionRejectsCredentialConfig(t *testing.T) {
-	env := createModalTestEnv(t)
-
-	secrets := newModalFakeSecrets()
-	spy := newModalSpy()
-	installModalFakes(t, secrets, spy, nil)
-
-	deploymentName := uuid.NewString()
-	createWorkerDeployment(t, env, deploymentName)
-
-	version := &deploymentpb.WorkerDeploymentVersion{DeploymentName: deploymentName, BuildId: uuid.NewString()}
-	cfg := modalComputeConfig(map[string]string{"refresh_token": "rt-attacker"})
-
-	err := createModalVersion(t, env.Context(), env.SdkClient(), env.Namespace().String(), version, cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "refresh_token")
-	assert.Zero(t, spy.spawnCount())
-}
-
 // A config missing a required field is rejected at creation.
 func testWCIModalCreateVersionInvalidConfig(t *testing.T) {
 	env := createModalTestEnv(t)

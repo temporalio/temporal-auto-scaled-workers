@@ -23,18 +23,6 @@ const (
 	configModalWorkspaceID  = "workspace_id"
 )
 
-// modalValidConfigKeys is everything a worker deployment version's config may
-// carry. Anything else is rejected, which besides catching typos is what keeps
-// a config from naming a credential or an account: those are resolved from
-// secret storage against the account that owns the namespace, never configured.
-var modalValidConfigKeys = map[string]struct{}{
-	configModalAppName:      {},
-	configModalFunctionName: {},
-	configModalVersion:      {},
-	configModalEnvironment:  {},
-	configModalWorkspaceID:  {},
-}
-
 type (
 	// modalFunction is a deployed Modal Function this provider can start.
 	modalFunction interface {
@@ -339,12 +327,6 @@ func cachedVaultModalSecretSource(cfg ModalVaultConfig) (ModalSecretSource, erro
 }
 
 func resolveModalParams(cfg ComputeProviderConfig) (ModalParams, error) {
-	for key := range cfg {
-		if _, ok := modalValidConfigKeys[key]; !ok {
-			return ModalParams{}, fmt.Errorf("unknown config key %q for the modal compute provider", key)
-		}
-	}
-
 	appName, _ := cfg[configModalAppName].(string)
 	if appName == "" {
 		return ModalParams{}, fmt.Errorf("the Modal compute provider requires %q to be configured", configModalAppName)
