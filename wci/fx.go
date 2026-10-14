@@ -57,11 +57,19 @@ var Module = fx.Options(
 	fx.Provide(func() computeprovider.GCPImpersonationChainProvider {
 		return computeprovider.NoopGCPImpersonationChainProvider{}
 	}),
+	fx.Provide(func() computeprovider.ModalAccountResolver {
+		return computeprovider.NamespaceSuffixModalAccountResolver{}
+	}),
 	// Install the (possibly fx.Decorate-replaced) chain provider into the
 	// compute_provider package singleton, where the GCP Cloud Run provider
 	// reads it. fx resolves the decorated value before this Invoke fires.
 	fx.Invoke(func(p computeprovider.GCPImpersonationChainProvider) {
 		computeprovider.SetGCPImpersonationChainProvider(p)
+	}),
+	// Same pattern for the Modal account resolver: the account that owns a
+	// namespace is derived here, server-side, never read from a version's config.
+	fx.Invoke(func(r computeprovider.ModalAccountResolver) {
+		computeprovider.SetModalAccountResolver(r)
 	}),
 	fx.Invoke(ServiceLifetimeHooks),
 )

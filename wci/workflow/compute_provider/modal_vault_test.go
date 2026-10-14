@@ -1,0 +1,309 @@
+package computeprovider
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	vaultapi "github.com/hashicorp/vault/api"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"go.temporal.io/auto-scaled-workers/wci/client"
+)
+
+func testVaultConfig() client.ModalVaultConfig {
+	return client.ModalVaultConfig{
+		Address:                 "https://vault.example",
+		KVMount:                 "global",
+		AuthMount:               "s-testcell",
+		AuthRole:                "worker-controller",
+		ServiceAccountTokenPath: "unset",
+		SigningKeyPath:          "compute/modal-oauth/test",
+		SigningKeyField:         "jwtKey",
+		OAuthClientIDField:      "clientId",
+		GrantPathPrefix:         "compute/modal-oauth/grants",
+		RefreshTokenField:       "refreshToken",
+		RequestTimeoutSeconds:   10,
+	}
+}
+
+// fakeVault serves KV v2 reads and Kubernetes auth logins from memory, tracking
+// which token each read presented so token handling can be asserted.
+type fakeVault struct {
+	mu sync.Mutex
+
+	secrets map[string]map[string]any
+	// readErr, when set, is returned instead of serving secrets.
+	readErr error
+
+	logins       int
+	leaseSeconds int
+	loginErr     error
+	lastRole     string
+	lastJWT      string
+
+	token      string
+	readTokens []string
+	readPaths  []string
+}
+
+func newFakeVault() *fakeVault {
+	return &fakeVault{
+		secrets:      map[string]map[string]any{},
+		leaseSeconds: 3600,
+	}
+}
+
+func (v *fakeVault) ReadWithContext(_ context.Context, path string) (*vaultapi.Secret, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	v.readPaths = append(v.readPaths, path)
+	v.readTokens = append(v.readTokens, v.token)
+
+	if v.readErr != nil {
+		return nil, v.readErr
+	}
+	data, ok := v.secrets[path]
+	if !ok {
+		return nil, nil
+	}
+	return &vaultapi.Secret{Data: map[string]any{"data": data}}, nil
+}
+
+func (v *fakeVault) WriteWithContext(_ context.Context, _ string, data map[string]any) (*vaultapi.Secret, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	v.logins++
+	v.lastRole, _ = data["role"].(string)
+	v.lastJWT, _ = data["jwt"].(string)
+	if v.loginErr != nil {
+		return nil, v.loginErr
+	}
+	return &vaultapi.Secret{Auth: &vaultapi.SecretAuth{
+		ClientToken:   "vault-token-" + string(rune('0'+v.logins)),
+		LeaseDuration: v.leaseSeconds,
+	}}, nil
+}
+
+// newTestVaultSource wires a source to v without constructing a real Vault
+// client, and points the Kubernetes auth login at a service account token on
+// disk.
+func newTestVaultSource(t *testing.T, v *fakeVault, now *time.Time) *vaultModalSecretSource {
+	t.Helper()
+
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("sa-jwt\n"), 0o600))
+
+	cfg := testVaultConfig()
+	cfg.ServiceAccountTokenPath = tokenPath
+
+	return &vaultModalSecretSource{
+		cfg:      cfg,
+		logical:  v,
+		setToken: func(tok string) { v.mu.Lock(); v.token = tok; v.mu.Unlock() },
+		now:      func() time.Time { return *now },
+	}
+}
+
+func vaultResponseError(status int) error {
+	return &vaultapi.ResponseError{StatusCode: status, Errors: []string{"permission denied"}}
+}
+
+func TestVaultSecretSource_ReadsSigningKey(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{
+		"jwtKey":   "pem-key",
+		"clientId": "oc-abc",
+	}
+	s := newTestVaultSource(t, v, &now)
+
+	clientID, jwtKey, err := s.SigningKey(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "oc-abc", clientID)
+	assert.Equal(t, "pem-key", jwtKey)
+}
+
+func TestVaultSecretSource_ReadsRefreshTokenByAccountAndWorkspace(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
+	s := newTestVaultSource(t, v, &now)
+
+	token, err := s.RefreshToken(t.Context(), "acct1", "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, "rt-1", token)
+
+	// Another account's grant on the same workspace is a different path, so it is
+	// simply not found rather than silently shared.
+	_, err = s.RefreshToken(t.Context(), "acct2", "ws-1")
+	require.Error(t, err)
+}
+
+func TestVaultSecretSource_RejectsPathTraversal(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	s := newTestVaultSource(t, v, &now)
+
+	for _, workspace := range []string{"../acct2/ws-1", "ws/..", "..", "", "a\\b"} {
+		_, err := s.RefreshToken(t.Context(), "acct1", workspace)
+		require.Error(t, err, "workspace %q must be rejected", workspace)
+	}
+	assert.Empty(t, v.readPaths, "a rejected id must not reach Vault at all")
+}
+
+func TestVaultSecretSource_LogsInOnceAndReusesToken(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k", "clientId": "oc"}
+	s := newTestVaultSource(t, v, &now)
+
+	for range 5 {
+		_, _, err := s.SigningKey(t.Context())
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, 1, v.logins)
+	assert.Equal(t, "worker-controller", v.lastRole)
+	assert.Equal(t, "sa-jwt", v.lastJWT, "the trailing newline of a projected token must be trimmed")
+}
+
+func TestVaultSecretSource_ReloginsBeforeLeaseExpiry(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.leaseSeconds = 300
+	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k", "clientId": "oc"}
+	s := newTestVaultSource(t, v, &now)
+
+	_, _, err := s.SigningKey(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, v.logins)
+
+	// Still comfortably inside the lease.
+	now = now.Add(2 * time.Minute)
+	_, _, err = s.SigningKey(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, v.logins)
+
+	// Inside the renew margin, so the token is replaced before it can expire
+	// mid-read.
+	now = now.Add(3 * time.Minute)
+	_, _, err = s.SigningKey(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 2, v.logins)
+}
+
+func TestVaultSecretSource_ReloginsOnRejectedToken(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k", "clientId": "oc"}
+	s := newTestVaultSource(t, v, &now)
+
+	// The token is revoked out from under us: the first read is refused, and only
+	// a fresh login gets through.
+	var once sync.Once
+	s.logical = &rejectOnceVault{fakeVault: v, trigger: &once}
+
+	_, _, err := s.SigningKey(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 2, v.logins, "a rejected token must be replaced and the read retried")
+}
+
+func TestVaultSecretSource_DoesNotReloginOnOtherErrors(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.readErr = errors.New("connection refused")
+	s := newTestVaultSource(t, v, &now)
+
+	_, _, err := s.SigningKey(t.Context())
+	require.Error(t, err)
+	assert.Equal(t, 1, v.logins, "a transport failure is not a credential problem")
+}
+
+func TestVaultSecretSource_SurfacesLoginFailure(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.loginErr = errors.New("role not found")
+	s := newTestVaultSource(t, v, &now)
+
+	_, _, err := s.SigningKey(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worker-controller")
+}
+
+func TestVaultSecretSource_SurfacesMissingServiceAccountToken(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	s := newTestVaultSource(t, v, &now)
+	s.cfg.ServiceAccountTokenPath = filepath.Join(t.TempDir(), "absent")
+
+	_, _, err := s.SigningKey(t.Context())
+	require.Error(t, err)
+	assert.Zero(t, v.logins)
+}
+
+func TestVaultSecretSource_MissingSecretIsAnError(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	s := newTestVaultSource(t, v, &now)
+
+	_, _, err := s.SigningKey(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "global/data/compute/modal-oauth/test")
+}
+
+func TestNewVaultModalSecretSource_RequiresConfiguration(t *testing.T) {
+	cases := map[string]func(*client.ModalVaultConfig){
+		"no address":    func(c *client.ModalVaultConfig) { c.Address = "" },
+		"no auth mount": func(c *client.ModalVaultConfig) { c.AuthMount = "" },
+		"no auth role":  func(c *client.ModalVaultConfig) { c.AuthRole = "" },
+		"no kv mount":   func(c *client.ModalVaultConfig) { c.KVMount = "" },
+	}
+
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := testVaultConfig()
+			mutate(&cfg)
+			_, err := newVaultModalSecretSource(cfg)
+			require.Error(t, err)
+		})
+	}
+
+	_, err := newVaultModalSecretSource(testVaultConfig())
+	require.NoError(t, err)
+}
+
+func TestIsVaultTokenRejected(t *testing.T) {
+	assert.True(t, isVaultTokenRejected(vaultResponseError(http.StatusForbidden)))
+	assert.True(t, isVaultTokenRejected(vaultResponseError(http.StatusUnauthorized)))
+	assert.False(t, isVaultTokenRejected(vaultResponseError(http.StatusNotFound)))
+	assert.False(t, isVaultTokenRejected(vaultResponseError(http.StatusInternalServerError)))
+	assert.False(t, isVaultTokenRejected(errors.New("connection refused")))
+}
+
+// rejectOnceVault refuses the first read with a 403 and then behaves normally,
+// which is what a token revoked between login and use looks like.
+type rejectOnceVault struct {
+	*fakeVault
+	trigger *sync.Once
+}
+
+func (v *rejectOnceVault) ReadWithContext(ctx context.Context, path string) (*vaultapi.Secret, error) {
+	rejected := false
+	v.trigger.Do(func() { rejected = true })
+	if rejected {
+		v.mu.Lock()
+		v.readPaths = append(v.readPaths, path)
+		v.mu.Unlock()
+		return nil, vaultResponseError(http.StatusForbidden)
+	}
+	return v.fakeVault.ReadWithContext(ctx, path)
+}

@@ -21,6 +21,7 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 | AWS AgentCore | `aws-agentcore` | Invoke (one-off) |
 | AWS ECS | `aws-ecs` | Worker set (managed scaling) |
 | GCP Cloud Run | `gcp-cloud-run` | Worker set |
+| Modal | `modal` | Invoke (one-off) |
 | Kubernetes | `k8s` | Worker set |
 | Subprocess | `subprocess` | Invoke (dev/test only) |
 
@@ -48,6 +49,12 @@ The development-only subprocess provider accepts an optional positive Go duratio
 | `WorkerControllerAWSIntermediaryRoles` | `[]` | IAM role chain for AWS STS |
 | `WorkerControllerGCPIntermediaryServiceAccounts` | `[]` | Service account chain for GCP |
 | `WorkerControllerAWSRequireRoleAndExternalID` | `true` | Enforce role + external ID on AWS configs |
+| `WorkerControllerModalVaultConfig` | see below | Vault location and layout for Modal OAuth material |
+| `WorkerControllerModalOAuthClientID` | `""` | Modal OAuth client ID, when not stored alongside the signing key |
+| `WorkerControllerModalCredentialReloadLimit` | `2` | Vault re-reads allowed for a grant Modal keeps rejecting |
+| `WorkerControllerModalCredentialReloadCooldownSeconds` | `900` | How long to stop reading Vault for a grant after that |
+| `WorkerControllerModalFunctionCacheTTLSeconds` | `600` | How long a resolved Modal Function handle is reused |
+| `WorkerControllerModalClientIdleTimeoutSeconds` | `1800` | How long an unused Modal connection is kept open |
 
 ## Spec Format
 
@@ -90,6 +97,33 @@ A WCI spec is a map of named scaling groups:
   }
 }
 ```
+
+### `modal` compute provider config
+
+| Key | Required | Description |
+|---|---|---|
+| `app_name` | yes | Deployed Modal App name |
+| `function_name` | yes | Function within the App to spawn |
+| `environment` | yes | Modal environment the App is deployed in |
+| `workspace_id` | yes | Modal workspace. Must be one the namespace's account has connected |
+| `version` | no | Pins the lookup to a deployed App version; omitted uses the current deployment |
+
+Modal is invoke-based, so it pairs with the `no-sync` algorithm and takes the same scaling options as AWS Lambda.
+
+WCI authenticates as the Modal grant belonging to the account that owns the namespace, which is derived server-side. The config selects which of that account's connected workspaces to use and can never carry a credential or name another account. The signing key and refresh token are read from Vault on a grant's first use and cached in process memory; they never enter workflow or activity history.
+
+A steady-state invocation costs one `Spawn`: the Modal connection is kept per grant and the resolved Function handle per `(app, function, version)`, so neither the connection setup nor the `FunctionGet` lookup repeats. Handles are re-resolved after `WorkerControllerModalFunctionCacheTTLSeconds`, and immediately if a spawn finds its Function gone — which is what an App redeploy looks like.
+
+#### Vault layout
+
+WCI authenticates to Modal with an OAuth client assertion (RFC 7523), built from two secrets in a KV v2 mount. Every path and field name below is settable through `WorkerControllerModalVaultConfig`; these are the defaults.
+
+| What | Path | Fields |
+|---|---|---|
+| OAuth client ID and RSA signing key | `<kv>/compute/modal-oauth/test` | `clientId`, `jwtKey` |
+| Refresh token | `<kv>/compute/modal-oauth/grants/<account id>/<workspace id>` | `refreshToken` |
+
+The signing key is WCI-owned and shared by every grant. A refresh token belongs to exactly one account's grant on one workspace, which is what makes a grant reachable only by the account that holds it. Vault is reached over Kubernetes auth with the pod's projected service account token, logging in on first use, before the lease expires, and once more if a token is refused mid-flight.
 
 A group with no `task_types` acts as a catch-all for any task type not claimed by another group. At most one catch-all group is allowed. The `scaling` block is optional; omitting it leaves the group with the default scaling configuration for the given compute provider.
 
