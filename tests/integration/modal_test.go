@@ -59,8 +59,7 @@ func createModalTestEnv(t *testing.T) *testcore.TestEnv {
 type modalFakeSecrets struct {
 	mu sync.Mutex
 
-	clientID string
-	jwtKey   string
+	jwtKey string
 	// grants maps "<account>/<workspace>" to a refresh token. A grant that is
 	// absent is a workspace the account has not connected.
 	grants map[string]string
@@ -71,17 +70,16 @@ type modalFakeSecrets struct {
 
 func newModalFakeSecrets() *modalFakeSecrets {
 	return &modalFakeSecrets{
-		clientID: modalTestClientID,
-		jwtKey:   modalTestJWTKey,
-		grants:   map[string]string{modalTestAccount + "/" + modalTestWorkspace: "rt-integration"},
+		jwtKey: modalTestJWTKey,
+		grants: map[string]string{modalTestAccount + "/" + modalTestWorkspace: "rt-integration"},
 	}
 }
 
-func (s *modalFakeSecrets) SigningKey(context.Context) (string, string, error) {
+func (s *modalFakeSecrets) SigningKey(context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.signingKeyReads++
-	return s.clientID, s.jwtKey, nil
+	return s.jwtKey, nil
 }
 
 func (s *modalFakeSecrets) RefreshToken(_ context.Context, accountID, workspaceID string) (string, error) {
@@ -181,9 +179,26 @@ func installModalFakes(t *testing.T, secrets computeprovider.ModalSecretSource, 
 		},
 	}))
 
+	installModalDeploymentConfig(t)
+
 	orig := modalAccountResolverForTest()
 	computeprovider.SetModalAccountResolver(fixedAccountResolver{accountID: modalTestAccount})
 	t.Cleanup(func() { computeprovider.SetModalAccountResolver(orig) })
+}
+
+// installModalDeploymentConfig supplies the Vault configuration a cell would
+// pass in from its own flags and environment. Only the client ID matters here;
+// the secret source itself is faked.
+func installModalDeploymentConfig(t *testing.T) {
+	t.Helper()
+	prev := computeprovider.GetModalVaultConfig()
+	computeprovider.SetModalVaultConfig(computeprovider.ModalVaultConfig{
+		Address:       "https://vault.invalid",
+		AuthMount:     "s-testcell",
+		AuthRole:      "worker-controller",
+		OAuthClientID: modalTestClientID,
+	})
+	t.Cleanup(func() { computeprovider.SetModalVaultConfig(prev) })
 }
 
 // modalAccountResolverForTest returns the resolver to restore after a test. The
@@ -393,6 +408,7 @@ func testWCIModalCreateVersionFunctionNotFound(t *testing.T) {
 			return modal.NotFoundError{Exception: "Function 'temporal-workers/spawn_worker' not found"}
 		},
 	}))
+	installModalDeploymentConfig(t)
 	orig := modalAccountResolverForTest()
 	computeprovider.SetModalAccountResolver(fixedAccountResolver{accountID: modalTestAccount})
 	t.Cleanup(func() { computeprovider.SetModalAccountResolver(orig) })

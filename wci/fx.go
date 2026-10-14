@@ -60,6 +60,11 @@ var Module = fx.Options(
 	fx.Provide(func() computeprovider.ModalAccountResolver {
 		return computeprovider.NamespaceSuffixModalAccountResolver{}
 	}),
+	// The zero value leaves the Modal compute provider disabled; a deployment
+	// that uses it decorates this with its own flags and environment.
+	fx.Provide(func() computeprovider.ModalVaultConfig {
+		return computeprovider.ModalVaultConfig{}
+	}),
 	// Install the (possibly fx.Decorate-replaced) chain provider into the
 	// compute_provider package singleton, where the GCP Cloud Run provider
 	// reads it. fx resolves the decorated value before this Invoke fires.
@@ -70,6 +75,9 @@ var Module = fx.Options(
 	// namespace is derived here, server-side, never read from a version's config.
 	fx.Invoke(func(r computeprovider.ModalAccountResolver) {
 		computeprovider.SetModalAccountResolver(r)
+	}),
+	fx.Invoke(func(cfg computeprovider.ModalVaultConfig) {
+		computeprovider.SetModalVaultConfig(cfg)
 	}),
 	fx.Invoke(ServiceLifetimeHooks),
 )

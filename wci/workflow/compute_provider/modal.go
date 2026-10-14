@@ -81,11 +81,9 @@ type (
 	}
 
 	modalComputeProvider struct {
-		vaultConfig    client.ModalVaultConfig
-		oauthClientID  string
-		reloadPolicy   modalCredentialPolicy
-		clientPolicy   modalClientPolicy
-		secretSourceFn func() (ModalSecretSource, error)
+		vaultConfig  ModalVaultConfig
+		reloadPolicy modalCredentialPolicy
+		clientPolicy modalClientPolicy
 	}
 )
 
@@ -111,16 +109,16 @@ func NewModalComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (C
 		},
 	}
 	if dc != nil {
-		p.vaultConfig = client.WorkerControllerModalVaultConfig.Get(dc)()
-		p.oauthClientID = client.WorkerControllerModalOAuthClientID.Get(dc)()
 		p.reloadPolicy.reloadLimit = client.WorkerControllerModalCredentialReloadLimit.Get(dc)()
 		p.reloadPolicy.reloadCooldown = time.Duration(client.WorkerControllerModalCredentialReloadCooldownSeconds.Get(dc)()) * time.Second
 		p.clientPolicy.functionTTL = time.Duration(client.WorkerControllerModalFunctionCacheTTLSeconds.Get(dc)()) * time.Second
 		p.clientPolicy.idleTimeout = time.Duration(client.WorkerControllerModalClientIdleTimeoutSeconds.Get(dc)()) * time.Second
 	}
-	p.secretSourceFn = func() (ModalSecretSource, error) {
-		return modalSecretSourceFn(p.vaultConfig, p.oauthClientID)
-	}
+	// Where Vault is and who we log in to it as comes from the deployment, not
+	// from dynamic config: the address is where the pod's service account token
+	// gets sent, so changing it should take the same privilege as changing the
+	// cell.
+	p.vaultConfig = GetModalVaultConfig()
 	return p, nil
 }
 
@@ -180,7 +178,7 @@ func (p *modalComputeProvider) withFunction(
 		return err
 	}
 
-	source, err := p.secretSourceFn()
+	source, err := modalSecretSourceFn(p.vaultConfig)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
@@ -191,7 +189,7 @@ func (p *modalComputeProvider) withFunction(
 	}
 
 	key := modalGrantKey{accountID: accountID, workspaceID: params.WorkspaceID}
-	creds, digest, err := modalCredentials.get(ctx, source, key, p.reloadPolicy)
+	creds, digest, err := modalCredentials.get(ctx, source, p.vaultConfig.OAuthClientID, key, p.reloadPolicy)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
@@ -212,7 +210,7 @@ func (p *modalComputeProvider) withFunction(
 		return err
 	}
 
-	rotated, changed, reloadErr := modalCredentials.reload(ctx, source, key, digest, p.reloadPolicy)
+	rotated, changed, reloadErr := modalCredentials.reload(ctx, source, p.vaultConfig.OAuthClientID, key, digest, p.reloadPolicy)
 	if reloadErr != nil {
 		return fmt.Errorf("%w: Modal rejected the credentials and they could not be re-read: %w", errWCIOwned, reloadErr)
 	}
@@ -307,20 +305,44 @@ func (f *modalSDKFunction) Spawn(ctx context.Context, args []any, kwargs map[str
 	return err
 }
 
+// modalVaultConfig is the deployment-supplied Vault configuration, installed
+// once at startup. It is process-wide rather than carried on the provider
+// because GetComputeProvider builds a fresh provider for every activity.
+var (
+	modalVaultConfigMu sync.RWMutex
+	modalVaultConfig   ModalVaultConfig
+)
+
+// SetModalVaultConfig installs the Vault configuration the Modal compute
+// provider authenticates with. Called once at startup from the deployment's own
+// configuration; leaving it unset disables the provider, which then fails closed.
+func SetModalVaultConfig(cfg ModalVaultConfig) {
+	modalVaultConfigMu.Lock()
+	defer modalVaultConfigMu.Unlock()
+	modalVaultConfig = cfg
+}
+
+// GetModalVaultConfig returns the installed Vault configuration.
+func GetModalVaultConfig() ModalVaultConfig {
+	modalVaultConfigMu.RLock()
+	defer modalVaultConfigMu.RUnlock()
+	return modalVaultConfig
+}
+
 // modalSecretSourceFn builds the secret source. It is a package-level variable
 // so tests can supply one without a Vault server.
 var modalSecretSourceFn = cachedVaultModalSecretSource
 
 var (
 	modalSecretSourceMu     sync.Mutex
-	modalSecretSourceCfg    client.ModalVaultConfig
+	modalSecretSourceCfg    ModalVaultConfig
 	modalSecretSourceCached ModalSecretSource
 )
 
 // cachedVaultModalSecretSource reuses one Vault-backed source per configuration,
 // so the Vault token obtained by the Kubernetes auth login is shared by every
 // grant instead of being minted per activity.
-func cachedVaultModalSecretSource(cfg client.ModalVaultConfig, fallbackClientID string) (ModalSecretSource, error) {
+func cachedVaultModalSecretSource(cfg ModalVaultConfig) (ModalSecretSource, error) {
 	modalSecretSourceMu.Lock()
 	defer modalSecretSourceMu.Unlock()
 
@@ -333,37 +355,9 @@ func cachedVaultModalSecretSource(cfg client.ModalVaultConfig, fallbackClientID 
 		return nil, err
 	}
 
-	var result ModalSecretSource = source
-	if fallbackClientID != "" {
-		result = &modalClientIDFallback{inner: result, clientID: fallbackClientID}
-	}
-
 	modalSecretSourceCfg = cfg
-	modalSecretSourceCached = result
-	return result, nil
-}
-
-// modalClientIDFallback supplies the OAuth client ID from configuration when the
-// signing key secret does not carry one, so the client ID can live in either
-// place.
-type modalClientIDFallback struct {
-	inner    ModalSecretSource
-	clientID string
-}
-
-func (f *modalClientIDFallback) SigningKey(ctx context.Context) (string, string, error) {
-	clientID, jwtKey, err := f.inner.SigningKey(ctx)
-	if err != nil {
-		return "", "", err
-	}
-	if clientID == "" {
-		clientID = f.clientID
-	}
-	return clientID, jwtKey, nil
-}
-
-func (f *modalClientIDFallback) RefreshToken(ctx context.Context, accountID, workspaceID string) (string, error) {
-	return f.inner.RefreshToken(ctx, accountID, workspaceID)
+	modalSecretSourceCached = source
+	return source, nil
 }
 
 func checkNoModalCredentialEnv() error {

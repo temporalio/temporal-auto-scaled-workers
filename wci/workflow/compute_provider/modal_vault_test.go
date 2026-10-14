@@ -13,24 +13,15 @@ import (
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"go.temporal.io/auto-scaled-workers/wci/client"
 )
 
-func testVaultConfig() client.ModalVaultConfig {
-	return client.ModalVaultConfig{
-		Address:                 "https://vault.example",
-		KVMount:                 "global",
-		AuthMount:               "s-testcell",
-		AuthRole:                "worker-controller",
-		ServiceAccountTokenPath: "unset",
-		SigningKeyPath:          "compute/modal-oauth/test",
-		SigningKeyField:         "jwtKey",
-		OAuthClientIDField:      "clientId",
-		GrantPathPrefix:         "compute/modal-oauth/grants",
-		RefreshTokenField:       "refreshToken",
-		RequestTimeoutSeconds:   10,
-	}
+func testVaultConfig() ModalVaultConfig {
+	return ModalVaultConfig{
+		Address:       "https://vault.example",
+		AuthMount:     "s-testcell",
+		AuthRole:      "worker-controller",
+		OAuthClientID: "oc-test",
+	}.WithDefaults()
 }
 
 // fakeVault serves KV v2 reads and Kubernetes auth logins from memory, tracking
@@ -102,14 +93,12 @@ func newTestVaultSource(t *testing.T, v *fakeVault, now *time.Time) *vaultModalS
 	tokenPath := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(tokenPath, []byte("sa-jwt\n"), 0o600))
 
-	cfg := testVaultConfig()
-	cfg.ServiceAccountTokenPath = tokenPath
-
 	return &vaultModalSecretSource{
-		cfg:      cfg,
-		logical:  v,
-		setToken: func(tok string) { v.mu.Lock(); v.token = tok; v.mu.Unlock() },
-		now:      func() time.Time { return *now },
+		cfg:       testVaultConfig(),
+		logical:   v,
+		setToken:  func(tok string) { v.mu.Lock(); v.token = tok; v.mu.Unlock() },
+		tokenPath: tokenPath,
+		now:       func() time.Time { return *now },
 	}
 }
 
@@ -120,15 +109,11 @@ func vaultResponseError(status int) error {
 func TestVaultSecretSource_ReadsSigningKey(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
-	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{
-		"jwtKey":   "pem-key",
-		"clientId": "oc-abc",
-	}
+	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
 	s := newTestVaultSource(t, v, &now)
 
-	clientID, jwtKey, err := s.SigningKey(t.Context())
+	jwtKey, err := s.SigningKey(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, "oc-abc", clientID)
 	assert.Equal(t, "pem-key", jwtKey)
 }
 
@@ -163,11 +148,11 @@ func TestVaultSecretSource_RejectsPathTraversal(t *testing.T) {
 func TestVaultSecretSource_LogsInOnceAndReusesToken(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
-	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k", "clientId": "oc"}
+	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k"}
 	s := newTestVaultSource(t, v, &now)
 
 	for range 5 {
-		_, _, err := s.SigningKey(t.Context())
+		_, err := s.SigningKey(t.Context())
 		require.NoError(t, err)
 	}
 
@@ -180,23 +165,23 @@ func TestVaultSecretSource_ReloginsBeforeLeaseExpiry(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
 	v.leaseSeconds = 300
-	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k", "clientId": "oc"}
+	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k"}
 	s := newTestVaultSource(t, v, &now)
 
-	_, _, err := s.SigningKey(t.Context())
+	_, err := s.SigningKey(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, 1, v.logins)
 
 	// Still comfortably inside the lease.
 	now = now.Add(2 * time.Minute)
-	_, _, err = s.SigningKey(t.Context())
+	_, err = s.SigningKey(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 1, v.logins)
 
 	// Inside the renew margin, so the token is replaced before it can expire
 	// mid-read.
 	now = now.Add(3 * time.Minute)
-	_, _, err = s.SigningKey(t.Context())
+	_, err = s.SigningKey(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 2, v.logins)
 }
@@ -204,7 +189,7 @@ func TestVaultSecretSource_ReloginsBeforeLeaseExpiry(t *testing.T) {
 func TestVaultSecretSource_ReloginsOnRejectedToken(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
-	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k", "clientId": "oc"}
+	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k"}
 	s := newTestVaultSource(t, v, &now)
 
 	// The token is revoked out from under us: the first read is refused, and only
@@ -212,7 +197,7 @@ func TestVaultSecretSource_ReloginsOnRejectedToken(t *testing.T) {
 	var once sync.Once
 	s.logical = &rejectOnceVault{fakeVault: v, trigger: &once}
 
-	_, _, err := s.SigningKey(t.Context())
+	_, err := s.SigningKey(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 2, v.logins, "a rejected token must be replaced and the read retried")
 }
@@ -223,7 +208,7 @@ func TestVaultSecretSource_DoesNotReloginOnOtherErrors(t *testing.T) {
 	v.readErr = errors.New("connection refused")
 	s := newTestVaultSource(t, v, &now)
 
-	_, _, err := s.SigningKey(t.Context())
+	_, err := s.SigningKey(t.Context())
 	require.Error(t, err)
 	assert.Equal(t, 1, v.logins, "a transport failure is not a credential problem")
 }
@@ -234,7 +219,7 @@ func TestVaultSecretSource_SurfacesLoginFailure(t *testing.T) {
 	v.loginErr = errors.New("role not found")
 	s := newTestVaultSource(t, v, &now)
 
-	_, _, err := s.SigningKey(t.Context())
+	_, err := s.SigningKey(t.Context())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "worker-controller")
 }
@@ -243,9 +228,9 @@ func TestVaultSecretSource_SurfacesMissingServiceAccountToken(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
 	s := newTestVaultSource(t, v, &now)
-	s.cfg.ServiceAccountTokenPath = filepath.Join(t.TempDir(), "absent")
+	s.tokenPath = filepath.Join(t.TempDir(), "absent")
 
-	_, _, err := s.SigningKey(t.Context())
+	_, err := s.SigningKey(t.Context())
 	require.Error(t, err)
 	assert.Zero(t, v.logins)
 }
@@ -255,17 +240,17 @@ func TestVaultSecretSource_MissingSecretIsAnError(t *testing.T) {
 	v := newFakeVault()
 	s := newTestVaultSource(t, v, &now)
 
-	_, _, err := s.SigningKey(t.Context())
+	_, err := s.SigningKey(t.Context())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "global/data/compute/modal-oauth/test")
 }
 
 func TestNewVaultModalSecretSource_RequiresConfiguration(t *testing.T) {
-	cases := map[string]func(*client.ModalVaultConfig){
-		"no address":    func(c *client.ModalVaultConfig) { c.Address = "" },
-		"no auth mount": func(c *client.ModalVaultConfig) { c.AuthMount = "" },
-		"no auth role":  func(c *client.ModalVaultConfig) { c.AuthRole = "" },
-		"no kv mount":   func(c *client.ModalVaultConfig) { c.KVMount = "" },
+	cases := map[string]func(*ModalVaultConfig){
+		"no address":    func(c *ModalVaultConfig) { c.Address = "" },
+		"no auth mount": func(c *ModalVaultConfig) { c.AuthMount = "" },
+		"no auth role":  func(c *ModalVaultConfig) { c.AuthRole = "" },
+		"no client id":  func(c *ModalVaultConfig) { c.OAuthClientID = "" },
 	}
 
 	for name, mutate := range cases {
@@ -306,4 +291,39 @@ func (v *rejectOnceVault) ReadWithContext(ctx context.Context, path string) (*va
 		return nil, vaultResponseError(http.StatusForbidden)
 	}
 	return v.fakeVault.ReadWithContext(ctx, path)
+}
+
+func TestModalVaultConfig_WithDefaults(t *testing.T) {
+	cfg := ModalVaultConfig{
+		Address:       "https://vault.example",
+		AuthMount:     "s-cell",
+		AuthRole:      "worker-controller",
+		OAuthClientID: "oc-abc",
+	}.WithDefaults()
+
+	assert.Equal(t, "global", cfg.KVMount)
+	assert.Equal(t, "compute/modal-oauth/test", cfg.SigningKeyPath)
+	assert.Equal(t, "jwtKey", cfg.SigningKeyField)
+	assert.Equal(t, "compute/modal-oauth/grants", cfg.GrantPathPrefix)
+	assert.Equal(t, "refreshToken", cfg.RefreshTokenField)
+	assert.Equal(t, 10*time.Second, cfg.RequestTimeout)
+}
+
+func TestModalVaultConfig_WithDefaults_KeepsOverrides(t *testing.T) {
+	cfg := ModalVaultConfig{
+		KVMount:         "cell-secrets",
+		SigningKeyPath:  "modal/key",
+		SigningKeyField: "pem",
+		RequestTimeout:  3 * time.Second,
+	}.WithDefaults()
+
+	assert.Equal(t, "cell-secrets", cfg.KVMount)
+	assert.Equal(t, "modal/key", cfg.SigningKeyPath)
+	assert.Equal(t, "pem", cfg.SigningKeyField)
+	assert.Equal(t, 3*time.Second, cfg.RequestTimeout)
+}
+
+func TestModalVaultConfig_ZeroValueIsInvalid(t *testing.T) {
+	require.Error(t, ModalVaultConfig{}.Validate(),
+		"an unconfigured cell must leave the provider disabled rather than half-working")
 }

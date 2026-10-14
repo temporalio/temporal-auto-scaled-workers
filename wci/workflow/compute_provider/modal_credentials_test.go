@@ -25,12 +25,12 @@ func TestModalCredentialCache_ReadsOncePerGrant(t *testing.T) {
 	src := newFakeSecretSource()
 	policy := modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Hour}
 
-	first, digest, err := c.get(t.Context(), src, testGrant, policy)
+	first, digest, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 	require.NoError(t, err)
 	require.Equal(t, "rt-original", first.RefreshToken)
 
 	for range 10 {
-		got, gotDigest, err := c.get(t.Context(), src, testGrant, policy)
+		got, gotDigest, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 		require.NoError(t, err)
 		assert.Equal(t, first, got)
 		assert.Equal(t, digest, gotDigest)
@@ -46,17 +46,17 @@ func TestModalCredentialCache_ReloadDetectsRotation(t *testing.T) {
 	src := newFakeSecretSource()
 	policy := modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Hour}
 
-	_, digest, err := c.get(t.Context(), src, testGrant, policy)
+	_, digest, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 	require.NoError(t, err)
 
 	src.refreshToken = "rt-rotated"
-	rotated, changed, err := c.reload(t.Context(), src, testGrant, digest, policy)
+	rotated, changed, err := c.reload(t.Context(), src, testModalClientID, testGrant, digest, policy)
 	require.NoError(t, err)
 	assert.True(t, changed)
 	assert.Equal(t, "rt-rotated", rotated.RefreshToken)
 
 	// The rotated material is now what a plain get serves.
-	got, _, err := c.get(t.Context(), src, testGrant, policy)
+	got, _, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 	require.NoError(t, err)
 	assert.Equal(t, "rt-rotated", got.RefreshToken)
 }
@@ -67,10 +67,10 @@ func TestModalCredentialCache_ReloadReportsUnchanged(t *testing.T) {
 	src := newFakeSecretSource()
 	policy := modalCredentialPolicy{reloadLimit: 5, reloadCooldown: time.Hour}
 
-	_, digest, err := c.get(t.Context(), src, testGrant, policy)
+	_, digest, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 	require.NoError(t, err)
 
-	_, changed, err := c.reload(t.Context(), src, testGrant, digest, policy)
+	_, changed, err := c.reload(t.Context(), src, testModalClientID, testGrant, digest, policy)
 	require.NoError(t, err)
 	assert.False(t, changed, "re-reading the same material must not look like a rotation")
 }
@@ -81,12 +81,12 @@ func TestModalCredentialCache_StopsAfterReloadLimit(t *testing.T) {
 	src := newFakeSecretSource()
 	policy := modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Hour}
 
-	_, digest, err := c.get(t.Context(), src, testGrant, policy)
+	_, digest, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 	require.NoError(t, err)
 	readsAfterFirstLoad := src.refreshTokenReads
 
 	for range 2 {
-		_, changed, err := c.reload(t.Context(), src, testGrant, digest, policy)
+		_, changed, err := c.reload(t.Context(), src, testModalClientID, testGrant, digest, policy)
 		require.NoError(t, err)
 		require.False(t, changed)
 	}
@@ -95,7 +95,7 @@ func TestModalCredentialCache_StopsAfterReloadLimit(t *testing.T) {
 
 	// Past the limit the cache refuses to read at all until the cooldown elapses.
 	for range 20 {
-		_, _, err := c.reload(t.Context(), src, testGrant, digest, policy)
+		_, _, err := c.reload(t.Context(), src, testModalClientID, testGrant, digest, policy)
 		require.ErrorIs(t, err, errModalCredentialsExhausted)
 	}
 	assert.Equal(t, readsAtLimit, src.refreshTokenReads, "secret storage must see no further reads")
@@ -107,19 +107,19 @@ func TestModalCredentialCache_ResumesAfterCooldown(t *testing.T) {
 	src := newFakeSecretSource()
 	policy := modalCredentialPolicy{reloadLimit: 1, reloadCooldown: 15 * time.Minute}
 
-	_, digest, err := c.get(t.Context(), src, testGrant, policy)
+	_, digest, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 	require.NoError(t, err)
 
-	_, _, err = c.reload(t.Context(), src, testGrant, digest, policy)
+	_, _, err = c.reload(t.Context(), src, testModalClientID, testGrant, digest, policy)
 	require.NoError(t, err)
 
-	_, _, err = c.reload(t.Context(), src, testGrant, digest, policy)
+	_, _, err = c.reload(t.Context(), src, testModalClientID, testGrant, digest, policy)
 	require.ErrorIs(t, err, errModalCredentialsExhausted)
 
 	now = now.Add(16 * time.Minute)
 	src.refreshToken = "rt-rotated"
 
-	rotated, changed, err := c.reload(t.Context(), src, testGrant, digest, policy)
+	rotated, changed, err := c.reload(t.Context(), src, testModalClientID, testGrant, digest, policy)
 	require.NoError(t, err)
 	assert.True(t, changed)
 	assert.Equal(t, "rt-rotated", rotated.RefreshToken)
@@ -133,13 +133,13 @@ func TestModalCredentialCache_FailedReadCountsAgainstBudget(t *testing.T) {
 	policy := modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Hour}
 
 	for range 2 {
-		_, _, err := c.get(t.Context(), src, testGrant, policy)
+		_, _, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 		require.Error(t, err)
 	}
 	readsAtLimit := src.refreshTokenReads
 
 	for range 20 {
-		_, _, err := c.get(t.Context(), src, testGrant, policy)
+		_, _, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 		require.ErrorIs(t, err, errModalCredentialsExhausted)
 	}
 	assert.Equal(t, readsAtLimit, src.refreshTokenReads,
@@ -152,7 +152,7 @@ func TestModalCredentialCache_ConcurrentReloadsCollapseToOneRead(t *testing.T) {
 	src := &countingSecretSource{fakeSecretSource: newFakeSecretSource()}
 	policy := modalCredentialPolicy{reloadLimit: 10, reloadCooldown: time.Hour}
 
-	_, digest, err := c.get(t.Context(), src, testGrant, policy)
+	_, digest, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 	require.NoError(t, err)
 
 	src.mu.Lock()
@@ -164,7 +164,7 @@ func TestModalCredentialCache_ConcurrentReloadsCollapseToOneRead(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			creds, changed, err := c.reload(t.Context(), src, testGrant, digest, policy)
+			creds, changed, err := c.reload(t.Context(), src, testModalClientID, testGrant, digest, policy)
 			assert.NoError(t, err)
 			assert.True(t, changed)
 			assert.Equal(t, "rt-rotated", creds.RefreshToken)
@@ -184,9 +184,7 @@ func TestModalCredentialCache_RejectsIncompleteMaterial(t *testing.T) {
 
 	t.Run("no client id", func(t *testing.T) {
 		c := newTestCache(&now)
-		src := newFakeSecretSource()
-		src.clientID = ""
-		_, _, err := c.get(t.Context(), src, testGrant, policy)
+		_, _, err := c.get(t.Context(), newFakeSecretSource(), "", testGrant, policy)
 		require.Error(t, err)
 	})
 
@@ -194,7 +192,7 @@ func TestModalCredentialCache_RejectsIncompleteMaterial(t *testing.T) {
 		c := newTestCache(&now)
 		src := newFakeSecretSource()
 		src.jwtKey = ""
-		_, _, err := c.get(t.Context(), src, testGrant, policy)
+		_, _, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 		require.Error(t, err)
 	})
 
@@ -202,7 +200,7 @@ func TestModalCredentialCache_RejectsIncompleteMaterial(t *testing.T) {
 		c := newTestCache(&now)
 		src := newFakeSecretSource()
 		src.refreshToken = ""
-		_, _, err := c.get(t.Context(), src, testGrant, policy)
+		_, _, err := c.get(t.Context(), src, testModalClientID, testGrant, policy)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), testGrant.workspaceID)
 	})
@@ -226,7 +224,7 @@ type countingSecretSource struct {
 	mu sync.Mutex
 }
 
-func (s *countingSecretSource) SigningKey(ctx context.Context) (string, string, error) {
+func (s *countingSecretSource) SigningKey(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.fakeSecretSource.SigningKey(ctx)

@@ -12,9 +12,103 @@ import (
 	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
-
-	"go.temporal.io/auto-scaled-workers/wci/client"
 )
+
+// ModalVaultConfig tells the Modal compute provider where its OAuth material
+// lives and who to log in to Vault as. It is deployment configuration, not
+// runtime tuning: the address is where WCI sends its Kubernetes service account
+// token, and the auth mount is per-cell. The deployment supplies it at startup
+// through SetModalVaultConfig rather than through dynamic config, so changing it
+// takes the same privilege as changing the cell itself.
+type ModalVaultConfig struct {
+	// Address is the Vault API base URL. Empty disables the Modal compute
+	// provider: with no secret source there is no grant to resolve.
+	Address string
+	// Namespace is the Vault Enterprise/HCP namespace (e.g. "admin"), if any.
+	Namespace string
+	// AuthMount is the Kubernetes auth method mount path, which is per-cell
+	// (e.g. "s-mycell").
+	AuthMount string
+	// AuthRole is the Vault role the pod's Kubernetes service account logs in as.
+	AuthRole string
+	// OAuthClientID is the Modal-issued OAuth client ID ("oc-" prefix) WCI
+	// authenticates as. It is not a secret, so it travels with the rest of the
+	// deployment config rather than sitting in Vault next to the signing key.
+	OAuthClientID string
+
+	// KVMount is the KV v2 mount the Modal secrets live under.
+	KVMount string
+	// SigningKeyPath is the KV v2 secret holding the PEM-encoded RSA private key
+	// WCI signs client assertions with, relative to KVMount.
+	SigningKeyPath string
+	// SigningKeyField is the field of SigningKeyPath holding that key.
+	SigningKeyField string
+	// GrantPathPrefix is the KV v2 prefix under which per-grant refresh tokens
+	// live, relative to KVMount. The full path is
+	// <GrantPathPrefix>/<account id>/<workspace id>.
+	GrantPathPrefix string
+	// RefreshTokenField is the field of a grant secret holding the refresh token.
+	RefreshTokenField string
+
+	// RequestTimeout bounds a single Vault API call.
+	RequestTimeout time.Duration
+}
+
+const (
+	// serviceAccountTokenPath is where the kubelet projects the pod's service
+	// account token. It is the same in every cluster and the deployment mounts no
+	// token anywhere else, so it is fixed rather than configurable. The file is
+	// re-read on every login because the kubelet rotates it in place.
+	serviceAccountTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // G101: the path of a token, not a token.
+
+	// tokenRenewMargin is how long before a Vault token's expiry it is replaced.
+	// Comfortably longer than a read, so a token valid at the check stays valid
+	// through the call it authorizes.
+	tokenRenewMargin = 60 * time.Second
+)
+
+// WithDefaults fills in the secret layout a standard deployment uses, so the
+// deployment only supplies the parts that genuinely vary per cell.
+func (c ModalVaultConfig) WithDefaults() ModalVaultConfig {
+	if c.KVMount == "" {
+		c.KVMount = "global"
+	}
+	if c.SigningKeyPath == "" {
+		c.SigningKeyPath = "compute/modal-oauth/test"
+	}
+	if c.SigningKeyField == "" {
+		c.SigningKeyField = "jwtKey"
+	}
+	if c.GrantPathPrefix == "" {
+		c.GrantPathPrefix = "compute/modal-oauth/grants"
+	}
+	if c.RefreshTokenField == "" {
+		c.RefreshTokenField = "refreshToken"
+	}
+	if c.RequestTimeout <= 0 {
+		c.RequestTimeout = 10 * time.Second
+	}
+	return c
+}
+
+// Validate reports whether the config names everything the provider needs, so a
+// half-configured cell fails when the provider is first used rather than
+// silently authenticating as nobody.
+func (c ModalVaultConfig) Validate() error {
+	if c.Address == "" {
+		return errors.New("no Vault address")
+	}
+	if c.AuthMount == "" {
+		return errors.New("no Vault Kubernetes auth mount")
+	}
+	if c.AuthRole == "" {
+		return errors.New("no Vault Kubernetes auth role")
+	}
+	if c.OAuthClientID == "" {
+		return errors.New("no Modal OAuth client ID")
+	}
+	return nil
+}
 
 // vaultLogical is the slice of the Vault API the secret source uses, narrowed so
 // tests can drive it without a server.
@@ -26,11 +120,14 @@ type vaultLogical interface {
 // vaultModalSecretSource reads Modal OAuth material out of a Vault KV v2 mount,
 // authenticating with the pod's Kubernetes service account.
 type vaultModalSecretSource struct {
-	cfg client.ModalVaultConfig
+	cfg ModalVaultConfig
 
 	logical vaultLogical
 	// setToken installs a freshly minted Vault token on the underlying client.
 	setToken func(string)
+	// tokenPath is the service account token presented at login. Fixed in
+	// production; a test points it at a file it controls.
+	tokenPath string
 
 	// mu guards the login state. Vault tokens expire and the Kubernetes auth
 	// login has to be redone; serializing it means a burst of readers triggers
@@ -45,32 +142,22 @@ type vaultModalSecretSource struct {
 	now func() time.Time
 }
 
-// tokenRenewMargin is how long before a Vault token's expiry it is replaced.
-// Comfortably longer than a read, so a token valid at the check stays valid
-// through the call it authorizes.
-const tokenRenewMargin = 60 * time.Second
+// NewVaultModalSecretSource builds the Vault-backed secret source. Exported so a
+// deployment can construct one directly; the provider otherwise builds it from
+// the config installed with SetModalVaultConfig.
+func NewVaultModalSecretSource(cfg ModalVaultConfig) (ModalSecretSource, error) {
+	return newVaultModalSecretSource(cfg)
+}
 
-func newVaultModalSecretSource(cfg client.ModalVaultConfig) (*vaultModalSecretSource, error) {
-	if cfg.Address == "" {
-		return nil, errors.New("no Vault address is configured for the Modal compute provider")
-	}
-	if cfg.AuthMount == "" || cfg.AuthRole == "" {
-		return nil, errors.New("the Modal compute provider needs a Vault Kubernetes auth mount and role")
-	}
-	if cfg.KVMount == "" {
-		return nil, errors.New("the Modal compute provider needs a Vault KV mount")
+func newVaultModalSecretSource(cfg ModalVaultConfig) (*vaultModalSecretSource, error) {
+	cfg = cfg.WithDefaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("the Modal compute provider is not configured: %w", err)
 	}
 
 	vaultConfig := vaultapi.DefaultConfig()
 	vaultConfig.Address = cfg.Address
-	if cfg.RequestTimeoutSeconds > 0 {
-		vaultConfig.Timeout = time.Duration(cfg.RequestTimeoutSeconds) * time.Second
-	}
-	if cfg.CACertPath != "" {
-		if err := vaultConfig.ConfigureTLS(&vaultapi.TLSConfig{CACert: cfg.CACertPath}); err != nil {
-			return nil, fmt.Errorf("failed to configure Vault TLS: %w", err)
-		}
-	}
+	vaultConfig.Timeout = cfg.RequestTimeout
 
 	c, err := vaultapi.NewClient(vaultConfig)
 	if err != nil {
@@ -81,22 +168,22 @@ func newVaultModalSecretSource(cfg client.ModalVaultConfig) (*vaultModalSecretSo
 	}
 
 	return &vaultModalSecretSource{
-		cfg:      cfg,
-		logical:  c.Logical(),
-		setToken: c.SetToken,
-		now:      time.Now,
+		cfg:       cfg,
+		logical:   c.Logical(),
+		setToken:  c.SetToken,
+		tokenPath: serviceAccountTokenPath,
+		now:       time.Now,
 	}, nil
 }
 
-func (s *vaultModalSecretSource) SigningKey(ctx context.Context) (string, string, error) {
+func (s *vaultModalSecretSource) SigningKey(ctx context.Context) (string, error) {
 	data, err := s.readKV(ctx, s.cfg.SigningKeyPath)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 
 	jwtKey, _ := data[s.cfg.SigningKeyField].(string)
-	clientID, _ := data[s.cfg.OAuthClientIDField].(string)
-	return clientID, jwtKey, nil
+	return jwtKey, nil
 }
 
 func (s *vaultModalSecretSource) RefreshToken(ctx context.Context, accountID, workspaceID string) (string, error) {
@@ -168,9 +255,9 @@ func (s *vaultModalSecretSource) ensureToken(ctx context.Context, force bool) er
 }
 
 func (s *vaultModalSecretSource) loginLocked(ctx context.Context) error {
-	jwt, err := os.ReadFile(s.cfg.ServiceAccountTokenPath)
+	jwt, err := os.ReadFile(s.tokenPath)
 	if err != nil {
-		return fmt.Errorf("failed to read the Kubernetes service account token at %s: %w", s.cfg.ServiceAccountTokenPath, err)
+		return fmt.Errorf("failed to read the Kubernetes service account token at %s: %w", s.tokenPath, err)
 	}
 
 	loginPath := path.Join("auth", s.cfg.AuthMount, "login")

@@ -6,8 +6,6 @@ import (
 	"context"
 
 	modal "github.com/modal-labs/modal-client/go"
-
-	"go.temporal.io/auto-scaled-workers/wci/client"
 )
 
 // ModalTestFunction is the stand-in a test installs for a deployed Modal
@@ -49,7 +47,7 @@ func SetModalTestClient(cfg ModalTestClientConfig) func() {
 // another test cached and never leaves its own behind.
 func SetModalTestSecretSource(src ModalSecretSource) func() {
 	orig := modalSecretSourceFn
-	modalSecretSourceFn = func(client.ModalVaultConfig, string) (ModalSecretSource, error) {
+	modalSecretSourceFn = func(ModalVaultConfig) (ModalSecretSource, error) {
 		return src, nil
 	}
 	ResetModalCredentialCache()

@@ -49,8 +49,6 @@ The development-only subprocess provider accepts an optional positive Go duratio
 | `WorkerControllerAWSIntermediaryRoles` | `[]` | IAM role chain for AWS STS |
 | `WorkerControllerGCPIntermediaryServiceAccounts` | `[]` | Service account chain for GCP |
 | `WorkerControllerAWSRequireRoleAndExternalID` | `true` | Enforce role + external ID on AWS configs |
-| `WorkerControllerModalVaultConfig` | see below | Vault location and layout for Modal OAuth material |
-| `WorkerControllerModalOAuthClientID` | `""` | Modal OAuth client ID, when not stored alongside the signing key |
 | `WorkerControllerModalCredentialReloadLimit` | `2` | Vault re-reads allowed for a grant Modal keeps rejecting |
 | `WorkerControllerModalCredentialReloadCooldownSeconds` | `900` | How long to stop reading Vault for a grant after that |
 | `WorkerControllerModalFunctionCacheTTLSeconds` | `600` | How long a resolved Modal Function handle is reused |
@@ -114,16 +112,30 @@ WCI authenticates as the Modal grant belonging to the account that owns the name
 
 A steady-state invocation costs one `Spawn`: the Modal connection is kept per grant and the resolved Function handle per `(app, function, version)`, so neither the connection setup nor the `FunctionGet` lookup repeats. Handles are re-resolved after `WorkerControllerModalFunctionCacheTTLSeconds`, and immediately if a spawn finds its Function gone — which is what an App redeploy looks like.
 
-#### Vault layout
+#### Vault layout and deployment config
 
-WCI authenticates to Modal with an OAuth client assertion (RFC 7523), built from two secrets in a KV v2 mount. Every path and field name below is settable through `WorkerControllerModalVaultConfig`; these are the defaults.
+WCI authenticates to Modal with an OAuth client assertion (RFC 7523), built from two secrets in a KV v2 mount:
 
-| What | Path | Fields |
+| What | Path | Field |
 |---|---|---|
-| OAuth client ID and RSA signing key | `<kv>/compute/modal-oauth/test` | `clientId`, `jwtKey` |
+| RSA signing key | `<kv>/compute/modal-oauth/test` | `jwtKey` |
 | Refresh token | `<kv>/compute/modal-oauth/grants/<account id>/<workspace id>` | `refreshToken` |
 
-The signing key is WCI-owned and shared by every grant. A refresh token belongs to exactly one account's grant on one workspace, which is what makes a grant reachable only by the account that holds it. Vault is reached over Kubernetes auth with the pod's projected service account token, logging in on first use, before the lease expires, and once more if a token is refused mid-flight.
+The signing key is WCI-owned and shared by every grant. A refresh token belongs to exactly one account's grant on one workspace, which is what makes a grant reachable only by the account that holds it. The OAuth client ID is not secret, so it is supplied as deployment config rather than stored next to the key.
+
+Vault is reached over Kubernetes auth with the pod's service account token at the standard projected path, logging in on first use, before the lease expires, and once more if a token is refused mid-flight.
+
+Where Vault is and who WCI logs in as is **deployment configuration, not dynamic config** — the address is where the pod's service account token gets sent, so changing it should take the same privilege as changing the cell. The deployment installs a `computeprovider.ModalVaultConfig` through fx at startup (`SetModalVaultConfig`); leaving it unset disables the provider, which then fails closed. `WithDefaults` fills in the secret layout above, so a deployment normally supplies only:
+
+| Field | Example |
+|---|---|
+| `Address` | `https://vault.test.tmprl-test.cloud` |
+| `Namespace` | `admin` |
+| `AuthMount` | `s-mycell` (per-cell) |
+| `AuthRole` | `worker-controller` |
+| `OAuthClientID` | `oc-xxxxxxxx` |
+
+Only the runtime tuning knobs in the table above stay in dynamic config.
 
 A group with no `task_types` acts as a catch-all for any task type not claimed by another group. At most one catch-all group is allowed. The `scaling` block is optional; omitting it leaves the group with the default scaling configuration for the given compute provider.
 

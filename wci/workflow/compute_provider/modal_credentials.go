@@ -22,10 +22,12 @@ type (
 
 	// ModalSecretSource reads Modal OAuth material from secret storage. Split in
 	// two because the signing key is WCI-owned and shared by every grant, while a
-	// refresh token belongs to exactly one (account, workspace) pair.
+	// refresh token belongs to exactly one (account, workspace) pair. The client
+	// ID is not here: it is not secret, so it comes from deployment config.
 	ModalSecretSource interface {
-		// SigningKey returns WCI's OAuth client ID and PEM-encoded RSA private key.
-		SigningKey(ctx context.Context) (clientID string, jwtKey string, err error)
+		// SigningKey returns the PEM-encoded RSA private key WCI signs client
+		// assertions with.
+		SigningKey(ctx context.Context) (string, error)
 		// RefreshToken returns the refresh token for the grant accountID holds on
 		// workspaceID. It must fail rather than fall back when no such grant exists.
 		RefreshToken(ctx context.Context, accountID, workspaceID string) (string, error)
@@ -107,6 +109,7 @@ func (c *modalCredentialCache) entry(key modalGrantKey) *modalCredentialEntry {
 func (c *modalCredentialCache) get(
 	ctx context.Context,
 	src ModalSecretSource,
+	clientID string,
 	key modalGrantKey,
 	policy modalCredentialPolicy,
 ) (*ModalCredentials, string, error) {
@@ -118,7 +121,7 @@ func (c *modalCredentialCache) get(
 	if e.creds != nil {
 		return e.creds, e.digest, nil
 	}
-	return c.loadLocked(ctx, src, e, policy)
+	return c.loadLocked(ctx, src, clientID, e, policy)
 }
 
 // reload re-reads the grant from secret storage after Modal rejected the cached
@@ -132,6 +135,7 @@ func (c *modalCredentialCache) get(
 func (c *modalCredentialCache) reload(
 	ctx context.Context,
 	src ModalSecretSource,
+	clientID string,
 	key modalGrantKey,
 	seenDigest string,
 	policy modalCredentialPolicy,
@@ -145,7 +149,7 @@ func (c *modalCredentialCache) reload(
 		return e.creds, true, nil
 	}
 
-	creds, digest, err := c.loadLocked(ctx, src, e, policy)
+	creds, digest, err := c.loadLocked(ctx, src, clientID, e, policy)
 	if err != nil {
 		return nil, false, err
 	}
@@ -157,6 +161,7 @@ func (c *modalCredentialCache) reload(
 func (c *modalCredentialCache) loadLocked(
 	ctx context.Context,
 	src ModalSecretSource,
+	clientID string,
 	e *modalCredentialEntry,
 	policy modalCredentialPolicy,
 ) (*ModalCredentials, string, error) {
@@ -171,7 +176,7 @@ func (c *modalCredentialCache) loadLocked(
 		e.consecutiveFailures = 0
 	}
 
-	creds, err := loadModalCredentials(ctx, src, e.grant)
+	creds, err := loadModalCredentials(ctx, src, clientID, e.grant)
 	if err != nil {
 		c.penalizeLocked(e, policy)
 		return nil, "", err
@@ -199,13 +204,14 @@ func (c *modalCredentialCache) penalizeLocked(e *modalCredentialEntry, policy mo
 	}
 }
 
-func loadModalCredentials(ctx context.Context, src ModalSecretSource, key modalGrantKey) (*ModalCredentials, error) {
-	clientID, jwtKey, err := src.SigningKey(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the Modal signing key: %w", err)
-	}
+func loadModalCredentials(ctx context.Context, src ModalSecretSource, clientID string, key modalGrantKey) (*ModalCredentials, error) {
 	if clientID == "" {
 		return nil, errors.New("no Modal OAuth client ID is configured")
+	}
+
+	jwtKey, err := src.SigningKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the Modal signing key: %w", err)
 	}
 	if jwtKey == "" {
 		return nil, errors.New("the Modal signing key secret carries no private key")

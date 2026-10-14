@@ -12,8 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"go.temporal.io/auto-scaled-workers/wci/client"
 )
 
 const (
@@ -39,7 +37,6 @@ func testModalConfig() ComputeProviderConfig {
 // fakeSecretSource serves credentials from memory and counts reads, which is how
 // the tests assert that secret storage stays off the invocation path.
 type fakeSecretSource struct {
-	clientID     string
 	jwtKey       string
 	refreshToken string
 
@@ -58,18 +55,17 @@ type fakeSecretSource struct {
 
 func newFakeSecretSource() *fakeSecretSource {
 	return &fakeSecretSource{
-		clientID:     testModalClientID,
 		jwtKey:       testModalJWTKey,
 		refreshToken: "rt-original",
 	}
 }
 
-func (f *fakeSecretSource) SigningKey(context.Context) (string, string, error) {
+func (f *fakeSecretSource) SigningKey(context.Context) (string, error) {
 	f.signingKeyReads++
 	if f.signingKeyErr != nil {
-		return "", "", f.signingKeyErr
+		return "", f.signingKeyErr
 	}
-	return f.clientID, f.jwtKey, nil
+	return f.jwtKey, nil
 }
 
 func (f *fakeSecretSource) RefreshToken(_ context.Context, accountID, workspaceID string) (string, error) {
@@ -94,7 +90,7 @@ func (f *fakeSecretSource) RefreshToken(_ context.Context, accountID, workspaceI
 func stubModalSecretSource(t *testing.T, src ModalSecretSource) {
 	t.Helper()
 	orig := modalSecretSourceFn
-	modalSecretSourceFn = func(client.ModalVaultConfig, string) (ModalSecretSource, error) {
+	modalSecretSourceFn = func(ModalVaultConfig) (ModalSecretSource, error) {
 		return src, nil
 	}
 	resetModalCredentialCacheForTest()
@@ -169,14 +165,11 @@ func stubModalClient(t *testing.T, c *fakeModalClient) {
 }
 
 func newModalProvider() *modalComputeProvider {
-	p := &modalComputeProvider{
+	return &modalComputeProvider{
+		vaultConfig:  ModalVaultConfig{OAuthClientID: testModalClientID},
 		reloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
 		clientPolicy: modalClientPolicy{functionTTL: 10 * time.Minute, idleTimeout: 30 * time.Minute},
 	}
-	p.secretSourceFn = func() (ModalSecretSource, error) {
-		return modalSecretSourceFn(p.vaultConfig, p.oauthClientID)
-	}
-	return p
 }
 
 func modalRequestContext() RequestContext {
@@ -714,4 +707,30 @@ func stubModalClientCacheClock(t *testing.T, now *time.Time) {
 	orig := modalClients.now
 	modalClients.now = func() time.Time { return *now }
 	t.Cleanup(func() { modalClients.now = orig })
+}
+
+func TestModalInvokeWorker_FailsWithoutDeploymentConfig(t *testing.T) {
+	// No stubbed secret source: the provider falls through to building a real
+	// Vault-backed one, which an unconfigured cell cannot do.
+	c := &fakeModalClient{}
+	stubModalClient(t, c)
+
+	p := &modalComputeProvider{
+		reloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
+		clientPolicy: modalClientPolicy{functionTTL: time.Minute, idleTimeout: time.Hour},
+	}
+
+	err := p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errWCIOwned, "an unconfigured cell is our problem, not the customer's")
+	assert.Zero(t, c.lookups)
+}
+
+func TestSetModalVaultConfig_RoundTrips(t *testing.T) {
+	prev := GetModalVaultConfig()
+	t.Cleanup(func() { SetModalVaultConfig(prev) })
+
+	cfg := ModalVaultConfig{Address: "https://vault.example", OAuthClientID: "oc-abc"}
+	SetModalVaultConfig(cfg)
+	assert.Equal(t, cfg, GetModalVaultConfig())
 }
