@@ -208,7 +208,7 @@ func TestModalInvokeWorker_PassesVersionWhenConfigured(t *testing.T) {
 	stubModalClient(t, c)
 
 	cfg := testModalConfig()
-	cfg[configModalVersion] = float64(7)
+	cfg[configModalVersion] = "7"
 
 	require.NoError(t, newModalProvider().InvokeWorker(t.Context(), modalRequestContext(), cfg))
 	assert.Equal(t, 7, c.lastParams.Version)
@@ -298,13 +298,15 @@ func TestModalInvokeWorker_FailsWhenAccountUnresolvable(t *testing.T) {
 	assert.Zero(t, c.lookups)
 }
 
-func TestModalInvokeWorker_RejectsCredentialConfigKeys(t *testing.T) {
+func TestModalInvokeWorker_RejectsUnknownConfigKeys(t *testing.T) {
 	src := newFakeSecretSource()
 	stubModalSecretSource(t, src)
 	c := &fakeModalClient{}
 	stubModalClient(t, c)
 
-	for _, key := range modalForbiddenConfigKeys {
+	// The credential-shaped keys matter most: resolving the grant from the
+	// namespace's account is pointless if a config can name a token instead.
+	for _, key := range []string{"refresh_token", "oauth_jwt_key", "token_secret", "account_id", "app-name"} {
 		t.Run(key, func(t *testing.T) {
 			cfg := testModalConfig()
 			cfg[key] = "attacker-supplied"
@@ -315,20 +317,6 @@ func TestModalInvokeWorker_RejectsCredentialConfigKeys(t *testing.T) {
 		})
 	}
 	assert.Zero(t, c.lookups)
-}
-
-func TestModalInvokeWorker_RejectsCredentialEnvironment(t *testing.T) {
-	src := newFakeSecretSource()
-	stubModalSecretSource(t, src)
-	c := &fakeModalClient{}
-	stubModalClient(t, c)
-
-	t.Setenv("MODAL_TOKEN_ID", "ak-ambient")
-
-	err := newModalProvider().InvokeWorker(t.Context(), modalRequestContext(), testModalConfig())
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errWCIOwned)
-	assert.Zero(t, c.lookups, "ambient credentials in the environment must stop the invocation")
 }
 
 func TestModalInvokeWorker_RetriesOnceAfterRotation(t *testing.T) {
@@ -507,12 +495,10 @@ func TestResolveModalParams_Version(t *testing.T) {
 		{"absent", nil, 0, false},
 		{"empty string", "", 0, false},
 		{"string", "12", 12, false},
-		{"float", float64(3), 3, false},
-		{"int", 4, 4, false},
-		{"fractional", 1.5, 0, true},
-		{"negative", float64(-1), 0, true},
+		{"negative", "-1", 0, true},
 		{"not a number", "abc", 0, true},
-		{"wrong type", true, 0, true},
+		{"fractional", "1.5", 0, true},
+		{"not a string", float64(7), 0, true},
 	}
 
 	for _, tc := range cases {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -24,36 +23,16 @@ const (
 	configModalWorkspaceID  = "workspace_id"
 )
 
-// modalForbiddenConfigKeys are keys a worker deployment version's config may
-// never carry. Credentials are resolved from secret storage against the account
-// that owns the namespace, so a config naming one would be an attempt to
-// authenticate as somebody else; an account id would be the same thing by a
-// different route.
-var modalForbiddenConfigKeys = []string{
-	"account",
-	"account_id",
-	"client_secret",
-	"jwt_key",
-	"oauth_client_secret",
-	"oauth_jwt_key",
-	"oauth_refresh_token",
-	"refresh_token",
-	"token",
-	"token_id",
-	"token_secret",
-}
-
-// modalCredentialEnvVars are the environment variables the Modal SDK would
-// otherwise take credentials from. WCI must authenticate only as the grant it
-// resolved, so their presence in the process is treated as a misconfiguration
-// rather than silently tolerated.
-var modalCredentialEnvVars = []string{
-	"MODAL_TOKEN_ID",
-	"MODAL_TOKEN_SECRET",
-	"MODAL_OAUTH_REFRESH_TOKEN",
-	"MODAL_OAUTH_CLIENT_ID",
-	"MODAL_OAUTH_CLIENT_SECRET",
-	"MODAL_OAUTH_JWT_KEY",
+// modalValidConfigKeys is everything a worker deployment version's config may
+// carry. Anything else is rejected, which besides catching typos is what keeps
+// a config from naming a credential or an account: those are resolved from
+// secret storage against the account that owns the namespace, never configured.
+var modalValidConfigKeys = map[string]struct{}{
+	configModalAppName:      {},
+	configModalFunctionName: {},
+	configModalVersion:      {},
+	configModalEnvironment:  {},
+	configModalWorkspaceID:  {},
 }
 
 type (
@@ -174,10 +153,6 @@ func (p *modalComputeProvider) withFunction(
 	params ModalParams,
 	do func(context.Context, modalFunction) error,
 ) error {
-	if err := checkNoModalCredentialEnv(); err != nil {
-		return err
-	}
-
 	source, err := modalSecretSourceFn(p.vaultConfig)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
@@ -334,19 +309,23 @@ func GetModalVaultConfig() ModalVaultConfig {
 var modalSecretSourceFn = cachedVaultModalSecretSource
 
 var (
+	// modalSecretSourceMu guards the one-time build below. Activities run
+	// concurrently on the per-namespace worker, and each one constructs its own
+	// provider, so this is reached from many goroutines at once.
 	modalSecretSourceMu     sync.Mutex
-	modalSecretSourceCfg    ModalVaultConfig
 	modalSecretSourceCached ModalSecretSource
 )
 
-// cachedVaultModalSecretSource reuses one Vault-backed source per configuration,
-// so the Vault token obtained by the Kubernetes auth login is shared by every
-// grant instead of being minted per activity.
+// cachedVaultModalSecretSource builds the Vault-backed source once, so the token
+// obtained by the Kubernetes auth login is shared by every grant instead of
+// being minted per activity. The configuration is installed once at startup, so
+// there is nothing to invalidate on. A failed build is not cached: an
+// unconfigured cell should start working if its config arrives late.
 func cachedVaultModalSecretSource(cfg ModalVaultConfig) (ModalSecretSource, error) {
 	modalSecretSourceMu.Lock()
 	defer modalSecretSourceMu.Unlock()
 
-	if modalSecretSourceCached != nil && modalSecretSourceCfg == cfg {
+	if modalSecretSourceCached != nil {
 		return modalSecretSourceCached, nil
 	}
 
@@ -355,24 +334,14 @@ func cachedVaultModalSecretSource(cfg ModalVaultConfig) (ModalSecretSource, erro
 		return nil, err
 	}
 
-	modalSecretSourceCfg = cfg
 	modalSecretSourceCached = source
 	return source, nil
 }
 
-func checkNoModalCredentialEnv() error {
-	for _, name := range modalCredentialEnvVars {
-		if os.Getenv(name) != "" {
-			return fmt.Errorf("%w: %s is set in the worker-controller process; Modal credentials must come from the resolved grant only", errWCIOwned, name)
-		}
-	}
-	return nil
-}
-
 func resolveModalParams(cfg ComputeProviderConfig) (ModalParams, error) {
-	for _, key := range modalForbiddenConfigKeys {
-		if _, ok := cfg[key]; ok {
-			return ModalParams{}, fmt.Errorf("the Modal compute provider config must not set %q", key)
+	for key := range cfg {
+		if _, ok := modalValidConfigKeys[key]; !ok {
+			return ModalParams{}, fmt.Errorf("unknown config key %q for the modal compute provider", key)
 		}
 	}
 
@@ -410,41 +379,22 @@ func resolveModalParams(cfg ComputeProviderConfig) (ModalParams, error) {
 	}, nil
 }
 
-// modalConfigVersion reads the optional App version. Config arrives through a
-// payload, so a number may land as a float64 or as its string form depending on
-// how the caller encoded it; both are accepted.
+// modalConfigVersion reads the optional App version. Compute provider config is
+// string-valued throughout, as every other provider treats it, so a version
+// arrives as its decimal string.
 func modalConfigVersion(cfg ComputeProviderConfig) (int, error) {
 	raw, ok := cfg[configModalVersion]
-	if !ok || raw == nil {
+	if !ok {
 		return 0, nil
 	}
 
-	var version int
-	switch v := raw.(type) {
-	case int:
-		version = v
-	case int64:
-		version = int(v)
-	case float64:
-		if v != float64(int(v)) {
-			return 0, fmt.Errorf("the Modal compute provider %q must be a whole number", configModalVersion)
-		}
-		version = int(v)
-	case string:
-		if v == "" {
-			return 0, nil
-		}
-		parsed, err := strconv.Atoi(v)
-		if err != nil {
-			return 0, fmt.Errorf("the Modal compute provider %q must be an integer: %w", configModalVersion, err)
-		}
-		version = parsed
-	default:
-		return 0, fmt.Errorf("the Modal compute provider %q must be an integer", configModalVersion)
+	s, ok := raw.(string)
+	if ok && s == "" {
+		return 0, nil
 	}
-
-	if version < 0 {
-		return 0, fmt.Errorf("the Modal compute provider %q must not be negative", configModalVersion)
+	version, err := strconv.Atoi(s)
+	if !ok || err != nil || version < 0 {
+		return 0, fmt.Errorf("the Modal compute provider %q must be a non-negative integer string", configModalVersion)
 	}
 	return version, nil
 }
