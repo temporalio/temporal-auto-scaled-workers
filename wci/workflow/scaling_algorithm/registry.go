@@ -23,7 +23,7 @@ type (
 		ScalingGroupKey string     `json:"scaling_group_key"`
 		Action          ActionType `json:"action"`
 		Count           *int32     `json:"count,omitempty"`
-		// Task types the group serves in the host region, set by HandleTaskAddSignal on deferred scaling decisions.
+		// Task types the group serves in the worker controller's regionId, set by HandleTaskAddSignal on deferred scaling decisions.
 		EffectiveTaskTypes []enumspb.TaskQueueType `json:"effective_task_types,omitempty"`
 	}
 

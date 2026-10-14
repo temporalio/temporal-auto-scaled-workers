@@ -8,7 +8,6 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/auto-scaled-workers/wci/region"
 )
 
 type (
@@ -103,44 +102,39 @@ func (c *WorkerControllerInstanceSpec) ScalingGroupKeyForTaskQueueType(t enumspb
 	if c == nil {
 		return ""
 	}
-	claimedGroupKey, claimedGroupPrecedence := "", -1
-	// Validate allows at most one claiming group per precedence, so the groups map's iteration order doesn't matter.
+	claimedGroupKey, claimedGroupRank := "", -1
+	// Validate allows at most one claiming group per rank, so the groups map's iteration order doesn't matter.
 	for key, group := range c.ScalingGroupSpecs {
-		precedence, claimed := group.claims(t, regionId)
-		if !claimed || (claimedGroupPrecedence >= 0 && precedence >= claimedGroupPrecedence) {
-			continue
+		if rank := group.claimRank(t, regionId); rank > claimedGroupRank {
+			claimedGroupKey, claimedGroupRank = key, rank
 		}
-		if precedence == 0 {
-			return key
-		}
-		claimedGroupKey, claimedGroupPrecedence = key, precedence
 	}
 	return claimedGroupKey
 }
 
-// claims reports whether g claims t in regionId, and with which precedence from the order above (0 is highest).
-func (g *ScalingGroupSpec) claims(t enumspb.TaskQueueType, regionId string) (precedence int, claimed bool) {
+// claimRank ranks how g claims t in regionId, from 3 (highest in the order above) to 0, or -1 if g doesn't claim t there.
+func (g *ScalingGroupSpec) claimRank(t enumspb.TaskQueueType, regionId string) int {
 	hasRegionIds := len(g.RegionIds) > 0
 	if hasRegionIds && !slices.Contains(g.RegionIds, regionId) {
-		return 0, false
+		return -1
 	}
 	hasTaskTypes := len(g.TaskTypes) > 0
 	if hasTaskTypes && !slices.Contains(g.TaskTypes, t) {
-		return 0, false
+		return -1
 	}
 	// A catch-all covers only scalable types, matching EffectiveTaskTypesForGroup.
 	if !hasTaskTypes && !slices.Contains(scalableTaskQueueTypes, t) {
-		return 0, false
+		return -1
 	}
 	switch {
 	case hasRegionIds && hasTaskTypes:
-		return 0, true
+		return 3
 	case hasRegionIds:
-		return 1, true
+		return 2
 	case hasTaskTypes:
-		return 2, true
+		return 1
 	}
-	return 3, true
+	return 0
 }
 
 func (c *WorkerControllerInstanceSpec) EffectiveTaskTypesForGroup(scalingGroupId string, regionId string) []enumspb.TaskQueueType {
@@ -201,9 +195,6 @@ func (c *WorkerControllerInstanceSpec) validate() error {
 			return serviceerror.NewInvalidArgument("scaling groups without an ID are not supported")
 		}
 		for i, regionID := range v.RegionIds {
-			if !region.ValidRegionID(regionID) {
-				return serviceerror.NewInvalidArgumentf("entry %s: region id %q must contain only lowercase letters, digits and single hyphens, e.g. aws-us-east-1", k, regionID)
-			}
 			if slices.Contains(v.RegionIds[:i], regionID) {
 				return serviceerror.NewInvalidArgumentf("entry %s: region id %q is listed more than once", k, regionID)
 			}

@@ -149,7 +149,7 @@ func TestEffectiveTaskTypesForGroup(t *testing.T) {
 	}
 }
 
-// Without region-scoped groups, the host region must not affect a group's task types.
+// Without region-scoped groups, the worker controller's regionId must not affect a group's task types.
 func TestEffectiveTaskTypesForGroupWithoutRegionScopedGroups(t *testing.T) {
 	spec := &WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]ScalingGroupSpec{
 		"workflows": testGroup(nil, wf),
@@ -310,21 +310,6 @@ func TestValidateRejectsCatchAllThatServesNothing(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "catch-all serves no task types")
 		})
-	}
-}
-
-func TestValidateRegionIDFormat(t *testing.T) {
-	for _, regionID := range []string{"aws-us-east-1", "gcp-us-central1", "azure-eastus2"} {
-		spec := &WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]ScalingGroupSpec{"a": testGroup([]string{regionID})}}
-		assert.NoError(t, spec.validate(), regionID)
-	}
-	for _, regionID := range []string{"", " aws-us-east-1", "AWS-us-east-1", "aws_us_east_1", "aws-us-east-1-", "-aws", "aws--us", "aws us"} {
-		for _, regionIDs := range [][]string{{regionID}, {testRegionWest, regionID}} {
-			spec := &WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]ScalingGroupSpec{"a": testGroup(regionIDs)}}
-			err := spec.validate()
-			require.Error(t, err, regionIDs)
-			assert.Contains(t, err.Error(), "must contain only lowercase letters, digits and single hyphens")
-		}
 	}
 }
 
