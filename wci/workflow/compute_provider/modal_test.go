@@ -168,7 +168,7 @@ func newModalProvider() *modalComputeProvider {
 	return &modalComputeProvider{
 		vaultConfig:            ModalVaultConfig{OAuthClientID: testModalClientID},
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
-		clientPolicy:           modalClientPolicy{functionTTL: 10 * time.Minute, idleTimeout: 30 * time.Minute},
+		clientIdleTimeout:      30 * time.Minute,
 	}
 }
 
@@ -530,33 +530,9 @@ func TestModalInvokeWorker_ReusesClientAndFunctionHandle(t *testing.T) {
 	}
 
 	assert.Equal(t, 1, c.builds, "a connection must be reused, not rebuilt per invocation")
-	assert.Equal(t, 1, c.lookups, "a resolved Function handle must be reused, not looked up per invocation")
+	assert.Equal(t, 1, c.lookups, "a resolved Function handle is kept for the life of the connection; it does not expire on a timer")
 	assert.Equal(t, 5, c.spawns, "every invocation must still spawn")
 	assert.Zero(t, c.closes, "a cached connection must stay open")
-}
-
-func TestModalInvokeWorker_LooksUpAgainAfterFunctionTTL(t *testing.T) {
-	stubModalSecretSource(t, newFakeSecretSource())
-	c := &fakeModalClient{}
-	stubModalClient(t, c)
-
-	now := time.Now()
-	stubModalClientCacheClock(t, &now)
-
-	p := newModalProvider()
-	p.clientPolicy = modalClientPolicy{functionTTL: 10 * time.Minute, idleTimeout: time.Hour}
-
-	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
-	require.Equal(t, 1, c.lookups)
-
-	now = now.Add(9 * time.Minute)
-	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
-	assert.Equal(t, 1, c.lookups, "a handle inside its TTL is reused")
-
-	now = now.Add(2 * time.Minute)
-	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
-	assert.Equal(t, 2, c.lookups, "an expired handle is resolved again")
-	assert.Equal(t, 1, c.builds, "the connection outlives the handle")
 }
 
 func TestModalInvokeWorker_ResolvesAgainWhenHandleWentStale(t *testing.T) {
@@ -653,7 +629,7 @@ func TestModalClientCache_ClosesIdleConnections(t *testing.T) {
 	stubModalClientCacheClock(t, &now)
 
 	p := newModalProvider()
-	p.clientPolicy = modalClientPolicy{functionTTL: time.Hour, idleTimeout: 30 * time.Minute}
+	p.clientIdleTimeout = 30 * time.Minute
 
 	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
 	require.Equal(t, 1, c.builds)
@@ -682,7 +658,7 @@ func TestModalInvokeWorker_FailsWithoutDeploymentConfig(t *testing.T) {
 
 	p := &modalComputeProvider{
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
-		clientPolicy:           modalClientPolicy{functionTTL: time.Minute, idleTimeout: time.Hour},
+		clientIdleTimeout:      time.Hour,
 	}
 
 	err := p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig())
@@ -720,7 +696,7 @@ func TestSetModalSecretSource_PreferredOverVault(t *testing.T) {
 	p := &modalComputeProvider{
 		vaultConfig:            ModalVaultConfig{OAuthClientID: testModalClientID},
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
-		clientPolicy:           modalClientPolicy{functionTTL: time.Minute, idleTimeout: time.Hour},
+		clientIdleTimeout:      time.Hour,
 	}
 
 	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))

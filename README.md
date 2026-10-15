@@ -51,7 +51,6 @@ The development-only subprocess provider accepts an optional positive Go duratio
 | `WorkerControllerAWSRequireRoleAndExternalID` | `true` | Enforce role + external ID on AWS configs |
 | `WorkerControllerModalCredentialReloadLimit` | `2` | Vault re-reads allowed for a grant Modal keeps rejecting |
 | `WorkerControllerModalCredentialReloadCooldownSeconds` | `900` | How long to stop reading Vault for a grant after that |
-| `WorkerControllerModalFunctionCacheTTLSeconds` | `600` | How long a resolved Modal Function handle is reused |
 | `WorkerControllerModalClientIdleTimeoutSeconds` | `1800` | How long an unused Modal connection is kept open |
 
 ## Spec Format
@@ -110,7 +109,7 @@ Modal is invoke-based, so it pairs with the `no-sync` algorithm and takes the sa
 
 WCI authenticates as the Modal grant belonging to the account that owns the namespace, which is derived server-side. The config selects which of that account's connected workspaces to use. It cannot carry a credential or name another account: no credential is ever read from it, and the account half of the lookup comes from the namespace. The signing key and refresh token are read from Vault on a grant's first use and cached in process memory; they never enter workflow or activity history.
 
-A steady-state invocation costs one `Spawn`: the Modal connection is kept per grant and the resolved Function handle per `(app, function, version)`, so neither the connection setup nor the `FunctionGet` lookup repeats. Handles are re-resolved after `WorkerControllerModalFunctionCacheTTLSeconds`, and immediately if a spawn finds its Function gone — which is what an App redeploy looks like.
+A steady-state invocation costs one `Spawn`: the Modal connection is kept per grant and the resolved Function handle per `(app, function, version)`, so neither the connection setup nor the `FunctionGet` lookup repeats. Handles are not re-resolved on a timer — pinned to a `version` a handle keeps pointing at that version, which is the point of pinning, and unpinned it follows the App's current deployment. A handle is only re-resolved if a spawn reports its Function is gone.
 
 #### Vault layout and deployment config
 

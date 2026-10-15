@@ -24,17 +24,6 @@ type (
 		functionName string
 		version      int
 	}
-
-	// modalClientPolicy bounds how long cached handles are trusted.
-	modalClientPolicy struct {
-		// functionTTL is how long a resolved Function handle is reused before being
-		// looked up again. It bounds how long a redeploy goes unnoticed in the case
-		// where the old handle keeps working rather than failing outright.
-		functionTTL time.Duration
-		// idleTimeout is how long an unused connection is kept. It bounds the
-		// connections held for grants that have stopped scaling.
-		idleTimeout time.Duration
-	}
 )
 
 // modalClientCache keeps one Modal connection per grant and the Function handles
@@ -60,14 +49,9 @@ type modalClientEntry struct {
 	// credentialDigest is the material the connection authenticated with. A
 	// rotation changes it, which retires the connection.
 	credentialDigest string
-	functions        map[modalFunctionKey]*cachedModalFunction
+	functions        map[modalFunctionKey]modalFunction
 
 	lastUsed time.Time
-}
-
-type cachedModalFunction struct {
-	fn         modalFunction
-	resolvedAt time.Time
 }
 
 var modalClients = newModalClientCache()
@@ -87,13 +71,13 @@ func (c *modalClientCache) entryFor(
 	params ModalParams,
 	creds *ModalCredentials,
 	digest string,
-	policy modalClientPolicy,
+	idleTimeout time.Duration,
 ) (*modalClientEntry, error) {
 	c.mu.Lock()
-	c.evictIdleLocked(policy)
+	c.evictIdleLocked(idleTimeout)
 	e, ok := c.entries[key]
 	if !ok {
-		e = &modalClientEntry{functions: map[modalFunctionKey]*cachedModalFunction{}}
+		e = &modalClientEntry{functions: map[modalFunctionKey]modalFunction{}}
 		c.entries[key] = e
 	}
 	e.lastUsed = c.now()
@@ -111,7 +95,7 @@ func (c *modalClientCache) entryFor(
 	if e.client != nil {
 		e.client.Close()
 		e.client = nil
-		e.functions = map[modalFunctionKey]*cachedModalFunction{}
+		e.functions = map[modalFunctionKey]modalFunction{}
 	}
 
 	client, err := newModalClientFn(ctx, params, creds)
@@ -123,13 +107,14 @@ func (c *modalClientCache) entryFor(
 	return e, nil
 }
 
-// evictIdleLocked closes connections nothing has used for idleTimeout. Sweeping
-// on access keeps it to the grants actually in play, with no background goroutine.
-func (c *modalClientCache) evictIdleLocked(policy modalClientPolicy) {
-	if policy.idleTimeout <= 0 {
+// evictIdleLocked closes connections nothing has used for idleTimeout, bounding
+// the connections held for grants that have stopped scaling. Sweeping on access
+// keeps it to the grants actually in play, with no background goroutine.
+func (c *modalClientCache) evictIdleLocked(idleTimeout time.Duration) {
+	if idleTimeout <= 0 {
 		return
 	}
-	cutoff := c.now().Add(-policy.idleTimeout)
+	cutoff := c.now().Add(-idleTimeout)
 	for key, e := range c.entries {
 		if e.lastUsed.After(cutoff) {
 			continue
@@ -147,23 +132,26 @@ func (c *modalClientCache) evictIdleLocked(policy modalClientPolicy) {
 	}
 }
 
-// function returns the Function handle for key, resolving it through Modal when
-// it is absent, past its TTL, or force is set because the cached one turned out
-// to be stale.
+// function returns the Function handle for key, resolving it through Modal only
+// when it is absent, or when force is set because a spawn reported the cached
+// one no longer exists.
+//
+// A handle does not go stale on a timer. Pinned to a version it keeps pointing
+// at that version, which is the whole reason for pinning; unpinned, Modal routes
+// it to the App's current deployment. Either way re-resolving on a schedule
+// would either defeat the pin or change nothing.
 func (e *modalClientEntry) function(
 	ctx context.Context,
 	key modalFunctionKey,
 	params ModalParams,
-	policy modalClientPolicy,
 	force bool,
-	now func() time.Time,
 ) (modalFunction, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if !force {
-		if cached, ok := e.functions[key]; ok && !expired(cached.resolvedAt, policy.functionTTL, now) {
-			return cached.fn, nil
+		if fn, ok := e.functions[key]; ok {
+			return fn, nil
 		}
 	}
 
@@ -176,15 +164,8 @@ func (e *modalClientEntry) function(
 		return nil, err
 	}
 
-	e.functions[key] = &cachedModalFunction{fn: fn, resolvedAt: now()}
+	e.functions[key] = fn
 	return fn, nil
-}
-
-func expired(at time.Time, ttl time.Duration, now func() time.Time) bool {
-	if ttl <= 0 {
-		return false
-	}
-	return now().Sub(at) >= ttl
 }
 
 // reset drops every cached connection. Used by tests, and by nothing else: a

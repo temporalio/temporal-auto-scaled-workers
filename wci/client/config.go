@@ -98,11 +98,6 @@ var (
 		int((15 * time.Minute).Seconds()), // 900
 		`WorkerControllerModalCredentialReloadCooldownSeconds is how long WCI stops reading Vault for a grant after WorkerControllerModalCredentialReloadLimit consecutive reads failed to produce working credentials.`,
 	)
-	WorkerControllerModalFunctionCacheTTLSeconds = dynamicconfig.NewGlobalIntSetting(
-		"workercontroller.compute_providers.modal.function_cache_ttl_s",
-		int((10 * time.Minute).Seconds()), // 600
-		`WorkerControllerModalFunctionCacheTTLSeconds is how long a resolved Modal Function handle is reused before being looked up again, so a worker invocation costs a spawn rather than a lookup plus a spawn. It bounds how long an App redeploy can go unnoticed in the case where the retired handle keeps working instead of failing; a handle that stops resolving is refreshed immediately. Zero disables expiry.`,
-	)
 	WorkerControllerModalClientIdleTimeoutSeconds = dynamicconfig.NewGlobalIntSetting(
 		"workercontroller.compute_providers.modal.client_idle_timeout_s",
 		int((30 * time.Minute).Seconds()), // 1800
