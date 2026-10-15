@@ -6,40 +6,41 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
-	"go.temporal.io/sdk/activity"
 	sdklog "go.temporal.io/sdk/log"
 )
 
 type (
+	loggerKey      struct{}
+	clockKey       struct{}
 	fallbackLogger struct{}
 )
 
 var fallbackStdlibLogger = log.New(os.Stderr, "scalingalgorithm: ", log.LstdFlags)
 
-func safeActivityLogger(ctx context.Context) (logger sdklog.Logger) {
-	defer func() {
-		logger = normalizeSDKLogger(logger, recover())
-	}()
-	logger = activity.GetLogger(ctx)
-	return
+// WithLogger sets the algorithms' logger; without one they log to stderr.
+func WithLogger(ctx context.Context, logger sdklog.Logger) context.Context {
+	return context.WithValue(ctx, loggerKey{}, logger)
 }
 
-// normalizeSDKLogger installs the fallback when activity.GetLogger either
-// panicked (typical: called outside an activity context) or returned nil
-// (permitted by the ActivityOutboundInterceptor contract — a custom interceptor
-// could legitimately return nil). Both paths would otherwise nil-panic callers
-// at the next .Info/.Warn call.
-func normalizeSDKLogger(logger sdklog.Logger, recovered any) sdklog.Logger {
-	if recovered != nil {
-		fallbackStdlibLogger.Printf("ERROR safeActivityLogger: activity.GetLogger panicked, using fallback: %v", recovered)
-		return fallbackLogger{}
+// WithClock sets the algorithms' clock; without one they use time.Now.
+func WithClock(ctx context.Context, now func() time.Time) context.Context {
+	return context.WithValue(ctx, clockKey{}, now)
+}
+
+func loggerFrom(ctx context.Context) sdklog.Logger {
+	if logger, ok := ctx.Value(loggerKey{}).(sdklog.Logger); ok && logger != nil {
+		return logger
 	}
-	if logger == nil {
-		fallbackStdlibLogger.Printf("ERROR safeActivityLogger: activity.GetLogger returned nil, using fallback")
-		return fallbackLogger{}
+	return fallbackLogger{}
+}
+
+func nowFrom(ctx context.Context) time.Time {
+	if now, ok := ctx.Value(clockKey{}).(func() time.Time); ok && now != nil {
+		return now()
 	}
-	return logger
+	return time.Now()
 }
 
 func (fallbackLogger) Debug(msg string, keyvals ...any) {
