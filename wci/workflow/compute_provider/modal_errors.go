@@ -125,34 +125,6 @@ func classifyModalTypedError(err error, wciOwned bool) (FailureClass, bool) {
 	return FailureUnclassified, false
 }
 
-// modalSpawnError marks a failure as having come from the spawn rather than
-// from resolving the Function. The distinction matters for exactly one case: a
-// NotFound on spawn means the handle we cached was retired, which a fresh
-// lookup fixes, while a NotFound on lookup means the Function is not there and
-// looking again would only cost another round trip.
-type modalSpawnError struct{ cause error }
-
-func (e *modalSpawnError) Error() string { return e.cause.Error() }
-
-func (e *modalSpawnError) Unwrap() error { return e.cause }
-
-// isStaleModalFunction reports whether err is a spawn that failed because its
-// Function handle no longer resolves, which is what a redeploy looks like from
-// here.
-func isStaleModalFunction(err error) bool {
-	var spawnErr *modalSpawnError
-	if !errors.As(err, &spawnErr) {
-		return false
-	}
-
-	var notFound modal.NotFoundError
-	if errors.As(err, &notFound) {
-		return true
-	}
-	st, ok := status.FromError(err)
-	return ok && st.Code() == codes.NotFound
-}
-
 // isModalAuthRejected reports whether Modal turned the credentials down, as
 // opposed to failing for any other reason. This is the one failure a fresh read
 // of secret storage can fix, so it is the only one that triggers a reload.

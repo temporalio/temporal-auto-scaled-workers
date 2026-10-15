@@ -531,15 +531,15 @@ func TestModalInvokeWorker_ReusesClientAndFunctionHandle(t *testing.T) {
 	assert.Zero(t, c.closes, "a cached connection must stay open")
 }
 
-func TestModalInvokeWorker_ResolvesAgainWhenHandleWentStale(t *testing.T) {
+func TestModalInvokeWorker_DropsHandleThatStoppedWorking(t *testing.T) {
 	stubModalSecretSource(t, newFakeSecretSource())
 
 	spawns := 0
 	c := &fakeModalClient{}
 	c.spawnErr = func(ModalCredentials) error {
 		spawns++
-		// The App was redeployed between the two invocations, retiring the handle
-		// the first one cached.
+		// The Function is deleted out from under the handle the first invocation
+		// cached, then exists again by the third.
 		if spawns == 2 {
 			return modal.NotFoundError{Exception: "function not found"}
 		}
@@ -551,9 +551,17 @@ func TestModalInvokeWorker_ResolvesAgainWhenHandleWentStale(t *testing.T) {
 	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
 	require.Equal(t, 1, c.lookups)
 
+	// The Function is gone. The spawn fails and is not retried inline, because
+	// resolving again in the same breath would fail the same way.
+	require.Error(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
+	assert.Equal(t, 1, c.lookups, "a failed spawn must not trigger an inline re-lookup")
+	assert.Equal(t, 2, c.spawns, "the failed spawn is not retried")
+
+	// But the dead handle is dropped, so a later invocation resolves afresh --
+	// which is how a Function that comes back recovers.
 	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
-	assert.Equal(t, 2, c.lookups, "a spawn that cannot find its Function forces a fresh lookup")
-	assert.Equal(t, 3, c.spawns, "the retry spawns against the newly resolved handle")
+	assert.Equal(t, 2, c.lookups, "the next invocation resolves a new handle")
+	assert.Equal(t, 3, c.spawns)
 }
 
 func TestModalInvokeWorker_DoesNotRetryLookupNotFound(t *testing.T) {

@@ -138,8 +138,7 @@ func (c *modalClientCache) evictIdleLocked() {
 }
 
 // function returns the Function handle for key, resolving it through Modal only
-// when it is absent, or when force is set because a spawn reported the cached
-// one no longer exists.
+// when there is none cached.
 //
 // A handle does not go stale on a timer. Pinned to a version it keeps pointing
 // at that version, which is the whole reason for pinning; unpinned, Modal routes
@@ -149,15 +148,12 @@ func (e *modalClientEntry) function(
 	ctx context.Context,
 	key modalFunctionKey,
 	params ModalParams,
-	force bool,
 ) (modalFunction, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if !force {
-		if fn, ok := e.functions[key]; ok {
-			return fn, nil
-		}
+	if fn, ok := e.functions[key]; ok {
+		return fn, nil
 	}
 
 	fn, err := e.client.FunctionFromName(ctx, key.appName, key.functionName, &modal.FunctionFromNameParams{
@@ -171,6 +167,13 @@ func (e *modalClientEntry) function(
 
 	e.functions[key] = fn
 	return fn, nil
+}
+
+// forgetFunction drops a cached handle, so the next caller resolves it again.
+func (e *modalClientEntry) forgetFunction(key modalFunctionKey) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.functions, key)
 }
 
 // reset drops every cached connection. Used by tests, and by nothing else: a

@@ -125,9 +125,8 @@ func (p *modalComputeProvider) UpdateWorkerSetSize(_ context.Context, _ RequestC
 }
 
 // withFunction resolves the grant, gets a Function handle and runs do against
-// it. Two failures are worth one retry each, and only one: credentials Modal
-// rejected that secret storage has since rotated, and a cached Function handle
-// the App has been redeployed out from under. Anything else is returned as-is.
+// it. One failure is worth a retry: credentials Modal rejected that secret
+// storage has since rotated. Anything else is returned as-is.
 func (p *modalComputeProvider) withFunction(
 	ctx context.Context,
 	rc RequestContext,
@@ -150,16 +149,9 @@ func (p *modalComputeProvider) withFunction(
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
 
-	err = p.runWithCredentials(ctx, accountID, params, creds, digest, do, false)
+	err = p.runWithCredentials(ctx, accountID, params, creds, digest, do)
 	if err == nil {
 		return nil
-	}
-
-	// A spawn that cannot find its Function means the handle we cached was
-	// retired by a redeploy. Resolve it again and spawn once more; a Function
-	// that genuinely does not exist fails the same way the second time.
-	if isStaleModalFunction(err) {
-		return p.runWithCredentials(ctx, accountID, params, creds, digest, do, true)
 	}
 
 	if !isModalAuthRejected(err) {
@@ -178,7 +170,7 @@ func (p *modalComputeProvider) withFunction(
 	}
 
 	// The rotated digest retires the connection built on the old credentials.
-	return p.runWithCredentials(ctx, accountID, params, rotated, modalCredentialDigest(rotated), do, false)
+	return p.runWithCredentials(ctx, accountID, params, rotated, modalCredentialDigest(rotated), do)
 }
 
 func (p *modalComputeProvider) runWithCredentials(
@@ -188,7 +180,6 @@ func (p *modalComputeProvider) runWithCredentials(
 	creds *ModalCredentials,
 	digest string,
 	do func(context.Context, modalFunction) error,
-	forceLookup bool,
 ) error {
 	clientKey := modalClientKey{
 		accountID:   accountID,
@@ -205,13 +196,19 @@ func (p *modalComputeProvider) runWithCredentials(
 		functionName: params.FunctionName,
 		version:      params.Version,
 	}
-	fn, err := entry.function(ctx, functionKey, params, forceLookup)
+	fn, err := entry.function(ctx, functionKey, params)
 	if err != nil {
 		return fmt.Errorf("failed to look up Modal Function %q in app %q: %w", params.FunctionName, params.AppName, err)
 	}
 
 	if err := do(ctx, fn); err != nil {
-		return &modalSpawnError{cause: fmt.Errorf("failed to spawn Modal Function %q in app %q: %w", params.FunctionName, params.AppName, err)}
+		// Take the handle at its word that it no longer works and drop it, so the
+		// next invocation resolves afresh rather than retrying against something
+		// we have reason to think is dead. No inline retry: under Modal's
+		// semantics a handle only stops resolving when its Function is gone, and
+		// looking it up again in the same breath would fail the same way.
+		entry.forgetFunction(functionKey)
+		return fmt.Errorf("failed to spawn Modal Function %q in app %q: %w", params.FunctionName, params.AppName, err)
 	}
 	return nil
 }
