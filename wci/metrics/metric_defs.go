@@ -11,6 +11,9 @@ var (
 	TaskMatchErrorCount = metrics.NewCounterDef(
 		"worker_controller_instance_task_match_error_count",
 		metrics.WithDescription("The number of task match events that encountered errors during processing."))
+	ClientRequests = metrics.NewCounterDef(
+		"worker_controller_client_requests",
+		metrics.WithDescription("Client requests by operation and the backend that served them."))
 	WorkflowBusyCount = metrics.NewCounterDef(
 		"worker_controller_instance_workflow_busy_count",
 		metrics.WithDescription("The number of task match events dropped because the worker controller instance workflow was busy."))
