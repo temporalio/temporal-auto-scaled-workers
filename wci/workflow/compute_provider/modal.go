@@ -50,7 +50,6 @@ type (
 	modalComputeProvider struct {
 		vaultConfig            ModalVaultConfig
 		credentialReloadPolicy modalCredentialPolicy
-		clientIdleTimeout      time.Duration
 	}
 )
 
@@ -70,12 +69,10 @@ func NewModalComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (C
 			reloadLimit:    2,
 			reloadCooldown: 15 * time.Minute,
 		},
-		clientIdleTimeout: 30 * time.Minute,
 	}
 	if dc != nil {
 		p.credentialReloadPolicy.reloadLimit = client.WorkerControllerModalCredentialReloadLimit.Get(dc)()
 		p.credentialReloadPolicy.reloadCooldown = time.Duration(client.WorkerControllerModalCredentialReloadCooldownSeconds.Get(dc)()) * time.Second
-		p.clientIdleTimeout = time.Duration(client.WorkerControllerModalClientIdleTimeoutSeconds.Get(dc)()) * time.Second
 	}
 	// Where Vault is and who we log in to it as comes from the deployment, not
 	// from dynamic config: the address is where the pod's service account token
@@ -207,7 +204,7 @@ func (p *modalComputeProvider) runWithCredentials(
 		workspaceID: params.WorkspaceID,
 		environment: params.Environment,
 	}
-	entry, err := modalClients.entryFor(ctx, clientKey, params, creds, digest, p.clientIdleTimeout)
+	entry, err := modalClients.entryFor(ctx, clientKey, params, creds, digest)
 	if err != nil {
 		return err
 	}

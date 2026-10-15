@@ -168,7 +168,6 @@ func newModalProvider() *modalComputeProvider {
 	return &modalComputeProvider{
 		vaultConfig:            ModalVaultConfig{OAuthClientID: testModalClientID},
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
-		clientIdleTimeout:      30 * time.Minute,
 	}
 }
 
@@ -629,12 +628,11 @@ func TestModalClientCache_ClosesIdleConnections(t *testing.T) {
 	stubModalClientCacheClock(t, &now)
 
 	p := newModalProvider()
-	p.clientIdleTimeout = 30 * time.Minute
 
 	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
 	require.Equal(t, 1, c.builds)
 
-	now = now.Add(31 * time.Minute)
+	now = now.Add(modalClientIdleTimeout + time.Minute)
 	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
 
 	assert.Equal(t, 1, c.closes, "a connection nothing used is closed")
@@ -658,7 +656,6 @@ func TestModalInvokeWorker_FailsWithoutDeploymentConfig(t *testing.T) {
 
 	p := &modalComputeProvider{
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
-		clientIdleTimeout:      time.Hour,
 	}
 
 	err := p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig())
@@ -696,7 +693,6 @@ func TestSetModalSecretSource_PreferredOverVault(t *testing.T) {
 	p := &modalComputeProvider{
 		vaultConfig:            ModalVaultConfig{OAuthClientID: testModalClientID},
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
-		clientIdleTimeout:      time.Hour,
 	}
 
 	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))

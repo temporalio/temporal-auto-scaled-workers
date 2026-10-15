@@ -98,11 +98,6 @@ var (
 		int((15 * time.Minute).Seconds()), // 900
 		`WorkerControllerModalCredentialReloadCooldownSeconds is how long WCI stops reading Vault for a grant after WorkerControllerModalCredentialReloadLimit consecutive reads failed to produce working credentials.`,
 	)
-	WorkerControllerModalClientIdleTimeoutSeconds = dynamicconfig.NewGlobalIntSetting(
-		"workercontroller.compute_providers.modal.client_idle_timeout_s",
-		int((30 * time.Minute).Seconds()), // 1800
-		`WorkerControllerModalClientIdleTimeoutSeconds is how long an unused Modal connection is kept before being closed, bounding the connections held open for grants that have stopped scaling. Zero keeps them indefinitely.`,
-	)
 	WorkerControllerPeriodicValidationIntervalSeconds = dynamicconfig.NewGlobalIntSetting(
 		"workercontroller.periodic_validation_interval_s",
 		int((6 * time.Hour).Seconds()), // 21600

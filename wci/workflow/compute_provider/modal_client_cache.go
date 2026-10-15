@@ -26,6 +26,15 @@ type (
 	}
 )
 
+// modalClientIdleTimeout is how long an unused Modal connection is kept. The
+// SDK builds its gRPC connection with PermitWithoutStream, so an idle one keeps
+// pinging Modal every 30s; without this the connections and the map entries
+// holding them would grow with every grant the process ever served and never
+// shrink. It is a constant rather than dynamic config: closing a connection is
+// transparent, the next use rebuilds it, so there is nothing an operator would
+// tune it for.
+const modalClientIdleTimeout = 30 * time.Minute
+
 // modalClientCache keeps one Modal connection per grant and the Function handles
 // resolved over it. Without it every worker invocation would open a gRPC
 // connection, mint an auth token and spend a FunctionGet round trip before it
@@ -71,10 +80,9 @@ func (c *modalClientCache) entryFor(
 	params ModalParams,
 	creds *ModalCredentials,
 	digest string,
-	idleTimeout time.Duration,
 ) (*modalClientEntry, error) {
 	c.mu.Lock()
-	c.evictIdleLocked(idleTimeout)
+	c.evictIdleLocked()
 	e, ok := c.entries[key]
 	if !ok {
 		e = &modalClientEntry{functions: map[modalFunctionKey]modalFunction{}}
@@ -107,14 +115,11 @@ func (c *modalClientCache) entryFor(
 	return e, nil
 }
 
-// evictIdleLocked closes connections nothing has used for idleTimeout, bounding
-// the connections held for grants that have stopped scaling. Sweeping on access
-// keeps it to the grants actually in play, with no background goroutine.
-func (c *modalClientCache) evictIdleLocked(idleTimeout time.Duration) {
-	if idleTimeout <= 0 {
-		return
-	}
-	cutoff := c.now().Add(-idleTimeout)
+// evictIdleLocked closes connections nothing has used for modalClientIdleTimeout.
+// Sweeping on access keeps it to the grants actually in play, with no background
+// goroutine.
+func (c *modalClientCache) evictIdleLocked() {
+	cutoff := c.now().Add(-modalClientIdleTimeout)
 	for key, e := range c.entries {
 		if e.lastUsed.After(cutoff) {
 			continue

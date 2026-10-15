@@ -51,7 +51,6 @@ The development-only subprocess provider accepts an optional positive Go duratio
 | `WorkerControllerAWSRequireRoleAndExternalID` | `true` | Enforce role + external ID on AWS configs |
 | `WorkerControllerModalCredentialReloadLimit` | `2` | Vault re-reads allowed for a grant Modal keeps rejecting |
 | `WorkerControllerModalCredentialReloadCooldownSeconds` | `900` | How long to stop reading Vault for a grant after that |
-| `WorkerControllerModalClientIdleTimeoutSeconds` | `1800` | How long an unused Modal connection is kept open |
 
 ## Spec Format
 
