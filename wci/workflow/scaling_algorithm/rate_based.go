@@ -311,7 +311,7 @@ func (a *scalingAlgorithmRateBased) ProcessTaskAdd(
 	priorState iface.ScalingAlgorithmStatus,
 	request iface.SignalTaskAddRequest,
 ) (*TaskAddResponse, error) {
-	logger := safeActivityLogger(ctx)
+	logger := loggerFrom(ctx)
 
 	if priorState == nil {
 		priorState = iface.ScalingAlgorithmStatus{}
@@ -321,7 +321,7 @@ func (a *scalingAlgorithmRateBased) ProcessTaskAdd(
 	}
 
 	actions := []ScalingAction{}
-	nowMs := time.Now().UnixMilli()
+	nowMs := nowFrom(ctx).UnixMilli()
 	updatedState := cleanRateBasedState(ctx, priorState)
 	currentCount := currentRateBasedPlannedCount(config, updatedState)
 	updatedState[stateRateBasedWorkerCount] = int64(currentCount)
@@ -376,7 +376,7 @@ func (a *scalingAlgorithmRateBased) ProcessDeferredScalingDecision(
 	_ iface.SignalTaskAddRequest,
 	getMetricsSnapshot ScalingMetricsSnapshotGetter,
 ) (*TaskAddResponse, error) {
-	logger := safeActivityLogger(ctx)
+	logger := loggerFrom(ctx)
 	if priorState == nil {
 		priorState = iface.ScalingAlgorithmStatus{}
 	}
@@ -443,7 +443,7 @@ func (a *scalingAlgorithmRateBased) ProcessMetricsPoll(
 	priorState iface.ScalingAlgorithmStatus,
 	metricsSnapshot ScalingMetricsSnapshot,
 ) (*MetricsPollResponse, error) {
-	logger := safeActivityLogger(ctx)
+	logger := loggerFrom(ctx)
 	if priorState == nil {
 		priorState = iface.ScalingAlgorithmStatus{}
 	}
@@ -505,7 +505,7 @@ func (a *scalingAlgorithmRateBased) ProcessMetricsPoll(
 	}
 	updatedCapacity := estimatedRateBasedPerConsumerCapacity(config, updatedState)
 
-	nowMs := time.Now().UnixMilli()
+	nowMs := nowFrom(ctx).UnixMilli()
 	desiredCount, desiredLogArgs := computeRateBasedDesiredCapacity(config, updatedState, metrics.backlog)
 
 	scaleUpCooldownMs := config.GetInt64Field(configRateBasedScaleUpCooldownMsKey, configRateBasedScaleUpCooldownMsDefault)
@@ -595,7 +595,7 @@ func (a *scalingAlgorithmRateBased) ProcessMetricsPoll(
 }
 
 func cleanRateBasedState(ctx context.Context, priorState iface.ScalingAlgorithmStatus) iface.ScalingAlgorithmStatus {
-	logger := safeActivityLogger(ctx)
+	logger := loggerFrom(ctx)
 	updatedState := maps.Clone(priorState)
 	if updatedState == nil {
 		updatedState = map[string]any{}
@@ -654,7 +654,7 @@ func aggregateRateBasedMetrics(ctx context.Context, metricsSnapshot *ScalingMetr
 	if metricsSnapshot == nil {
 		return aggregate
 	}
-	logger := safeActivityLogger(ctx)
+	logger := loggerFrom(ctx)
 
 	for _, qt := range []struct {
 		name    string

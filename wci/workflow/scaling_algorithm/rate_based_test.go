@@ -292,6 +292,15 @@ func TestRateBasedProcessTaskAdd(t *testing.T) {
 		assert.NotContains(t, resp.Status, stateRateBasedLastNoSyncMatchTimestamp)
 	})
 
+	t.Run("no-sync stamps time from the injected clock", func(t *testing.T) {
+		fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		clockCtx := WithClock(ctx, func() time.Time { return fixed })
+		event := iface.SignalTaskAddRequest{IsSyncMatch: false, NoSyncMatchSignalsSinceLast: 1}
+		resp, err := a.ProcessTaskAdd(clockCtx, iface.ScalingAlgorithmConfig{}, nil, event)
+		require.NoError(t, err)
+		assert.Equal(t, fixed.UnixMilli(), resp.Status[stateRateBasedLastNoSyncMatchTimestamp])
+	})
+
 	t.Run("no-sync scales up without capacity update", func(t *testing.T) {
 		state := iface.ScalingAlgorithmStatus{
 			stateRateBasedWorkerCount:          int64(2),
