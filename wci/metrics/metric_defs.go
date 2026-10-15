@@ -14,6 +14,9 @@ var (
 	ClientRequests = metrics.NewCounterDef(
 		"worker_controller_client_requests",
 		metrics.WithDescription("Client requests by operation and the backend that served them."))
+	CHASMMigrationCount = metrics.NewCounterDef(
+		"worker_controller_instance_chasm_migration_count",
+		metrics.WithDescription("Workflow-to-CHASM migration attempts by outcome."))
 	WorkflowBusyCount = metrics.NewCounterDef(
 		"worker_controller_instance_workflow_busy_count",
 		metrics.WithDescription("The number of task match events dropped because the worker controller instance workflow was busy."))
@@ -78,6 +81,7 @@ const (
 	ErrorTypeTagName           = metrics.ErrorTypeTagName
 	ScaleUpTriggerTagName      = "scale_up_trigger"
 	SkipReasonTagName          = "skip_reason"
+	MigrationOutcomeTagName    = "migration_outcome"
 	ActivityErrorTypeTagName   = "activity_error_type"
 	PathTagName                = "path"
 )

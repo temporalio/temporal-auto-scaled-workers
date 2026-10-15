@@ -8,6 +8,7 @@ import (
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workercomponent"
+	instancewf "go.temporal.io/auto-scaled-workers/wci/workflow"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/cluster"
@@ -138,6 +139,12 @@ func ThrottledLoggerRpsFnProvider(serviceConfig *worker.Config) resource.Throttl
 	return func() float64 { return float64(serviceConfig.ThrottledLogRPS()) }
 }
 
+type migrationClientIn struct {
+	fx.In
+
+	MigrationClient instancewf.MigrationClient `optional:"true"`
+}
+
 func PerNamespaceWorkerManagerProvider(
 	logger log.Logger,
 	sdkClientFactory sdk.ClientFactory,
@@ -146,9 +153,10 @@ func PerNamespaceWorkerManagerProvider(
 	config *worker.Config,
 	clusterMetadata cluster.Metadata,
 	dynamicConfig *dynamicconfig.Collection,
+	migration migrationClientIn,
 ) *worker.PerNamespaceWorkerManager {
 	components := []workercommon.PerNSWorkerComponent{
-		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory),
+		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory, migration.MigrationClient),
 	}
 
 	return worker.NewPerNamespaceWorkerManager(

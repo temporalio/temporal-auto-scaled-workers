@@ -46,6 +46,7 @@ type (
 		dc                    *dynamicconfig.Collection
 		namespace             *namespace.Namespace
 		workflowserviceClient workflowservice.WorkflowServiceClient
+		migrationClient       MigrationClient // nil without CHASM
 	}
 
 	// RequestContext aliases the compute-provider request context so activity
@@ -170,12 +171,42 @@ func NewActivities(
 	namespace *namespace.Namespace,
 	dc *dynamicconfig.Collection,
 	workflowserviceClient workflowservice.WorkflowServiceClient,
+	migrationClient MigrationClient,
 ) *Activities {
 	return &Activities{
 		dc:                    dc,
 		namespace:             namespace,
 		workflowserviceClient: workflowserviceClient,
+		migrationClient:       migrationClient,
 	}
+}
+
+// chasmMigrationGateOpen is read through a MutableSideEffect, so it may consult dynamic config.
+func (a *Activities) chasmMigrationGateOpen(deploymentName, buildID string) bool {
+	if a.migrationClient == nil || a.dc == nil || a.namespace == nil {
+		return false
+	}
+	ns := a.namespace.Name().String()
+	if !client.WorkerControllerCHASMMigrationEnabled.Get(a.dc)(ns) {
+		return false
+	}
+	// Rollout key: do not change while a rollout is in progress.
+	return dynamicconfig.RolloutAccepts([]byte(deploymentName+"\x00"+buildID), client.WorkerControllerCHASMMigrationRolloutPercent.Get(a.dc)(ns))
+}
+
+// MigrateToCHASM creates the CHASM WCI from workflow state; false means stay a workflow.
+func (a *Activities) MigrateToCHASM(ctx context.Context, args *iface.WorkerControllerInstanceWorkflowArgs) (bool, error) {
+	if a.migrationClient == nil {
+		return false, nil
+	}
+	err := a.migrationClient.CreateFromWorkflowState(ctx, args)
+	if stderrors.Is(err, client.ErrProviderNotSupportedOnCHASM) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // workerControllerEnabled checks whether the Worker Controller Instance (WCI) feature is enabled for the current
