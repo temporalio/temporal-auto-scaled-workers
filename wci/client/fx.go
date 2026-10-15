@@ -34,7 +34,7 @@ func ClientProvider(
 	testHooks testhooks.TestHooks,
 	metricsHandler metrics.Handler,
 ) fxOut {
-	client := &clientImpl{
+	client := &workflowClient{
 		logger:                       logger,
 		controllerTaskQueueName:      primitives.PerNSWorkerTaskQueue,
 		historyClient:                historyClient,

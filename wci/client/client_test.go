@@ -26,10 +26,10 @@ func newTestNamespace() *namespace.Namespace {
 	)
 }
 
-func newTestClient(t *testing.T, enabled bool) *clientImpl {
+func newTestClient(t *testing.T, enabled bool) *workflowClient {
 	t.Helper()
 
-	return &clientImpl{
+	return &workflowClient{
 		logger:                  log.NewNoopLogger(),
 		controllerTaskQueueName: WorkerControllerPerNSWorkerTaskQueue,
 		historyClient:           historyservicemock.NewMockHistoryServiceClient(gomock.NewController(t)),
