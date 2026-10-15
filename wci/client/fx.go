@@ -38,7 +38,7 @@ func ClientProvider(
 	namespaceRegistry namespace.Registry,
 	clusterMetadata cluster.Metadata,
 ) fxOut {
-	client := &clientImpl{
+	client := &workflowClient{
 		logger:                       logger,
 		controllerTaskQueueName:      primitives.PerNSWorkerTaskQueue,
 		historyClient:                historyClient,

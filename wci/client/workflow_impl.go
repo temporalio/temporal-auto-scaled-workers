@@ -1,0 +1,511 @@
+package client
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+
+	commonpb "go.temporal.io/api/common/v1"
+	deploymentpb "go.temporal.io/api/deployment/v1"
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
+	updatepb "go.temporal.io/api/update/v1"
+	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/server/api/historyservice/v1"
+	"go.temporal.io/server/common"
+	"go.temporal.io/server/common/backoff"
+	"go.temporal.io/server/common/dynamicconfig"
+	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/log/tag"
+	"go.temporal.io/server/common/metrics"
+	"go.temporal.io/server/common/namespace"
+	"go.temporal.io/server/common/persistence/visibility/manager"
+	"go.temporal.io/server/common/sdk"
+	"go.temporal.io/server/common/testing/testhooks"
+	"go.temporal.io/server/common/worker_versioning"
+)
+
+type (
+	workflowClient struct {
+		logger                       log.Logger
+		controllerTaskQueueName      string
+		historyClient                historyservice.HistoryServiceClient
+		visibilityManager            manager.VisibilityManager
+		maxIDLengthLimit             dynamicconfig.IntPropertyFn
+		visibilityMaxPageSize        dynamicconfig.IntPropertyFnWithNamespaceFilter
+		workerControllerEnabled      dynamicconfig.BoolPropertyFnWithNamespaceFilter
+		maxWorkerControllerInstances dynamicconfig.IntPropertyFnWithNamespaceFilter
+		testHooks                    testhooks.TestHooks
+		metricsHandler               metrics.Handler
+	}
+)
+
+var (
+	errUpdateInProgress       = errors.New("update in progress")
+	errWorkflowHistoryTooLong = errors.New("workflow history too long")
+)
+
+var retryPolicy = backoff.NewExponentialRetryPolicy(100 * time.Millisecond).WithExpirationInterval(1 * time.Minute)
+
+var _ Client = (*workflowClient)(nil)
+
+func (d *workflowClient) UpdateTaskQueueName(ctx context.Context, newTaskQueueName string) error {
+	if len(newTaskQueueName) == 0 {
+		return fmt.Errorf("invalid task queue name")
+	}
+
+	d.controllerTaskQueueName = newTaskQueueName
+	return nil
+}
+
+func (d *workflowClient) DescribeWorkerControllerInstance(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+) (_ *iface.QueryDescribeWorkerControllerInstanceResponse, conflictToken []byte, retErr error) {
+	//revive:disable-next-line:defer
+	defer d.convertAndRecordError("DescribeWorkerControllerInstance", version, &retErr)()
+
+	// validating params
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentNameFieldName, version.DeploymentName, d.maxIDLengthLimit()); err != nil {
+		return nil, nil, err
+	}
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, version.BuildId, d.maxIDLengthLimit()); err != nil {
+		return nil, nil, err
+	}
+
+	res, err := queryWorkflowWithRetry(ctx, d.historyClient, namespaceEntry, version, iface.QueryDescribeWorkerControllerInstance, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var queryResponse iface.QueryDescribeWorkerControllerInstanceResponse
+	err = sdk.PreferProtoDataConverter.FromPayloads(res.GetResponse().GetQueryResult(), &queryResponse)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return &queryResponse, queryResponse.ConflictToken, nil
+}
+
+func (d *workflowClient) WorkerControllerInstanceExists(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+) (bool, error) {
+	workflowID := GenerateWorkerControllerInstanceWorkflowID(version)
+	return workflowIsRunning(ctx, d.historyClient, namespaceEntry, workflowID)
+}
+
+func (d *workflowClient) ListWorkerControllerInstances(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	pageSize int,
+	nextPageToken []byte,
+) (_ []*WorkerControllerInstanceSummary, _ []byte, retError error) {
+	//revive:disable-next-line:defer
+	defer d.convertAndRecordError("ListWorkerControllerInstances", nil, &retError)()
+
+	if pageSize == 0 {
+		pageSize = d.visibilityMaxPageSize(namespaceEntry.Name().String())
+	}
+
+	persistenceResp, err := d.visibilityManager.ListWorkflowExecutions(
+		ctx,
+		&manager.ListWorkflowExecutionsRequestV2{
+			NamespaceID:   namespaceEntry.ID(),
+			Namespace:     namespaceEntry.Name(),
+			PageSize:      pageSize,
+			NextPageToken: nextPageToken,
+			Query:         iface.WorkerControllerInstanceVisibilityBaseListQuery,
+		},
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	workerControllerInstanceSummaries := make([]*WorkerControllerInstanceSummary, 0, len(persistenceResp.Executions))
+	for _, ex := range persistenceResp.Executions {
+		var workerControllerInstanceInfo *iface.WorkerControllerInstanceMemo
+		if ex.GetMemo() != nil {
+			workerControllerInstanceInfo, err = iface.DecodeWorkerControllerInstanceMemo(ex.GetMemo())
+			if err != nil {
+				// it's ok to just drop these entries to keep the overall system working as otherwise
+				// a single bad workflow would break the overall experience.
+				d.logger.Error("unable to decode worker controller instance memo", tag.Error(err), tag.WorkflowNamespace(namespaceEntry.Name().String()), tag.WorkflowID(ex.GetExecution().GetWorkflowId()))
+				continue
+			}
+		} else {
+			// There is a race condition where the Worker Controller Instance workflow exists, but has not yet
+			// upserted the memo. If that is the case, we handle it here.
+			version := GetDeploymentNameBuildIdFromWorkflowID(ex.GetExecution().GetWorkflowId())
+			workerControllerInstanceInfo = &iface.WorkerControllerInstanceMemo{
+				DeploymentName: version.DeploymentName,
+				BuildId:        version.BuildId,
+				CreateTime:     ex.GetStartTime(),
+			}
+		}
+
+		workerControllerInstanceSummaries = append(workerControllerInstanceSummaries, &WorkerControllerInstanceSummary{
+			DeploymentName: workerControllerInstanceInfo.DeploymentName,
+			BuildId:        workerControllerInstanceInfo.BuildId,
+			CreateTime:     workerControllerInstanceInfo.CreateTime,
+		})
+	}
+
+	return workerControllerInstanceSummaries, persistenceResp.NextPageToken, nil
+}
+
+func (d *workflowClient) UpdateWorkerControllerInstance(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+	conflictToken []byte,
+	identity string,
+	upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
+	removeScalingGroups []string,
+) (_ *iface.UpdateWorkerControllerInstanceResponse, retErr error) {
+	//revive:disable-next-line:defer
+	defer d.convertAndRecordError("UpdateWorkerControllerInstance", version, &retErr, namespaceEntry.Name(), identity)()
+
+	// validating params
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentNameFieldName, version.DeploymentName, d.maxIDLengthLimit()); err != nil {
+		return nil, err
+	}
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, version.BuildId, d.maxIDLengthLimit()); err != nil {
+		return nil, err
+	}
+	if err := d.checkWorkerControllerEnabled(ctx, namespaceEntry); err != nil {
+		return nil, err
+	}
+	if err := d.checkInstanceCount(ctx, namespaceEntry, version); err != nil {
+		return nil, err
+	}
+
+	requestID := uuid.NewString()
+	updateReq := &iface.UpdateWorkerControllerInstanceRequest{
+		Identity:            identity,
+		ConflictToken:       conflictToken,
+		UpsertScalingGroups: upsertScalingGroups,
+		RemoveScalingGroups: removeScalingGroups,
+	}
+
+	workflowID := GenerateWorkerControllerInstanceWorkflowID(version)
+	startInput := iface.WorkerControllerInstanceWorkflowArgs{
+		NamespaceName:  namespaceEntry.Name().String(),
+		NamespaceId:    namespaceEntry.ID().String(),
+		DeploymentName: version.DeploymentName,
+		BuildId:        version.BuildId,
+	}
+
+	outcome, err := updateWorkflowWithStart(
+		ctx,
+		d.historyClient,
+		namespaceEntry,
+		d.controllerTaskQueueName,
+		iface.WorkerControllerInstanceWorkflowType,
+		workflowID,
+		startInput,
+		iface.UpdateWorkerControllerInstance,
+		updateReq,
+		identity,
+		requestID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if failure := outcome.GetFailure(); failure != nil {
+		if appFailureInfo := failure.GetApplicationFailureInfo(); appFailureInfo != nil {
+			if appFailureInfo.Type == "InvalidArgument" {
+				return nil, serviceerror.NewInvalidArgument(failure.Message)
+			}
+		}
+		return nil, serviceerror.NewInternal(failure.Message)
+	}
+
+	var resp iface.UpdateWorkerControllerInstanceResponse
+	if err := sdk.PreferProtoDataConverter.FromPayloads(outcome.GetSuccess(), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (d *workflowClient) ValidateWorkerControllerInstanceSpec(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+	identity string,
+	upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
+	removeScalingGroups []string,
+) (retErr error) {
+	//revive:disable-next-line:defer
+	defer d.convertAndRecordError("ValidateWorkerControllerInstanceSpec", nil, &retErr, namespaceEntry.Name(), identity)()
+
+	if version != nil {
+		updatePayload, err := sdk.PreferProtoDataConverter.ToPayloads(iface.ValidateSpecRequest{Identity: identity, UpsertScalingGroups: upsertScalingGroups, RemoveScalingGroups: removeScalingGroups})
+		if err != nil {
+			return err
+		}
+
+		workflowID := GenerateWorkerControllerInstanceWorkflowID(version)
+		requestID := uuid.NewString()
+		outcome, err := updateWorkflow(
+			ctx,
+			d.historyClient,
+			namespaceEntry,
+			workflowID,
+			&updatepb.Request{
+				Input: &updatepb.Input{Name: iface.ValidateWorkerControllerInstanceSpec, Args: updatePayload},
+				Meta:  &updatepb.Meta{UpdateId: requestID, Identity: identity},
+			},
+		)
+		if err != nil {
+			var notFound *serviceerror.NotFound
+			if !errors.As(err, &notFound) {
+				// if the instance doesn't exist, we run the other validation below instead of returning an error
+				// as it means this is a dry-run
+				return err
+			}
+		} else if outcome != nil {
+			if failure := outcome.GetFailure(); failure != nil {
+				return serviceerror.NewInvalidArgument(failure.Message)
+			}
+			return nil
+		}
+	}
+
+	if len(upsertScalingGroups) == 0 || len(removeScalingGroups) > 0 {
+		return serviceerror.NewInvalidArgument("No prior compute config found, which means nothing can be removed and something needs to be added to be valid")
+	}
+
+	if err := d.checkWorkerControllerEnabled(ctx, namespaceEntry); err != nil {
+		return err
+	}
+
+	workflowID := uuid.NewString()
+	d.logger.Debug("starting validate worker controller instance spec workflow", tag.WorkflowID(workflowID))
+
+	return startWorkflowAndWait(
+		ctx,
+		d.historyClient,
+		namespaceEntry,
+		d.controllerTaskQueueName,
+		iface.WorkerControllerInstanceValidateWorkflowType,
+		workflowID,
+		&iface.ValidateWorkerControllerInstanceSpecWorkflowArgs{
+			UpsertScalingGroups: upsertScalingGroups,
+		},
+		identity,
+		uuid.NewString(),
+		validateWorkflowExecutionTimeout,
+	)
+}
+
+func (d *workflowClient) DeleteWorkerControllerInstance(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+	identity string,
+) (retErr error) {
+	//revive:disable-next-line:defer
+	defer d.convertAndRecordError("DeleteWorkerControllerInstance", version, &retErr, namespaceEntry.Name(), identity)()
+
+	// validating params
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentNameFieldName, version.DeploymentName, d.maxIDLengthLimit()); err != nil {
+		return err
+	}
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, version.BuildId, d.maxIDLengthLimit()); err != nil {
+		return err
+	}
+
+	workflowID := GenerateWorkerControllerInstanceWorkflowID(version)
+
+	requestID := uuid.NewString()
+	updatePayload, err := sdk.PreferProtoDataConverter.ToPayloads(&iface.DeleteWorkerControllerInstanceRequest{
+		Identity: identity,
+	})
+	if err != nil {
+		return err
+	}
+
+	outcome, err := updateWorkflow(
+		ctx,
+		d.historyClient,
+		namespaceEntry,
+		workflowID,
+		&updatepb.Request{
+			Input: &updatepb.Input{Name: iface.DeleteWorkerControllerInstance, Args: updatePayload},
+			Meta:  &updatepb.Meta{UpdateId: requestID, Identity: identity},
+		},
+	)
+	if err != nil {
+		if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+			// if the instance doesn't exist, nothing to do
+			return nil
+		}
+		return err
+	}
+
+	if failure := outcome.GetFailure(); failure != nil {
+		return serviceerror.NewInternal(failure.Message)
+	}
+	return nil
+}
+
+func (d *workflowClient) SignalTaskAddEvent(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+	request *iface.SignalTaskAddRequest,
+) error {
+	workflowID := GenerateWorkerControllerInstanceWorkflowID(version)
+
+	signalPayload, err := sdk.PreferProtoDataConverter.ToPayloads(request)
+	if err != nil {
+		return err
+	}
+
+	if _, err := d.historyClient.SignalWorkflowExecution(ctx, &historyservice.SignalWorkflowExecutionRequest{
+		NamespaceId: namespaceEntry.ID().String(),
+		SignalRequest: &workflowservice.SignalWorkflowExecutionRequest{
+			Namespace: namespaceEntry.Name().String(),
+			WorkflowExecution: &commonpb.WorkflowExecution{
+				WorkflowId: workflowID,
+			},
+			SignalName: iface.SignalTaskAdd,
+			Input:      signalPayload,
+		},
+	}); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (d *workflowClient) convertAndRecordError(operation string, version *deploymentpb.WorkerDeploymentVersion, retErr *error, args ...any) func() {
+	start := time.Now()
+	return func() {
+		elapsed := time.Since(start)
+
+		// TODO: add metrics recording here
+
+		if version == nil {
+			version = &deploymentpb.WorkerDeploymentVersion{}
+		}
+
+		if *retErr != nil {
+			if isFailedPreconditionOrNotFound(*retErr) {
+				d.logger.Debug("worker controller client failure due to a failed precondition or not found error",
+					tag.Error(*retErr),
+					tag.Operation(operation),
+					tag.Deployment(version.DeploymentName),
+					tag.BuildId(version.BuildId),
+					tag.NewDurationTag("elapsed", elapsed),
+					tag.NewAnyTag("args", args),
+				)
+			} else {
+				if isRetryableUpdateError(*retErr) || isRetryableQueryError(*retErr) {
+					d.logger.Debug("worker controller client throttling due to retryable error",
+						tag.Error(*retErr),
+						tag.Operation(operation),
+						tag.Deployment(version.DeploymentName),
+						tag.BuildId(version.BuildId),
+						tag.NewDurationTag("elapsed", elapsed),
+						tag.NewAnyTag("args", args),
+					)
+
+					var errResourceExhausted *serviceerror.ResourceExhausted
+					if !errors.As(*retErr, &errResourceExhausted) || errResourceExhausted.Cause != enumspb.RESOURCE_EXHAUSTED_CAUSE_WORKER_DEPLOYMENT_LIMITS {
+						// if it's not a limits error, we don't want to expose the underlying cause to the user
+						*retErr = &serviceerror.ResourceExhausted{
+							Message: fmt.Sprintf(ErrTooManyRequests, version.DeploymentName, version.BuildId),
+							Scope:   enumspb.RESOURCE_EXHAUSTED_SCOPE_NAMESPACE,
+							// These errors are caused by workflow throughput limits, so BUSY_WORKFLOW is the most appropriate cause.
+							// This cause is not sent back to the user.
+							Cause: enumspb.RESOURCE_EXHAUSTED_CAUSE_BUSY_WORKFLOW,
+						}
+					}
+				} else if errors.Is(*retErr, context.DeadlineExceeded) ||
+					errors.Is(*retErr, context.Canceled) ||
+					common.IsContextDeadlineExceededErr(*retErr) ||
+					common.IsContextCanceledErr(*retErr) {
+					d.logger.Debug("worker controller client timeout or cancellation",
+						tag.Error(*retErr),
+						tag.Operation(operation),
+						tag.Deployment(version.DeploymentName),
+						tag.BuildId(version.BuildId),
+						tag.NewDurationTag("elapsed", elapsed),
+						tag.NewAnyTag("args", args),
+					)
+				} else if isInvalidArgumentError(*retErr) {
+					// nothing to do
+				} else {
+					d.logger.Error("worker controller client unexpected error",
+						tag.Error(*retErr),
+						tag.Operation(operation),
+						tag.Deployment(version.DeploymentName),
+						tag.BuildId(version.BuildId),
+						tag.NewDurationTag("elapsed", elapsed),
+						tag.NewAnyTag("args", args),
+					)
+				}
+			}
+		} else {
+			d.logger.Debug("worker controller client success",
+				tag.Operation(operation),
+				tag.Deployment(version.DeploymentName),
+				tag.BuildId(version.BuildId),
+				tag.NewDurationTag("elapsed", elapsed),
+				tag.NewAnyTag("args", args),
+			)
+		}
+	}
+}
+
+func (d *workflowClient) checkWorkerControllerEnabled(ctx context.Context, namespaceEntry *namespace.Namespace) error {
+	if !d.workerControllerEnabled(namespaceEntry.Name().String()) {
+		return serviceerror.NewFailedPrecondition("worker controller is disabled in namespace " + namespaceEntry.Name().String())
+	}
+	return nil
+}
+
+func (d *workflowClient) checkInstanceCount(ctx context.Context, namespaceEntry *namespace.Namespace, version *deploymentpb.WorkerDeploymentVersion) error {
+	workflowID := GenerateWorkerControllerInstanceWorkflowID(version)
+
+	exists, err := workflowIsRunning(ctx, d.historyClient, namespaceEntry, workflowID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		// New deployment, make sure we're not exceeding the limit
+		//
+		// We are accepting that there is a race condition between this check
+		// and the subsequent creation because the strictness of the enforcement
+		// is not critical - we just need a base upper bound to defend against
+		// run-away creation
+		count, err := countWorkerControllerInstances(ctx, d.visibilityManager, namespaceEntry)
+		if err != nil {
+			return err
+		}
+		limit := d.maxWorkerControllerInstances(namespaceEntry.Name().String())
+		if count >= int64(limit) {
+			return &serviceerror.ResourceExhausted{
+				Message: fmt.Sprintf("reached maximum worker controller instances in namespace (%d)", limit),
+				Scope:   enumspb.RESOURCE_EXHAUSTED_SCOPE_NAMESPACE,
+				Cause:   enumspb.RESOURCE_EXHAUSTED_CAUSE_WORKER_DEPLOYMENT_LIMITS,
+			}
+		}
+	}
+	return nil
+}
+
+// validateWorkerControllerInstanceWFParams is a helper that verifies if the fields used for generating
+// Worker Controller Instance related workflowID's are valid
+func validateWorkerControllerInstanceWFParams(fieldName string, field string, maxIDLengthLimit int) error {
+	return worker_versioning.ValidateDeploymentVersionFields(fieldName, field, maxIDLengthLimit)
+}
