@@ -2,6 +2,12 @@ package wci
 
 import (
 	"context"
+	"net"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
 
 	"go.temporal.io/api/serviceerror"
 	wciLog "go.temporal.io/auto-scaled-workers/wci/log"
@@ -42,6 +48,10 @@ type (
 		config           *Config
 
 		perNamespaceWorkerManager *worker.PerNamespaceWorkerManager
+
+		server       *grpc.Server
+		grpcListener net.Listener
+		healthServer *health.Server
 	}
 )
 
@@ -56,6 +66,9 @@ func NewService(
 	metricsHandler metrics.Handler,
 	metadataManager persistence.MetadataManager,
 	perNamespaceWorkerManager *worker.PerNamespaceWorkerManager,
+	server *grpc.Server,
+	grpcListener net.Listener,
+	healthServer *health.Server,
 ) (*Service, error) {
 	workerControllerServiceResolver, err := membershipMonitor.GetResolver(ServiceName)
 	if err != nil {
@@ -75,6 +88,10 @@ func NewService(
 		workerControllerServiceResolver: workerControllerServiceResolver,
 
 		perNamespaceWorkerManager: perNamespaceWorkerManager,
+
+		server:       server,
+		grpcListener: grpcListener,
+		healthServer: healthServer,
 	}
 	return s, nil
 }
@@ -99,6 +116,18 @@ func (s *Service) Start() {
 		s.workerControllerServiceResolver,
 	)
 
+	healthpb.RegisterHealthServer(s.server, s.healthServer)
+	s.healthServer.SetServingStatus(string(ServiceName), healthpb.HealthCheckResponse_SERVING)
+
+	reflection.Register(s.server)
+
+	go func() {
+		s.logger.Info("Starting to serve on worker-controller-workers listener")
+		if err := s.server.Serve(s.grpcListener); err != nil {
+			s.logger.Fatal("Failed to serve on worker-controller-workers listener", tag.Error(err))
+		}
+	}()
+
 	s.logger.Info(
 		"worker-controller-workers service started",
 		wciLog.ComponentWorkerControllerWorkers,
@@ -108,9 +137,13 @@ func (s *Service) Start() {
 
 // Stop is called to stop the service
 func (s *Service) Stop() {
+	s.healthServer.SetServingStatus(string(ServiceName), healthpb.HealthCheckResponse_NOT_SERVING)
+
 	s.perNamespaceWorkerManager.Stop()
 	s.namespaceRegistry.Stop()
 	s.clusterMetadata.Stop()
+
+	s.server.GracefulStop()
 
 	s.logger.Info(
 		"worker-controller-workers service stopped",
