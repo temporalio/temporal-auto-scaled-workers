@@ -204,7 +204,7 @@ func (a *scalingAlgorithmNoSync) ValidateConfig(ctx context.Context, config ifac
 }
 
 func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config iface.ScalingAlgorithmConfig, priorState iface.ScalingAlgorithmStatus, event iface.SignalTaskAddRequest) (*TaskAddResponse, error) {
-	logger := safeActivityLogger(ctx)
+	logger := loggerFrom(ctx)
 
 	updatedState := maps.Clone(priorState)
 	actions := []ScalingAction{}
@@ -229,7 +229,7 @@ func (a *scalingAlgorithmNoSync) ProcessTaskAdd(ctx context.Context, config ifac
 	if !event.IsSyncMatch || event.NoSyncMatchSignalsSinceLast > 0 {
 		cooloffMs := config.GetInt64Field(configNoSyncScaleUpCooloffMsKey, configNoSyncScaleUpCooloffMsDefault)
 		lastScaleUpMs := priorState.GetInt64Field(stateLastScaleUpTimestampKey, 0)
-		nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
+		nowMs := nowFrom(ctx).UnixMilli()
 		elapsedMs := nowMs - lastScaleUpMs
 
 		// Obey the poll's per-queue suppression decision for this task-add's queue type.
@@ -282,7 +282,7 @@ func (a *scalingAlgorithmNoSync) ProcessMetricsPoll(ctx context.Context, config 
 	backlogThreshold := config.GetInt64Field(configNoSyncScaleUpBacklogThresholdKey, configNoSyncScaleUpBacklogThresholdDefault)
 	maxWorkerLifetimeMs := config.GetInt64Field(configNoSyncMaxWorkerLifetimeMsKey, configNoSyncMaxWorkerLifetimeMsDefault)
 	lastScaleUpMs := priorState.GetInt64Field(stateLastScaleUpTimestampKey, 0)
-	nowMs := time.Now().UnixMilli() // safe: called from activity context, not workflow
+	nowMs := nowFrom(ctx).UnixMilli()
 	elapsedSinceScaleUp := nowMs - lastScaleUpMs
 
 	suppressedAny := false
@@ -367,7 +367,7 @@ func (a *scalingAlgorithmNoSync) shouldSuppressScaleUpWhenDispatchWithinEpsilon(
 		dispatchRateWithinEpsilonSince, refRate = nowMs, rate
 	case nowMs-dispatchRateWithinEpsilonSince >= confirmMs:
 		if suppressUntil <= nowMs {
-			safeActivityLogger(ctx).Info("dispatch rate within epsilon band: suppressing scale-up", "queue_type", qName, "dispatch_rate", rate, "backlog", backlog)
+			loggerFrom(ctx).Info("dispatch rate within epsilon band: suppressing scale-up", "queue_type", qName, "dispatch_rate", rate, "backlog", backlog)
 		}
 		suppressUntil = nowMs + suppressMs
 	}

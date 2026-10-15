@@ -190,6 +190,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	}
 
 	logger := activity.GetLogger(ctx)
+	ctx = scalingalgorithm.WithLogger(ctx, logger)
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeValidateSpec, noComputeProvider)
 	_, _, recordSuccess := newActivityRecorders(metricsHandler)
 
@@ -259,6 +260,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 	}
 
 	logger := activity.GetLogger(ctx)
+	ctx = scalingalgorithm.WithLogger(ctx, logger)
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorkersToRegisterTaskQueues, noComputeProvider)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
@@ -436,6 +438,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 
 func (a *Activities) HandleDeferredScalingDecision(ctx context.Context, req HandleDeferredScalingDecisionActivityRequest) (*HandleDeferredScalingDecisionActivityResponse, error) {
 	logger := activity.GetLogger(ctx)
+	ctx = scalingalgorithm.WithLogger(ctx, logger)
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleDeferredScalingDecision, req.ScalingGroupSpec.Compute.ProviderType)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
@@ -502,6 +505,7 @@ func (a *Activities) HandleDeferredScalingDecision(ctx context.Context, req Hand
 
 func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddSignalActivityRequest) (*HandleTaskAddSignalActivityResponse, error) {
 	logger := activity.GetLogger(ctx)
+	ctx = scalingalgorithm.WithLogger(ctx, logger)
 	updatedScalingStatus := req.ScalingStatus
 	if updatedScalingStatus == nil {
 		updatedScalingStatus = map[string]iface.ScalingAlgorithmStatus{}
@@ -576,6 +580,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	}
 
 	logger := activity.GetLogger(ctx)
+	ctx = scalingalgorithm.WithLogger(ctx, logger)
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypePullStats, noComputeProvider)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 

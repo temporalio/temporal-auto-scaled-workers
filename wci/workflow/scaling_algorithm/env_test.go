@@ -2,7 +2,9 @@ package scalingalgorithm
 
 import (
 	"bytes"
+	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,59 +65,41 @@ func TestFallbackLoggerLevelsRouteToStderrLogger(t *testing.T) {
 	}
 }
 
-func TestNormalizeSDKLogger(t *testing.T) {
-	t.Run("panic value installs fallback and surfaces the recovered value", func(t *testing.T) {
+func TestLoggerFrom(t *testing.T) {
+	t.Run("without a logger falls back to stderr", func(t *testing.T) {
 		var buf bytes.Buffer
 		original := fallbackStdlibLogger.Writer()
 		fallbackStdlibLogger.SetOutput(&buf)
 		t.Cleanup(func() { fallbackStdlibLogger.SetOutput(original) })
 
-		result := normalizeSDKLogger(nil, "boom-distinctive-marker")
-		assert.IsType(t, fallbackLogger{}, result)
-		out := buf.String()
-		assert.Contains(t, out, "panicked", "format string must mention the panic")
-		assert.Contains(t, out, "boom-distinctive-marker", "recovered value must appear via %v so future drift in the format string fails this test")
+		logger := loggerFrom(t.Context())
+		assert.IsType(t, fallbackLogger{}, logger)
+		logger.Warn("downstream", "k", "v")
+		assert.Contains(t, buf.String(), "WARN  downstream k=v")
 	})
 
-	t.Run("nil logger with no panic installs fallback", func(t *testing.T) {
-		var buf bytes.Buffer
-		original := fallbackStdlibLogger.Writer()
-		fallbackStdlibLogger.SetOutput(&buf)
-		t.Cleanup(func() { fallbackStdlibLogger.SetOutput(original) })
-
+	t.Run("nil logger falls back", func(t *testing.T) {
 		var nilLogger sdklog.Logger
-		result := normalizeSDKLogger(nilLogger, nil)
-		assert.IsType(t, fallbackLogger{}, result)
-		assert.Contains(t, buf.String(), "returned nil")
+		assert.IsType(t, fallbackLogger{}, loggerFrom(WithLogger(t.Context(), nilLogger)))
 	})
 
-	t.Run("non-nil logger with no panic passes through silently", func(t *testing.T) {
+	t.Run("returns the logger set on the context", func(t *testing.T) {
 		var buf bytes.Buffer
-		original := fallbackStdlibLogger.Writer()
-		fallbackStdlibLogger.SetOutput(&buf)
-		t.Cleanup(func() { fallbackStdlibLogger.SetOutput(original) })
-
-		input := fallbackLogger{}
-		result := normalizeSDKLogger(input, nil)
-		assert.Equal(t, input, result)
-		assert.Empty(t, buf.String(), "happy path must not write to the fallback")
+		logger := sdklog.NewStructuredLogger(slog.New(slog.NewTextHandler(&buf, nil)))
+		loggerFrom(WithLogger(t.Context(), logger)).Info("hello")
+		assert.Contains(t, buf.String(), "hello")
 	})
 }
 
-func TestSafeActivityLoggerFallsBackOutsideActivityContext(t *testing.T) {
-	var buf bytes.Buffer
-	original := fallbackStdlibLogger.Writer()
-	fallbackStdlibLogger.SetOutput(&buf)
-	t.Cleanup(func() { fallbackStdlibLogger.SetOutput(original) })
+func TestNowFrom(t *testing.T) {
+	t.Run("without a clock uses wall time", func(t *testing.T) {
+		before := time.Now()
+		now := nowFrom(t.Context())
+		require.False(t, now.Before(before))
+	})
 
-	logger := safeActivityLogger(t.Context())
-	require.NotNil(t, logger)
-	assert.Contains(t, buf.String(), "panicked")
-
-	buf.Reset()
-	logger.Warn("downstream", "k", "v")
-	downstream := buf.String()
-	assert.Contains(t, downstream, "WARN")
-	assert.Contains(t, downstream, "downstream")
-	assert.Contains(t, downstream, "k=v")
+	t.Run("uses the clock set on the context", func(t *testing.T) {
+		fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		assert.Equal(t, fixed, nowFrom(WithClock(t.Context(), func() time.Time { return fixed })))
+	})
 }
