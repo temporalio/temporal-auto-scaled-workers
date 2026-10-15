@@ -88,6 +88,31 @@ var (
 		true,
 		`WorkerControllerAWSRequireRoleAndExternalID controls whether AWS compute providers require a role ARN and external ID. Defaults to true. Set to false to allow configurations without these fields and accepting the associated security risks.`,
 	)
+	WorkerControllerCHASMCreationEnabled = dynamicconfig.NewNamespaceBoolSetting(
+		"workercontroller.chasm.creation_enabled",
+		false,
+		`WorkerControllerCHASMCreationEnabled creates new WCIs as CHASM executions.`,
+	)
+	WorkerControllerCHASMCreationRolloutPercent = dynamicconfig.NewNamespaceIntSetting(
+		"workercontroller.chasm.creation_rollout_percent",
+		0,
+		`WorkerControllerCHASMCreationRolloutPercent limits CHASM creation to this percent of deployment versions.`,
+	)
+	WorkerControllerCHASMRoutingEnabled = dynamicconfig.NewNamespaceBoolSetting(
+		"workercontroller.chasm.routing_enabled",
+		true,
+		`WorkerControllerCHASMRoutingEnabled makes clients try the CHASM backend first, falling back to the workflow.`,
+	)
+	WorkerControllerCHASMMigrationEnabled = dynamicconfig.NewNamespaceBoolSetting(
+		"workercontroller.chasm.migration_enabled",
+		false,
+		`WorkerControllerCHASMMigrationEnabled migrates running workflow-backed WCIs to CHASM.`,
+	)
+	WorkerControllerCHASMMigrationRolloutPercent = dynamicconfig.NewNamespaceIntSetting(
+		"workercontroller.chasm.migration_rollout_percent",
+		0,
+		`WorkerControllerCHASMMigrationRolloutPercent limits migration to this percent of deployment versions.`,
+	)
 	WorkerControllerPeriodicValidationIntervalSeconds = dynamicconfig.NewGlobalIntSetting(
 		"workercontroller.periodic_validation_interval_s",
 		int((6 * time.Hour).Seconds()), // 21600
