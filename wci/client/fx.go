@@ -18,6 +18,13 @@ var Module = fx.Options(
 )
 
 type (
+	// chasmBackendIn is optional so ASW-only builds (cmd/worker, integration tests) route workflow-only.
+	chasmBackendIn struct {
+		fx.In
+
+		ChasmBackend ChasmBackend `optional:"true"`
+	}
+
 	fxOut struct {
 		fx.Out
 
@@ -33,6 +40,7 @@ func ClientProvider(
 	dc *dynamicconfig.Collection,
 	testHooks testhooks.TestHooks,
 	metricsHandler metrics.Handler,
+	chasm chasmBackendIn,
 ) fxOut {
 	client := &workflowClient{
 		logger:                       logger,
@@ -46,12 +54,16 @@ func ClientProvider(
 		testHooks:                    testHooks,
 		metricsHandler:               metricsHandler,
 	}
+	var routed Client = client
+	if chasm.ChasmBackend != nil {
+		routed = newRoutingClient(client, chasm.ChasmBackend, dc, metricsHandler)
+	}
 	taskHookFactory := &taskHookFactoryImpl{
 		logger:         logger,
-		client:         client,
+		client:         routed,
 		dc:             dc,
 		metricsHandler: metricsHandler,
 	}
 
-	return fxOut{Client: client, TaskHookFactory: taskHookFactory}
+	return fxOut{Client: routed, TaskHookFactory: taskHookFactory}
 }

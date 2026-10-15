@@ -17,6 +17,12 @@ const (
 	ErrWorkerControllerInstanceNotFound = "no Worker Controller Instance found for Worker Deployment with name '%s' %s"
 )
 
+// ChasmBackend maps CHASM errors onto these, so ASW never imports chasm/lib/wci.
+var (
+	ErrInstanceClosed              = errors.New("worker controller instance migrated away or deleted")
+	ErrProviderNotSupportedOnCHASM = errors.New("compute provider not supported on CHASM")
+)
+
 func isFailedPreconditionOrNotFound(err error) bool {
 	var failedPreconditionError *serviceerror.FailedPrecondition
 	var notFound *serviceerror.NotFound
