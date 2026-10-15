@@ -163,16 +163,7 @@ func (c *WorkerControllerInstanceSpec) EffectiveTaskTypesForGroup(scalingGroupId
 
 // Validate ensures at least one entry, no duplicate task types per region, and each entry has valid spec.
 func (c *WorkerControllerInstanceSpec) Validate() error {
-	if err := c.validate(); err != nil {
-		return err
-	}
-	// Region-scoped scaling isn't implemented yet, so reject any config using region_ids until then.
-	for k, v := range c.ScalingGroupSpecs {
-		if len(v.RegionIds) > 0 {
-			return serviceerror.NewInvalidArgumentf("entry %s: region_ids is not supported yet", k)
-		}
-	}
-	return nil
+	return c.validate()
 }
 
 func (c *WorkerControllerInstanceSpec) validate() error {

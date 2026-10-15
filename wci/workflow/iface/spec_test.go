@@ -313,17 +313,6 @@ func TestValidateRejectsCatchAllThatServesNothing(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsRegionIds(t *testing.T) {
-	spec := &WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]ScalingGroupSpec{
-		"any":  testGroup(nil, act),
-		"east": testGroup(east, wf),
-	}}
-	require.ErrorContains(t, spec.Validate(), "entry east: region_ids is not supported yet")
-
-	spec.ScalingGroupSpecs["east"] = testGroup([]string{}, wf)
-	require.NoError(t, spec.Validate(), "empty region_ids means no regions")
-}
-
 func TestBuildUpdatedSpecRegionIds(t *testing.T) {
 	current := &WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]ScalingGroupSpec{
 		"group": testGroup(east, wf),
