@@ -20,11 +20,13 @@ type (
 		dynamicConfig    *dynamicconfig.Collection
 		sdkClientFactory sdk.ClientFactory
 		staticConfig     *client.StaticConfig
+		migrationClient  instancewf.MigrationClient
 	}
 )
 
-func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory, staticConfig *client.StaticConfig) workercommon.PerNSWorkerComponent {
-	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory, staticConfig: staticConfig}
+// migrationClient may be nil, which disables workflow-to-CHASM migration.
+func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory, staticConfig *client.StaticConfig, migrationClient instancewf.MigrationClient) workercommon.PerNSWorkerComponent {
+	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory, staticConfig: staticConfig, migrationClient: migrationClient}
 }
 
 func (s *workerComponent) DedicatedWorkerOptions(ns *namespace.Namespace) *workercommon.PerNSDedicatedWorkerOptions {
@@ -39,7 +41,7 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 		DataConverter: sdk.PreferProtoDataConverter,
 	})
 
-	activities := instancewf.NewActivities(ns, s.dynamicConfig, sdkClient.WorkflowService(), s.staticConfig)
+	activities := instancewf.NewActivities(ns, s.dynamicConfig, sdkClient.WorkflowService(), s.staticConfig, s.migrationClient)
 	versionWorkflow := func(ctx workflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
 		workflowVersionGetter := func() instancewf.WorkerControllerInstanceWorkflowVersion {
 			return instancewf.WorkerControllerInstanceWorkflowVersion(client.WorkerControllerInstanceWorkflowVersion.Get(s.dynamicConfig)(ns.Name().String()))
