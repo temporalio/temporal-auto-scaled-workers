@@ -3,6 +3,8 @@ package wci
 
 import (
 	"go.uber.org/fx"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workercomponent"
@@ -21,6 +23,7 @@ import (
 	"go.temporal.io/server/common/persistence/serialization"
 	"go.temporal.io/server/common/pprof"
 	"go.temporal.io/server/common/resource"
+	"go.temporal.io/server/common/rpc/auth"
 	"go.temporal.io/server/common/sdk"
 	"go.temporal.io/server/service/worker"
 	workercommon "go.temporal.io/server/service/worker/common"
@@ -52,6 +55,11 @@ var Module = fx.Options(
 	fx.Provide(ConfigProvider),
 	fx.Provide(WorkerConfigProvider),
 	fx.Provide(ServiceResolverProvider),
+	// WCI makes no remote-cluster dials; nil is valid.
+	fx.Provide(func() auth.TokenProvider { return nil }),
+	fx.Provide(GrpcServerProvider),
+	fx.Provide(resource.GrpcListenerProvider),
+	fx.Provide(health.NewServer),
 	fx.Provide(NewService),
 	fx.Provide(PerNamespaceWorkerManagerProvider),
 	fx.Provide(func() computeprovider.GCPImpersonationChainProvider {
@@ -153,6 +161,15 @@ func PerNamespaceWorkerManagerProvider(
 		components,
 		client.WorkerControllerPerNSWorkerTaskQueue,
 	)
+}
+
+// Internode mTLS.
+func GrpcServerProvider(rpcFactory common.RPCFactory) (*grpc.Server, error) {
+	opts, err := rpcFactory.GetInternodeGRPCServerOptions()
+	if err != nil {
+		return nil, err
+	}
+	return grpc.NewServer(opts...), nil
 }
 
 func ServiceLifetimeHooks(lc fx.Lifecycle, svc *Service) {
