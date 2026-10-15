@@ -8,7 +8,7 @@ import (
 	"math"
 	"time"
 
-	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	"go.temporal.io/auto-scaled-workers/wci/compute"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 )
 
@@ -193,8 +193,8 @@ func NewScalingAlgorithmRateBased(_ context.Context) (ScalingAlgorithm, error) {
 	return &scalingAlgorithmRateBased{}, nil
 }
 
-func (a *scalingAlgorithmRateBased) CompatibleLaunchStrategies() []computeprovider.LaunchStrategy {
-	return []computeprovider.LaunchStrategy{computeprovider.LaunchStrategyWorkerSet}
+func (a *scalingAlgorithmRateBased) CompatibleLaunchStrategies() []compute.LaunchStrategy {
+	return []compute.LaunchStrategy{compute.LaunchStrategyWorkerSet}
 }
 
 func (a *scalingAlgorithmRateBased) ValidateConfig(_ context.Context, config iface.ScalingAlgorithmConfig) error {

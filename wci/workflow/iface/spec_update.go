@@ -1,6 +1,7 @@
 package iface
 
 import (
+	"maps"
 	"slices"
 	"strings"
 
@@ -8,7 +9,6 @@ import (
 
 	"go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/sdk/workflow"
 )
 
 // applyFieldMask copies only the specified field paths from src to dst.
@@ -91,13 +91,13 @@ func BuildUpdatedSpec(current *WorkerControllerInstanceSpec, args *UpdateWorkerC
 	// A request without changes validates the current spec, so it skips no group.
 	var scalingGroupsWithoutComputeProviderChanges []string
 	if len(args.UpsertScalingGroups) > 0 || len(args.RemoveScalingGroups) > 0 {
-		scalingGroupsWithoutComputeProviderChanges = slices.DeleteFunc(workflow.DeterministicKeys(newGroups), func(name string) bool {
+		scalingGroupsWithoutComputeProviderChanges = slices.DeleteFunc(slices.Sorted(maps.Keys(newGroups)), func(name string) bool {
 			return slices.Contains(args.RemoveScalingGroups, name)
 		})
 	}
 
 	// Apply upserts.
-	for _, name := range workflow.DeterministicKeys(args.UpsertScalingGroups) {
+	for _, name := range slices.Sorted(maps.Keys(args.UpsertScalingGroups)) {
 		update := args.UpsertScalingGroups[name]
 		existing, exists := newGroups[name]
 		if !exists {

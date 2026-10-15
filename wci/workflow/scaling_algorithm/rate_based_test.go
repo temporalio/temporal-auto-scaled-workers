@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	"go.temporal.io/auto-scaled-workers/wci/compute"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 )
 
@@ -259,7 +259,7 @@ func TestRateBasedValidateConfig(t *testing.T) {
 
 func TestRateBasedCompatibleLaunchStrategies(t *testing.T) {
 	a := newRateBased()
-	assert.Equal(t, []computeprovider.LaunchStrategy{computeprovider.LaunchStrategyWorkerSet}, a.CompatibleLaunchStrategies())
+	assert.Equal(t, []compute.LaunchStrategy{compute.LaunchStrategyWorkerSet}, a.CompatibleLaunchStrategies())
 }
 
 func TestRateBasedDefaultRegistration(t *testing.T) {

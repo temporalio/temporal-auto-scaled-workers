@@ -8,7 +8,7 @@ import (
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
-	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	"go.temporal.io/auto-scaled-workers/wci/compute"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 )
 
@@ -118,8 +118,8 @@ func NewScalingAlgorithmNoSync(_ context.Context) (ScalingAlgorithm, error) {
 	return &scalingAlgorithmNoSync{}, nil
 }
 
-func (a *scalingAlgorithmNoSync) CompatibleLaunchStrategies() []computeprovider.LaunchStrategy {
-	return []computeprovider.LaunchStrategy{computeprovider.LaunchStrategyInvoke}
+func (a *scalingAlgorithmNoSync) CompatibleLaunchStrategies() []compute.LaunchStrategy {
+	return []compute.LaunchStrategy{compute.LaunchStrategyInvoke}
 }
 
 // TaskQueueRegistrationActions registers by invoking a single worker (no-sync is invoke-only); there is
