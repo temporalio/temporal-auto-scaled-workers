@@ -40,7 +40,7 @@ func runHandleTaskAddSignal(t *testing.T, regionID string, req HandleTaskAddSign
 		currentDeferredScalingDecisionTestAlgorithm = nil
 	})
 
-	activities := NewActivities(nil, nil, nil, &client.StaticConfig{RegionID: regionID})
+	activities := NewActivities(nil, nil, nil, &client.StaticConfig{RegionID: regionID}, nil)
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()
 	env.RegisterActivity(activities.HandleTaskAddSignal)
@@ -55,7 +55,7 @@ func runHandleTaskAddSignal(t *testing.T, regionID string, req HandleTaskAddSign
 func runInvokeWorkersToRegisterTaskQueuesInRegion(t *testing.T, fake *fakeWorkflowServiceClient, spec iface.WorkerControllerInstanceSpec, scalingStatus map[string]iface.ScalingAlgorithmStatus, regionID string) *InvokeWorkersToRegisterTaskQueuesResponse {
 	t.Helper()
 	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
-	activities := NewActivities(ns, NewTestDynamicConfigCollection(), fake, &client.StaticConfig{RegionID: regionID})
+	activities := NewActivities(ns, NewTestDynamicConfigCollection(), fake, &client.StaticConfig{RegionID: regionID}, nil)
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()
@@ -287,7 +287,7 @@ func TestHandleNoSyncMatchSignalForwardsEffectiveTaskTypesToDeferredDecision(t *
 		currentDeferredScalingDecisionTestAlgorithm = nil
 	})
 
-	activities := NewActivities(nil, nil, nil, &client.StaticConfig{RegionID: testRegionEast})
+	activities := NewActivities(nil, nil, nil, &client.StaticConfig{RegionID: testRegionEast}, nil)
 	event := newTestSignalTaskAddEvent()
 	event.TaskQueueType = enumspb.TASK_QUEUE_TYPE_ACTIVITY
 	args := &iface.WorkerControllerInstanceWorkflowArgs{
@@ -342,7 +342,7 @@ func TestHandleNoSyncMatchSignalProcessesDeferredDecisionForTaskAddResultWithout
 	scalingConfigPayload, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
 	require.NoError(t, err)
 
-	activities := NewActivities(nil, nil, nil, &client.StaticConfig{RegionID: testRegionEast})
+	activities := NewActivities(nil, nil, nil, &client.StaticConfig{RegionID: testRegionEast}, nil)
 	args := &iface.WorkerControllerInstanceWorkflowArgs{
 		NamespaceName:  "test-namespace",
 		DeploymentName: "test-deployment",
@@ -434,7 +434,7 @@ func runPullStatsInRegion(t *testing.T, spec *iface.WorkerControllerInstanceSpec
 	t.Cleanup(func() {
 		currentRecordMetricsPollAlgorithm = nil
 	})
-	activities := NewActivities(ns, dc, fake, &client.StaticConfig{RegionID: regionID})
+	activities := NewActivities(ns, dc, fake, &client.StaticConfig{RegionID: regionID}, nil)
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()
 	env.RegisterActivity(activities.PullStats)
@@ -544,7 +544,7 @@ func TestValidateSpecRejectsRegionIdsWithoutRegionID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			group := rateBasedWorkerSetGroup(t, enumspb.TASK_QUEUE_TYPE_WORKFLOW, 1)
 			group.RegionIds = tc.groupRegionIDs
-			activities := NewActivities(ns, NewTestDynamicConfigCollection(), nil, &client.StaticConfig{RegionID: tc.wciRegionID})
+			activities := NewActivities(ns, NewTestDynamicConfigCollection(), nil, &client.StaticConfig{RegionID: tc.wciRegionID}, nil)
 			var suite testsuite.WorkflowTestSuite
 			env := suite.NewTestActivityEnvironment()
 			env.RegisterActivity(activities.ValidateSpec)

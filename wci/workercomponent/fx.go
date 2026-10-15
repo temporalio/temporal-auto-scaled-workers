@@ -4,6 +4,7 @@ import (
 	"go.uber.org/fx"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	instancewf "go.temporal.io/auto-scaled-workers/wci/workflow"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/sdk"
 	workercommon "go.temporal.io/server/service/worker/common"
@@ -12,8 +13,9 @@ import (
 type (
 	componentDeps struct {
 		fx.In
-		ClientFactory sdk.ClientFactory
-		StaticConfig  *client.StaticConfig `optional:"true"`
+		ClientFactory   sdk.ClientFactory
+		StaticConfig    *client.StaticConfig       `optional:"true"`
+		MigrationClient instancewf.MigrationClient `optional:"true"`
 	}
 
 	fxResult struct {
@@ -31,6 +33,6 @@ func NewResult(
 	params componentDeps,
 ) fxResult {
 	return fxResult{
-		Component: NewWCIPerNSWorkerComponent(dc, params.ClientFactory, params.StaticConfig),
+		Component: NewWCIPerNSWorkerComponent(dc, params.ClientFactory, params.StaticConfig, params.MigrationClient),
 	}
 }

@@ -28,6 +28,7 @@ const (
 	InvokeWorkerActivityTimeout                  = 2 * time.Minute
 	UpdateWorkerSetSizeActivityTimeout           = 2 * time.Minute
 	RegisterTaskQueuesViaWorkersActivityTimeout  = 30 * time.Second
+	MigrateToCHASMActivityTimeout                = 15 * time.Second
 
 	periodicValidationInterval = 6 * time.Hour
 
@@ -73,6 +74,9 @@ const (
 	// Skip most mutating operations on the version workflow if
 	// workercontroller.enabled is false in the dynamic config.
 	CheckWorkerControllerEnabledVersion
+
+	// At the CaN boundary, hand the WCI to CHASM when the migration gate is open.
+	MigrateToCHASMVersion
 )
 
 type (
@@ -349,7 +353,44 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		d.drainTaskAddSignalChannelToQueue()
 	}
 
+	// Ships the same args a CaN would, including the drained PendingTaskAddSignals.
+	if d.migrateToCHASM(ctx) {
+		return nil
+	}
+
 	return workflow.NewContinueAsNewError(ctx, iface.WorkerControllerInstanceWorkflowType, d.WorkerControllerInstanceWorkflowArgs)
+}
+
+// migrateToCHASM reports whether CHASM now owns the WCI; on any failure the WCI stays a workflow.
+func (d *WorkflowRunner) migrateToCHASM(ctx workflow.Context) bool {
+	if !d.hasMinVersion(MigrateToCHASMVersion) {
+		return false
+	}
+	var gateOpen bool
+	if err := workflow.MutableSideEffect(ctx, "chasmMigrationGate",
+		func(_ workflow.Context) any { return d.a.chasmMigrationGateOpen(d.DeploymentName, d.BuildId) },
+		func(a, b any) bool { return a == b }).
+		Get(&gateOpen); err != nil || !gateOpen {
+		return false
+	}
+
+	var migrated bool
+	err := workflow.ExecuteLocalActivity(
+		workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: MigrateToCHASMActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
+		d.a.MigrateToCHASM,
+		d.WorkerControllerInstanceWorkflowArgs,
+	).Get(ctx, &migrated)
+
+	outcome := "migrated"
+	switch {
+	case err != nil:
+		outcome = "failed"
+		d.logger.Warn("Failed to migrate to CHASM, staying a workflow", "error", err)
+	case !migrated:
+		outcome = "unsupported"
+	}
+	d.metrics.WithTags(map[string]string{wcimetrics.MigrationOutcomeTagName: outcome}).Counter(wcimetrics.CHASMMigrationCount.Name()).Inc(1)
+	return err == nil && migrated
 }
 
 func (d *WorkflowRunner) runTimerSelectorLoop(ctx workflow.Context, timerSel workflow.Selector) {
