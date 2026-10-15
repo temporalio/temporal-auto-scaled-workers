@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/membership"
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
@@ -76,8 +77,23 @@ var Module = fx.Options(
 	fx.Invoke(func(r computeprovider.ModalAccountResolver) {
 		computeprovider.SetModalAccountResolver(r)
 	}),
-	fx.Invoke(func(cfg computeprovider.ModalVaultConfig) {
+	// Build the Modal secret source once, here, rather than lazily on first use.
+	// A cell whose Vault configuration is wrong finds out in its startup logs
+	// instead of on a customer's first scale-up. It is logged rather than
+	// returned: failing startup would take worker-controller down for every
+	// other provider over one provider's configuration, so Modal is left
+	// disabled and fails closed on its own.
+	fx.Invoke(func(cfg computeprovider.ModalVaultConfig, logger log.Logger) {
 		computeprovider.SetModalVaultConfig(cfg)
+		if cfg.Address == "" {
+			return
+		}
+		source, err := computeprovider.NewVaultModalSecretSource(cfg)
+		if err != nil {
+			logger.Error("Modal compute provider disabled: cannot build its secret source", tag.Error(err))
+			return
+		}
+		computeprovider.SetModalSecretSource(source)
 	}),
 	fx.Invoke(ServiceLifetimeHooks),
 )

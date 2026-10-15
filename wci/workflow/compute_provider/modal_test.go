@@ -89,13 +89,10 @@ func (f *fakeSecretSource) RefreshToken(_ context.Context, accountID, workspaceI
 // the process-wide credential cache around the test.
 func stubModalSecretSource(t *testing.T, src ModalSecretSource) {
 	t.Helper()
-	orig := modalSecretSourceFn
-	modalSecretSourceFn = func(ModalVaultConfig) (ModalSecretSource, error) {
-		return src, nil
-	}
+	SetModalSecretSource(src)
 	resetModalCredentialCacheForTest()
 	t.Cleanup(func() {
-		modalSecretSourceFn = orig
+		clearModalSecretSource()
 		resetModalCredentialCacheForTest()
 	})
 }
@@ -648,9 +645,11 @@ func stubModalClientCacheClock(t *testing.T, now *time.Time) {
 	t.Cleanup(func() { modalClients.now = orig })
 }
 
-func TestModalInvokeWorker_FailsWithoutDeploymentConfig(t *testing.T) {
-	// No stubbed secret source: the provider falls through to building a real
-	// Vault-backed one, which an unconfigured cell cannot do.
+func TestModalInvokeWorker_FailsWithoutSecretSource(t *testing.T) {
+	// An unconfigured cell installs no secret source at startup.
+	clearModalSecretSource()
+	t.Cleanup(clearModalSecretSource)
+
 	c := &fakeModalClient{}
 	stubModalClient(t, c)
 
@@ -673,12 +672,12 @@ func TestSetModalVaultConfig_RoundTrips(t *testing.T) {
 	assert.Equal(t, cfg, GetModalVaultConfig())
 }
 
-func TestSetModalSecretSource_PreferredOverVault(t *testing.T) {
+func TestSetModalSecretSource_IsWhatTheProviderReads(t *testing.T) {
 	prev := getModalSecretSource()
 	t.Cleanup(func() {
-		modalSecretSourceOverrideMu.Lock()
-		modalSecretSourceOverride = prev
-		modalSecretSourceOverrideMu.Unlock()
+		modalSecretSourceMu.Lock()
+		modalSecretSource = prev
+		modalSecretSourceMu.Unlock()
 	})
 
 	src := newFakeSecretSource()
@@ -688,8 +687,7 @@ func TestSetModalSecretSource_PreferredOverVault(t *testing.T) {
 	c := &fakeModalClient{}
 	stubModalClient(t, c)
 
-	// No Vault configuration at all: the installed source is used instead of
-	// building one.
+	// No Vault configuration at all: the installed source is what gets read.
 	p := &modalComputeProvider{
 		vaultConfig:            ModalVaultConfig{OAuthClientID: testModalClientID},
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
@@ -703,9 +701,9 @@ func TestSetModalSecretSource_PreferredOverVault(t *testing.T) {
 func TestSetModalSecretSource_IgnoresNil(t *testing.T) {
 	prev := getModalSecretSource()
 	t.Cleanup(func() {
-		modalSecretSourceOverrideMu.Lock()
-		modalSecretSourceOverride = prev
-		modalSecretSourceOverrideMu.Unlock()
+		modalSecretSourceMu.Lock()
+		modalSecretSource = prev
+		modalSecretSourceMu.Unlock()
 	})
 
 	src := newFakeSecretSource()

@@ -46,13 +46,10 @@ func SetModalTestClient(cfg ModalTestClientConfig) func() {
 // cleared on both installation and restore, so a test never sees credentials
 // another test cached and never leaves its own behind.
 func SetModalTestSecretSource(src ModalSecretSource) func() {
-	orig := modalSecretSourceFn
-	modalSecretSourceFn = func(ModalVaultConfig) (ModalSecretSource, error) {
-		return src, nil
-	}
+	SetModalSecretSource(src)
 	ResetModalCredentialCache()
 	return func() {
-		modalSecretSourceFn = orig
+		clearModalSecretSource()
 		ResetModalCredentialCache()
 	}
 }

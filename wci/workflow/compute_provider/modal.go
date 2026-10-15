@@ -134,9 +134,9 @@ func (p *modalComputeProvider) withFunction(
 	params ModalParams,
 	do func(context.Context, modalFunction) error,
 ) error {
-	source, err := p.secretSource()
-	if err != nil {
-		return fmt.Errorf("%w: %w", errWCIOwned, err)
+	source := getModalSecretSource()
+	if source == nil {
+		return fmt.Errorf("%w: the Modal compute provider has no secret source; it is not configured in this cell", errWCIOwned)
 	}
 
 	accountID, err := getModalAccountResolver().ResolveAccountID(ctx, rc.NamespaceName)
@@ -179,15 +179,6 @@ func (p *modalComputeProvider) withFunction(
 
 	// The rotated digest retires the connection built on the old credentials.
 	return p.runWithCredentials(ctx, accountID, params, rotated, modalCredentialDigest(rotated), do, false)
-}
-
-// secretSource prefers a source installed at startup, falling back to building
-// the Vault-backed one from the deployment's configuration.
-func (p *modalComputeProvider) secretSource() (ModalSecretSource, error) {
-	if src := getModalSecretSource(); src != nil {
-		return src, nil
-	}
-	return modalSecretSourceFn(p.vaultConfig)
 }
 
 func (p *modalComputeProvider) runWithCredentials(
@@ -294,65 +285,37 @@ func GetModalVaultConfig() ModalVaultConfig {
 	return modalVaultConfig
 }
 
-// modalSecretSource is an override for where Modal OAuth material is read from,
-// installed at startup. Nothing installs one in a normal deployment, where the
-// Vault-backed source is built from ModalVaultConfig instead.
+// modalSecretSource is where Modal OAuth material is read from, installed once
+// at startup. Leaving it unset disables the provider, which then fails closed.
 var (
-	modalSecretSourceOverrideMu sync.RWMutex
-	modalSecretSourceOverride   ModalSecretSource
+	modalSecretSourceMu sync.RWMutex
+	modalSecretSource   ModalSecretSource
 )
 
-// SetModalSecretSource installs a secret source in place of the Vault-backed
-// one. It completes the trio of startup seams alongside SetModalAccountResolver
-// and SetModalVaultConfig, for a deployment that keeps Modal OAuth material
-// somewhere other than the Vault layout ModalVaultConfig describes. A nil
-// source is ignored.
+// SetModalSecretSource installs the secret source the Modal compute provider
+// reads credentials through. Called once at startup with the Vault-backed
+// source built from ModalVaultConfig, or with a deployment's own source if it
+// keeps Modal OAuth material elsewhere. A nil source is ignored.
 func SetModalSecretSource(src ModalSecretSource) {
-	modalSecretSourceOverrideMu.Lock()
-	defer modalSecretSourceOverrideMu.Unlock()
+	modalSecretSourceMu.Lock()
+	defer modalSecretSourceMu.Unlock()
 	if src != nil {
-		modalSecretSourceOverride = src
+		modalSecretSource = src
 	}
 }
 
 func getModalSecretSource() ModalSecretSource {
-	modalSecretSourceOverrideMu.RLock()
-	defer modalSecretSourceOverrideMu.RUnlock()
-	return modalSecretSourceOverride
+	modalSecretSourceMu.RLock()
+	defer modalSecretSourceMu.RUnlock()
+	return modalSecretSource
 }
 
-// modalSecretSourceFn builds the secret source. It is a package-level variable
-// so tests can supply one without a Vault server.
-var modalSecretSourceFn = cachedVaultModalSecretSource
-
-var (
-	// modalSecretSourceMu guards the one-time build below. Activities run
-	// concurrently on the per-namespace worker, and each one constructs its own
-	// provider, so this is reached from many goroutines at once.
-	modalSecretSourceMu     sync.Mutex
-	modalSecretSourceCached ModalSecretSource
-)
-
-// cachedVaultModalSecretSource builds the Vault-backed source once, so the token
-// obtained by the Kubernetes auth login is shared by every grant instead of
-// being minted per activity. The configuration is installed once at startup, so
-// there is nothing to invalidate on. A failed build is not cached: an
-// unconfigured cell should start working if its config arrives late.
-func cachedVaultModalSecretSource(cfg ModalVaultConfig) (ModalSecretSource, error) {
+// clearModalSecretSource removes the installed source. Only tests need this;
+// a live process installs one at startup and never retracts it.
+func clearModalSecretSource() {
 	modalSecretSourceMu.Lock()
 	defer modalSecretSourceMu.Unlock()
-
-	if modalSecretSourceCached != nil {
-		return modalSecretSourceCached, nil
-	}
-
-	source, err := newVaultModalSecretSource(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	modalSecretSourceCached = source
-	return source, nil
+	modalSecretSource = nil
 }
 
 func resolveModalParams(cfg ComputeProviderConfig) (ModalParams, error) {
