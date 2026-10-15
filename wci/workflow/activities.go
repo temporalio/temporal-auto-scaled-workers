@@ -221,7 +221,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 		}
 
 		if entry.Scaling != nil {
-			scalingAlgo, err := scalingalgorithm.GetScalingAlgorithm(timeoutCtx, entry.Scaling.ScalingAlgorithm, a.dc)
+			scalingAlgo, err := scalingalgorithm.GetScalingAlgorithm(timeoutCtx, entry.Scaling.ScalingAlgorithm, client.WorkerControllerEnabledScalingAlgorithms.Get(a.dc)())
 			if err != nil {
 				recordError(wcimetrics.ErrorTypeAlgorithmFailed)
 				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)

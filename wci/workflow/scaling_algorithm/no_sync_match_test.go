@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	enumspb "go.temporal.io/api/enums/v1"
-	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	"go.temporal.io/auto-scaled-workers/wci/compute"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 )
 
@@ -299,7 +299,7 @@ func TestNoSyncCompatibleLaunchStrategies(t *testing.T) {
 	a := newNoSync()
 	strategies := a.CompatibleLaunchStrategies()
 	require.Len(t, strategies, 1)
-	assert.Equal(t, computeprovider.LaunchStrategyInvoke, strategies[0])
+	assert.Equal(t, compute.LaunchStrategyInvoke, strategies[0])
 }
 
 func TestNoSyncProcessDeferredScalingDecisionNoop(t *testing.T) {

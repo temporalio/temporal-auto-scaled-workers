@@ -1,11 +1,13 @@
 package iface
 
 import (
+	"maps"
+	"slices"
+
 	"google.golang.org/protobuf/proto"
 
 	"go.temporal.io/api/common/v1"
 	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/sdk/workflow"
 )
 
 // applyFieldMask copies only the specified field paths from src to dst.
@@ -85,7 +87,7 @@ func BuildUpdatedSpec(current *WorkerControllerInstanceSpec, args *UpdateWorkerC
 	}
 
 	// Apply upserts.
-	for _, name := range workflow.DeterministicKeys(args.UpsertScalingGroups) {
+	for _, name := range slices.Sorted(maps.Keys(args.UpsertScalingGroups)) {
 		update := args.UpsertScalingGroups[name]
 		existing, exists := newGroups[name]
 		if !exists {

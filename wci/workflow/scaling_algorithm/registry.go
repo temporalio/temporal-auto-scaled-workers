@@ -7,10 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"go.temporal.io/auto-scaled-workers/wci/client"
-	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	"go.temporal.io/auto-scaled-workers/wci/compute"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
-	"go.temporal.io/server/common/dynamicconfig"
 )
 
 type (
@@ -65,7 +63,7 @@ type (
 
 	ScalingAlgorithm interface {
 		// CompatibleLaunchStrategies returns the list of launch strategies the scaling algorithm can work with
-		CompatibleLaunchStrategies() []computeprovider.LaunchStrategy
+		CompatibleLaunchStrategies() []compute.LaunchStrategy
 
 		// ValidateConfig checks the provided config for correctness. If any issues are found returns an
 		// error with a description. Returns nil if no issues are found.
@@ -154,8 +152,8 @@ func GetDefaultScalingAlgorithmForComputeProvider(ctx context.Context, providerT
 	}
 }
 
-func GetScalingAlgorithm(ctx context.Context, algorithmType iface.ScalingAlgorithmType, dc *dynamicconfig.Collection) (ScalingAlgorithm, error) {
-	enabledScalingAlgorithms := client.WorkerControllerEnabledScalingAlgorithms.Get(dc)()
+// nil enabledScalingAlgorithms enables all.
+func GetScalingAlgorithm(ctx context.Context, algorithmType iface.ScalingAlgorithmType, enabledScalingAlgorithms []string) (ScalingAlgorithm, error) {
 	if enabledScalingAlgorithms != nil && !slices.Contains(enabledScalingAlgorithms, string(algorithmType)) {
 		return nil, nil
 	}
