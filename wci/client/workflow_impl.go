@@ -365,6 +365,14 @@ func (d *workflowClient) SignalTaskAddEvent(
 ) error {
 	workflowID := GenerateWorkerControllerInstanceWorkflowID(version)
 
+	exists, err := workflowIsRunning(ctx, d.historyClient, namespaceEntry, workflowID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return serviceerror.NewNotFoundf(ErrWorkerControllerInstanceNotFound, version.DeploymentName, version.BuildId)
+	}
+
 	signalPayload, err := sdk.PreferProtoDataConverter.ToPayloads(request)
 	if err != nil {
 		return err

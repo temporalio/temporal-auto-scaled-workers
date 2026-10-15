@@ -1,14 +1,18 @@
 package client
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	deploymentpb "go.temporal.io/api/deployment/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/api/historyservicemock/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/log"
@@ -101,4 +105,60 @@ func TestValidateWorkerControllerInstanceSpec_DisabledNamespace(t *testing.T) {
 	var failedPrecondition *serviceerror.FailedPrecondition
 	require.ErrorAs(t, err, &failedPrecondition)
 	require.Contains(t, err.Error(), "worker controller is disabled")
+}
+
+func TestSignalTaskAddEvent_ProbesWorkflowFirst(t *testing.T) {
+	busy := serviceerror.NewResourceExhausted(enumspb.RESOURCE_EXHAUSTED_CAUSE_BUSY_WORKFLOW, "Workflow is busy.")
+	tests := []struct {
+		name        string
+		describeRes *historyservice.DescribeWorkflowExecutionResponse
+		describeErr error
+		wantSignal  bool
+		wantErr     func(error) bool
+	}{
+		{
+			name:        "missing",
+			describeErr: serviceerror.NewNotFound("missing"),
+			wantErr:     func(err error) bool { var nf *serviceerror.NotFound; return errors.As(err, &nf) },
+		},
+		{
+			name:        "completed",
+			describeRes: describeWithStatus(enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED),
+			wantErr:     func(err error) bool { var nf *serviceerror.NotFound; return errors.As(err, &nf) },
+		},
+		{
+			name:        "probe_error_propagates",
+			describeErr: busy,
+			wantErr:     func(err error) bool { return errors.Is(err, busy) },
+		},
+		{
+			name:        "running",
+			describeRes: describeWithStatus(enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING),
+			wantSignal:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestClient(t, true)
+			history := d.historyClient.(*historyservicemock.MockHistoryServiceClient)
+			history.EXPECT().DescribeWorkflowExecution(gomock.Any(), gomock.Any()).Return(tc.describeRes, tc.describeErr)
+			if tc.wantSignal {
+				history.EXPECT().SignalWorkflowExecution(gomock.Any(), gomock.Any()).Return(&historyservice.SignalWorkflowExecutionResponse{}, nil)
+			}
+
+			err := d.SignalTaskAddEvent(t.Context(), newTestNamespace(), newTestVersion(), &iface.SignalTaskAddRequest{})
+			if tc.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.True(t, tc.wantErr(err), "unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func describeWithStatus(status enumspb.WorkflowExecutionStatus) *historyservice.DescribeWorkflowExecutionResponse {
+	return &historyservice.DescribeWorkflowExecutionResponse{
+		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: status},
+	}
 }
