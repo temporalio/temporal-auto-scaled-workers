@@ -18,6 +18,8 @@ import (
 	"go.temporal.io/server/service/matching/hooks"
 )
 
+const taskAddSignalTimeout = time.Second
+
 type (
 	taskHookFactoryImpl struct {
 		logger         log.Logger
@@ -96,23 +98,6 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 		return
 	}
 
-	exists, err := th.client.WorkerControllerInstanceExists(ctx, th.namespace, event.DeploymentVersion)
-	if err != nil {
-		var resourceExhaustedErr *serviceerror.ResourceExhausted
-		if errors.As(err, &resourceExhaustedErr) && resourceExhaustedErr.Cause == enumspb.RESOURCE_EXHAUSTED_CAUSE_BUSY_WORKFLOW {
-			// 'Workflow is busy' error - emit a metric and move on
-			wcimetrics.WorkflowBusyCount.With(th.metricsHandler).Record(1)
-			return
-		}
-
-		th.logger.Error("Failed to check for existence of worker controller instance workflow", tag.Error(err), tag.WorkflowID(workflowID))
-		wcimetrics.TaskMatchErrorCount.With(th.metricsHandler).Record(1)
-		return
-	}
-	if !exists {
-		return
-	}
-
 	request := &iface.SignalTaskAddRequest{
 		TaskQueueName:               th.taskQueueName,
 		TaskQueueType:               th.taskQueueType,
@@ -121,10 +106,25 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 		SyncMatchSignalsSinceLast:   syncMatchBatchCount,
 	}
 
-	if err := th.client.SignalTaskAddEvent(ctx, th.namespace, event.DeploymentVersion, request); err != nil {
-		th.logger.Error("Failed to signal task add event", tag.Error(err), tag.WorkflowID(workflowID))
-		wcimetrics.TaskMatchErrorCount.With(th.metricsHandler).Record(1)
+	// Bound the time this adds to matching's AddTask.
+	signalCtx, cancel := context.WithTimeout(ctx, taskAddSignalTimeout)
+	defer cancel()
+	err := th.client.SignalTaskAddEvent(signalCtx, th.namespace, event.DeploymentVersion, request)
+	if err == nil {
+		return
 	}
+	// No WCI, or a closed one.
+	var notFound *serviceerror.NotFound
+	if errors.As(err, &notFound) {
+		return
+	}
+	var resourceExhaustedErr *serviceerror.ResourceExhausted
+	if errors.As(err, &resourceExhaustedErr) && resourceExhaustedErr.Cause == enumspb.RESOURCE_EXHAUSTED_CAUSE_BUSY_WORKFLOW {
+		wcimetrics.WorkflowBusyCount.With(th.metricsHandler).Record(1)
+		return
+	}
+	th.logger.Error("Failed to signal task add event", tag.Error(err), tag.WorkflowID(workflowID))
+	wcimetrics.TaskMatchErrorCount.With(th.metricsHandler).Record(1)
 }
 
 func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, isSyncMatch bool) (int, int, bool) {
