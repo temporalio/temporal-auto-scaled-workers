@@ -699,3 +699,45 @@ func TestSetModalVaultConfig_RoundTrips(t *testing.T) {
 	SetModalVaultConfig(cfg)
 	assert.Equal(t, cfg, GetModalVaultConfig())
 }
+
+func TestSetModalSecretSource_PreferredOverVault(t *testing.T) {
+	prev := getModalSecretSource()
+	t.Cleanup(func() {
+		modalSecretSourceOverrideMu.Lock()
+		modalSecretSourceOverride = prev
+		modalSecretSourceOverrideMu.Unlock()
+	})
+
+	src := newFakeSecretSource()
+	SetModalSecretSource(src)
+	resetModalCredentialCacheForTest()
+
+	c := &fakeModalClient{}
+	stubModalClient(t, c)
+
+	// No Vault configuration at all: the installed source is used instead of
+	// building one.
+	p := &modalComputeProvider{
+		vaultConfig:            ModalVaultConfig{OAuthClientID: testModalClientID},
+		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
+		clientPolicy:           modalClientPolicy{functionTTL: time.Minute, idleTimeout: time.Hour},
+	}
+
+	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
+	assert.Equal(t, 1, src.refreshTokenReads)
+	assert.Equal(t, 1, c.spawns)
+}
+
+func TestSetModalSecretSource_IgnoresNil(t *testing.T) {
+	prev := getModalSecretSource()
+	t.Cleanup(func() {
+		modalSecretSourceOverrideMu.Lock()
+		modalSecretSourceOverride = prev
+		modalSecretSourceOverrideMu.Unlock()
+	})
+
+	src := newFakeSecretSource()
+	SetModalSecretSource(src)
+	SetModalSecretSource(nil)
+	assert.Equal(t, ModalSecretSource(src), getModalSecretSource())
+}

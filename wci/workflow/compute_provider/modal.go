@@ -141,7 +141,7 @@ func (p *modalComputeProvider) withFunction(
 	params ModalParams,
 	do func(context.Context, modalFunction) error,
 ) error {
-	source, err := modalSecretSourceFn(p.vaultConfig)
+	source, err := p.secretSource()
 	if err != nil {
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
@@ -186,6 +186,15 @@ func (p *modalComputeProvider) withFunction(
 
 	// The rotated digest retires the connection built on the old credentials.
 	return p.runWithCredentials(ctx, accountID, params, rotated, modalCredentialDigest(rotated), do, false)
+}
+
+// secretSource prefers a source installed at startup, falling back to building
+// the Vault-backed one from the deployment's configuration.
+func (p *modalComputeProvider) secretSource() (ModalSecretSource, error) {
+	if src := getModalSecretSource(); src != nil {
+		return src, nil
+	}
+	return modalSecretSourceFn(p.vaultConfig)
 }
 
 func (p *modalComputeProvider) runWithCredentials(
@@ -290,6 +299,33 @@ func GetModalVaultConfig() ModalVaultConfig {
 	modalVaultConfigMu.RLock()
 	defer modalVaultConfigMu.RUnlock()
 	return modalVaultConfig
+}
+
+// modalSecretSource is an override for where Modal OAuth material is read from,
+// installed at startup. Nothing installs one in a normal deployment, where the
+// Vault-backed source is built from ModalVaultConfig instead.
+var (
+	modalSecretSourceOverrideMu sync.RWMutex
+	modalSecretSourceOverride   ModalSecretSource
+)
+
+// SetModalSecretSource installs a secret source in place of the Vault-backed
+// one. It completes the trio of startup seams alongside SetModalAccountResolver
+// and SetModalVaultConfig, for a deployment that keeps Modal OAuth material
+// somewhere other than the Vault layout ModalVaultConfig describes. A nil
+// source is ignored.
+func SetModalSecretSource(src ModalSecretSource) {
+	modalSecretSourceOverrideMu.Lock()
+	defer modalSecretSourceOverrideMu.Unlock()
+	if src != nil {
+		modalSecretSourceOverride = src
+	}
+}
+
+func getModalSecretSource() ModalSecretSource {
+	modalSecretSourceOverrideMu.RLock()
+	defer modalSecretSourceOverrideMu.RUnlock()
+	return modalSecretSourceOverride
 }
 
 // modalSecretSourceFn builds the secret source. It is a package-level variable
