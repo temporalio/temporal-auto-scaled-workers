@@ -91,7 +91,7 @@ var (
 	WorkerControllerModalCredentialReloadLimit = dynamicconfig.NewGlobalIntSetting(
 		"workercontroller.compute_providers.modal.credential_reload_limit",
 		2,
-		`WorkerControllerModalCredentialReloadLimit caps how many times WCI re-reads Vault for a grant whose credentials Modal rejected, before giving up for the cooldown window. Vault is not provisioned for data-plane request rates, so this is deliberately small.`,
+		`WorkerControllerModalCredentialReloadLimit caps how many times WCI re-reads Vault for a grant whose credentials Modal rejected, before giving up for the cooldown window. This is deliberately small as to avoid overwhelming Vault.`,
 	)
 	WorkerControllerModalCredentialReloadCooldownSeconds = dynamicconfig.NewGlobalIntSetting(
 		"workercontroller.compute_providers.modal.credential_reload_cooldown_s",

@@ -43,7 +43,7 @@ type (
 		Environment  string
 		WorkspaceID  string
 		// Version pins the lookup to a deployed App version. Zero looks up the
-		// App's current deployment, which is the common case.
+		// App's latest deployment.
 		Version int
 	}
 
@@ -53,10 +53,7 @@ type (
 	}
 )
 
-// modalCredentials is the process-wide credential cache. Credentials are read
-// from secret storage the first time a grant is used and reused for the life of
-// the process, so they never enter workflow or activity history and secret
-// storage sees one read per grant rather than one per invocation.
+// modalCredentials is the process-wide credential cache.
 var modalCredentials = newModalCredentialCache()
 
 func init() {
@@ -74,10 +71,6 @@ func NewModalFunctionComputeProvider(_ context.Context, dc *dynamicconfig.Collec
 		p.credentialReloadPolicy.reloadLimit = client.WorkerControllerModalCredentialReloadLimit.Get(dc)()
 		p.credentialReloadPolicy.reloadCooldown = time.Duration(client.WorkerControllerModalCredentialReloadCooldownSeconds.Get(dc)()) * time.Second
 	}
-	// Where Vault is and who we log in to it as comes from the deployment, not
-	// from dynamic config: the address is where the pod's service account token
-	// gets sent, so changing it should take the same privilege as changing the
-	// cell.
 	p.vaultConfig = GetModalVaultConfig()
 	return p, nil
 }
@@ -92,19 +85,9 @@ func (p *modalFunctionComputeProvider) ValidateConfig(ctx context.Context, rc Re
 		return err
 	}
 
-	// Validation shares nothing with a spawn: it re-reads the credentials, builds
-	// its own connection and resolves the Function itself. A cached handle would
-	// report a Function deleted an hour ago as present, a cached connection rides
-	// an auth token minted before a grant was revoked, and a cached credential
-	// outlives its own deletion from secret storage until the pod restarts. A
-	// fresh client holds no auth token and must mint one from the refresh token,
-	// which is what makes this test the credentials rather than replay an earlier
-	// success. The AWS Lambda provider validates the same way, with a fresh
-	// client and a real GetFunction.
-	//
-	// It costs a connection and two round trips, on a path that runs at version
-	// create, config update, the connection-check button, and a periodic sweep --
-	// nowhere near the rate the caches exist for.
+	// After acquiring the refresh token from Vault, the Modal SDK internally exchanges it
+	// for an access token. Validation creates a new Modal SDK to verify the connection test
+	// is using the latest refresh token and not the temporary access token inside the Modal SDK.
 	if err := p.validateUncached(ctx, rc, params); err != nil {
 		return fmt.Errorf("cannot access the compute resource: %w", err)
 	}
@@ -117,11 +100,6 @@ func (p *modalFunctionComputeProvider) validateUncached(ctx context.Context, rc 
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
 
-	// Credentials are re-read, not taken from the cache. Every restart rebuilds
-	// them from secret storage, so a grant that has been revoked there leaves a
-	// cached copy that works only until this pod goes away -- and a check passing
-	// on it would promise a worker no fresh process could start. With one API key
-	// for the process this costs nothing: that source holds no secrets to re-read.
 	key := modalGrantKey{accountID: accountID, workspaceID: params.WorkspaceID}
 	creds, err := modalCredentials.refresh(ctx, getModalSecretSource(), key)
 	if err != nil {
@@ -154,26 +132,20 @@ func (p *modalFunctionComputeProvider) invokeWorker(ctx context.Context, rc Requ
 		return err
 	}
 
-	// Spawn with no arguments, as the AWS Lambda provider invokes with no
-	// payload: the worker gets its deployment version from its own configuration,
-	// and a Function deployed with any signature stays callable.
-	return p.withFunction(ctx, rc, params, func(ctx context.Context, fn modalFunction) error {
-		return fn.Spawn(ctx, nil, nil)
-	})
+	return p.spawn(ctx, rc, params)
 }
 
 func (p *modalFunctionComputeProvider) UpdateWorkerSetSize(_ context.Context, _ RequestContext, _ ComputeProviderConfig, _ int32) error {
 	return errors.ErrUnsupported
 }
 
-// withFunction resolves the grant, gets a Function handle and runs do against
-// it. One failure is worth a retry: credentials Modal rejected that secret
-// storage has since rotated. Anything else is returned as-is.
-func (p *modalFunctionComputeProvider) withFunction(
+// spawn resolves the grant, gets a Function handle and starts one worker on it.
+// One failure is worth a retry: credentials Modal rejected that secret storage
+// has since rotated. Anything else is returned as-is.
+func (p *modalFunctionComputeProvider) spawn(
 	ctx context.Context,
 	rc RequestContext,
 	params ModalParams,
-	do func(context.Context, modalFunction) error,
 ) error {
 	source := getModalSecretSource()
 
@@ -188,7 +160,7 @@ func (p *modalFunctionComputeProvider) withFunction(
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
 
-	err = p.runWithCredentials(ctx, accountID, params, creds, digest, do)
+	err = p.spawnWithCredentials(ctx, accountID, params, creds, digest)
 	if err == nil {
 		return nil
 	}
@@ -209,16 +181,15 @@ func (p *modalFunctionComputeProvider) withFunction(
 	}
 
 	// The rotated digest retires the connection built on the old credentials.
-	return p.runWithCredentials(ctx, accountID, params, rotated, modalCredentialDigest(rotated), do)
+	return p.spawnWithCredentials(ctx, accountID, params, rotated, modalCredentialDigest(rotated))
 }
 
-func (p *modalFunctionComputeProvider) runWithCredentials(
+func (p *modalFunctionComputeProvider) spawnWithCredentials(
 	ctx context.Context,
 	accountID string,
 	params ModalParams,
 	creds *ModalCredentials,
 	digest string,
-	do func(context.Context, modalFunction) error,
 ) error {
 	clientKey := modalClientKey{
 		accountID:   accountID,
@@ -240,7 +211,10 @@ func (p *modalFunctionComputeProvider) runWithCredentials(
 		return fmt.Errorf("failed to look up Modal Function %q in app %q: %w", params.FunctionName, params.AppName, err)
 	}
 
-	if err := do(ctx, fn); err != nil {
+	// No arguments, as the AWS Lambda provider invokes with no payload: the
+	// worker reads its deployment version from its own configuration, so a
+	// Function deployed with any signature stays callable.
+	if err := fn.Spawn(ctx, nil, nil); err != nil {
 		// Take the handle at its word that it no longer works and drop it, so the
 		// next invocation resolves afresh rather than retrying against something
 		// we have reason to think is dead. No inline retry: under Modal's
