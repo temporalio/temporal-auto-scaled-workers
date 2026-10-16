@@ -12,6 +12,7 @@ import (
 	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
+	kubernetesauth "github.com/hashicorp/vault/api/auth/kubernetes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,11 +35,10 @@ type fakeVault struct {
 	// readErr, when set, is returned instead of serving secrets.
 	readErr error
 
-	logins       int
-	leaseSeconds int
-	loginErr     error
-	lastRole     string
-	lastJWT      string
+	logins           int
+	authMethodBuilds int
+	leaseSeconds     int
+	loginErr         error
 
 	token      string
 	readTokens []string
@@ -69,18 +69,20 @@ func (v *fakeVault) ReadWithContext(_ context.Context, path string) (*vaultapi.S
 	return &vaultapi.Secret{Data: map[string]any{"data": data}}, nil
 }
 
-func (v *fakeVault) WriteWithContext(_ context.Context, _ string, data map[string]any) (*vaultapi.Secret, error) {
+// Login stands in for client.Auth().Login, which the real source uses and which
+// sets the resulting token on the client itself.
+func (v *fakeVault) Login(_ context.Context, _ vaultapi.AuthMethod) (*vaultapi.Secret, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
 	v.logins++
-	v.lastRole, _ = data["role"].(string)
-	v.lastJWT, _ = data["jwt"].(string)
 	if v.loginErr != nil {
 		return nil, v.loginErr
 	}
+	token := "vault-token-" + string(rune('0'+v.logins))
+	v.token = token
 	return &vaultapi.Secret{Auth: &vaultapi.SecretAuth{
-		ClientToken:   "vault-token-" + string(rune('0'+v.logins)),
+		ClientToken:   token,
 		LeaseDuration: v.leaseSeconds,
 	}}, nil
 }
@@ -94,12 +96,29 @@ func newTestVaultSource(t *testing.T, v *fakeVault, now *time.Time) *vaultModalS
 	tokenPath := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(tokenPath, []byte("sa-jwt\n"), 0o600))
 
+	return newTestVaultSourceWithToken(v, now, tokenPath)
+}
+
+// newTestVaultSourceWithToken builds a source whose auth method is the real
+// Kubernetes helper, pointed at a token file the test controls. Using the real
+// helper is the point: it is what re-reads the rotated service account token,
+// and only because the method is rebuilt on every login.
+func newTestVaultSourceWithToken(v *fakeVault, now *time.Time, tokenPath string) *vaultModalSecretSource {
 	return &vaultModalSecretSource{
-		cfg:       testVaultConfig(),
-		logical:   v,
-		setToken:  func(tok string) { v.mu.Lock(); v.token = tok; v.mu.Unlock() },
-		tokenPath: tokenPath,
-		now:       func() time.Time { return *now },
+		cfg:     testVaultConfig(),
+		logical: v,
+		auth:    v,
+		newAuthMethod: func() (vaultapi.AuthMethod, error) {
+			v.mu.Lock()
+			v.authMethodBuilds++
+			v.mu.Unlock()
+			return kubernetesauth.NewKubernetesAuth(
+				testVaultConfig().AuthRole,
+				kubernetesauth.WithMountPath(testVaultConfig().AuthMount),
+				kubernetesauth.WithServiceAccountTokenPath(tokenPath),
+			)
+		},
+		now: func() time.Time { return *now },
 	}
 }
 
@@ -168,8 +187,7 @@ func TestVaultSecretSource_LogsInOnceAndReusesToken(t *testing.T) {
 	}
 
 	assert.Equal(t, 1, v.logins)
-	assert.Equal(t, "worker-controller", v.lastRole)
-	assert.Equal(t, "sa-jwt", v.lastJWT, "the trailing newline of a projected token must be trimmed")
+	assert.Equal(t, 1, v.authMethodBuilds)
 }
 
 func TestVaultSecretSource_ReloginsBeforeLeaseExpiry(t *testing.T) {
@@ -240,12 +258,11 @@ func TestVaultSecretSource_SurfacesLoginFailure(t *testing.T) {
 func TestVaultSecretSource_SurfacesMissingServiceAccountToken(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
-	s := newTestVaultSource(t, v, &now)
-	s.tokenPath = filepath.Join(t.TempDir(), "absent")
+	s := newTestVaultSourceWithToken(v, &now, filepath.Join(t.TempDir(), "absent"))
 
 	_, err := s.signingKey(t.Context())
 	require.Error(t, err)
-	assert.Zero(t, v.logins)
+	assert.Zero(t, v.logins, "a token we cannot read must not reach a login attempt")
 }
 
 func TestVaultSecretSource_MissingSecretIsAnError(t *testing.T) {
@@ -414,4 +431,55 @@ func TestVaultSecretSource_FailedSigningKeyReadIsNotCached(t *testing.T) {
 	creds, err := s.Credentials(t.Context(), "acct1", "ws-1")
 	require.NoError(t, err)
 	assert.Equal(t, "pem-key", creds.OAuth.JWTKey)
+}
+
+func TestVaultSecretSource_RebuildsAuthMethodPerLogin(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.leaseSeconds = 300
+	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
+
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("sa-jwt-first"), 0o600))
+	s := newTestVaultSourceWithToken(v, &now, tokenPath)
+
+	_, err := s.refreshToken(t.Context(), "acct1", "ws-1")
+	require.NoError(t, err)
+	require.Equal(t, 1, v.logins)
+	require.Equal(t, 1, v.authMethodBuilds)
+
+	// The kubelet rotates the projected token in place. KubernetesAuth reads it
+	// when constructed, not when it logs in, so the method has to be rebuilt or
+	// the next login presents the old JWT.
+	require.NoError(t, os.WriteFile(tokenPath, []byte("sa-jwt-rotated"), 0o600))
+	now = now.Add(5 * time.Minute)
+
+	_, err = s.refreshToken(t.Context(), "acct1", "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, 2, v.logins)
+	assert.Equal(t, 2, v.authMethodBuilds,
+		"a method cached across logins would keep presenting the JWT read at startup")
+}
+
+func TestVaultSecretSource_RemovedTokenFailsTheNextLogin(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.leaseSeconds = 300
+	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
+
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("sa-jwt"), 0o600))
+	s := newTestVaultSourceWithToken(v, &now, tokenPath)
+
+	_, err := s.refreshToken(t.Context(), "acct1", "ws-1")
+	require.NoError(t, err)
+
+	// Rebuilding per login means the token file is read again -- and a file that
+	// has gone away surfaces rather than being papered over by a cached JWT.
+	require.NoError(t, os.Remove(tokenPath))
+	now = now.Add(5 * time.Minute)
+
+	_, err = s.refreshToken(t.Context(), "acct1", "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worker-controller")
 }

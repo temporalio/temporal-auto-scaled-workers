@@ -15,6 +15,7 @@ require (
 	github.com/aws/smithy-go v1.27.6
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/vault/api v1.23.0
+	github.com/hashicorp/vault/api/auth/kubernetes v0.12.0
 	github.com/modal-labs/modal-client/go v0.10.1
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.11.1

@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"path"
 	"strings"
 	"sync"
 	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
+	kubernetesauth "github.com/hashicorp/vault/api/auth/kubernetes"
 )
 
 // ModalVaultConfig tells the Modal compute provider where its OAuth material
@@ -110,12 +110,17 @@ func (c ModalVaultConfig) Validate() error {
 	return nil
 }
 
-// vaultLogical is the slice of the Vault API the secret source uses, narrowed so
-// tests can drive it without a server.
-type vaultLogical interface {
-	ReadWithContext(ctx context.Context, path string) (*vaultapi.Secret, error)
-	WriteWithContext(ctx context.Context, path string, data map[string]any) (*vaultapi.Secret, error)
-}
+// vaultLogical and vaultAuth are the slices of the Vault API the secret source
+// uses, narrowed so tests can drive it without a server.
+type (
+	vaultLogical interface {
+		ReadWithContext(ctx context.Context, path string) (*vaultapi.Secret, error)
+	}
+
+	vaultAuth interface {
+		Login(ctx context.Context, m vaultapi.AuthMethod) (*vaultapi.Secret, error)
+	}
+)
 
 // vaultModalSecretSource reads Modal OAuth material out of a Vault KV v2 mount,
 // authenticating with the pod's Kubernetes service account.
@@ -123,11 +128,13 @@ type vaultModalSecretSource struct {
 	cfg ModalVaultConfig
 
 	logical vaultLogical
-	// setToken installs a freshly minted Vault token on the underlying client.
-	setToken func(string)
-	// tokenPath is the service account token presented at login. Fixed in
-	// production; a test points it at a file it controls.
-	tokenPath string
+	auth    vaultAuth
+	// newAuthMethod builds the Kubernetes auth method for a login. It is called
+	// once per login, never cached: KubernetesAuth reads the service account
+	// token when it is constructed rather than when it logs in, and the kubelet
+	// rotates that token in place, so a method built once at startup would be
+	// presenting an expired JWT within the hour.
+	newAuthMethod func() (vaultapi.AuthMethod, error)
 
 	// signingKeyMu guards the cached signing key below. It is only ever taken
 	// while already holding a credential cache entry's lock, never the other way
@@ -178,11 +185,17 @@ func newVaultModalSecretSource(cfg ModalVaultConfig) (*vaultModalSecretSource, e
 	}
 
 	return &vaultModalSecretSource{
-		cfg:       cfg,
-		logical:   c.Logical(),
-		setToken:  c.SetToken,
-		tokenPath: serviceAccountTokenPath,
-		now:       time.Now,
+		cfg:     cfg,
+		logical: c.Logical(),
+		auth:    c.Auth(),
+		newAuthMethod: func() (vaultapi.AuthMethod, error) {
+			return kubernetesauth.NewKubernetesAuth(
+				cfg.AuthRole,
+				kubernetesauth.WithMountPath(cfg.AuthMount),
+				kubernetesauth.WithServiceAccountTokenPath(serviceAccountTokenPath),
+			)
+		},
+		now: time.Now,
 	}, nil
 }
 
@@ -312,16 +325,17 @@ func (s *vaultModalSecretSource) ensureToken(ctx context.Context, force bool) er
 }
 
 func (s *vaultModalSecretSource) loginLocked(ctx context.Context) error {
-	jwt, err := os.ReadFile(s.tokenPath)
+	loginPath := path.Join("auth", s.cfg.AuthMount, "login")
+
+	// Rebuilt every time, which is what re-reads the rotated service account
+	// token; see newAuthMethod.
+	method, err := s.newAuthMethod()
 	if err != nil {
-		return fmt.Errorf("failed to read the Kubernetes service account token at %s: %w", s.tokenPath, err)
+		return fmt.Errorf("failed to prepare Vault Kubernetes auth for role %q at %s: %w", s.cfg.AuthRole, loginPath, err)
 	}
 
-	loginPath := path.Join("auth", s.cfg.AuthMount, "login")
-	secret, err := s.logical.WriteWithContext(ctx, loginPath, map[string]any{
-		"role": s.cfg.AuthRole,
-		"jwt":  strings.TrimSpace(string(jwt)),
-	})
+	// Login sets the resulting token on the client itself.
+	secret, err := s.auth.Login(ctx, method)
 	if err != nil {
 		return fmt.Errorf("failed to authenticate to Vault at %s as role %q: %w", loginPath, s.cfg.AuthRole, err)
 	}
@@ -329,7 +343,6 @@ func (s *vaultModalSecretSource) loginLocked(ctx context.Context) error {
 		return fmt.Errorf("no Vault token returned for role %q at %s", s.cfg.AuthRole, loginPath)
 	}
 
-	s.setToken(secret.Auth.ClientToken)
 	s.hasToken = true
 	s.tokenExpiry = s.now().Add(time.Duration(secret.Auth.LeaseDuration) * time.Second)
 	return nil
