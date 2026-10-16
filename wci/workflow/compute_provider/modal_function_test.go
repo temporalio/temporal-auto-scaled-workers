@@ -755,6 +755,38 @@ func TestModalInvokeWorker_KeepsConnectionsPerGrant(t *testing.T) {
 	assert.Equal(t, 2, c.lookups)
 }
 
+func TestModalInvokeWorker_SharesConnectionAcrossEnvironments(t *testing.T) {
+	stubModalSecretSource(t, newFakeSecretSource())
+	c := &fakeModalClient{}
+	stubModalClient(t, c)
+
+	invoke := func(environment string) {
+		t.Helper()
+		cfg := testModalConfig()
+		cfg[configModalEnvironment] = environment
+		require.NoError(t, newModalProvider().InvokeWorker(t.Context(), modalRequestContext(), cfg))
+	}
+
+	invoke("main")
+	require.Equal(t, 1, c.lookups)
+	require.Equal(t, "main", c.lastParams.Environment)
+
+	// Same App and Function name in another environment is another Function, so
+	// it must be resolved again -- over the same connection, which the grant
+	// scopes to the workspace rather than to one environment in it.
+	invoke("staging")
+	assert.Equal(t, 1, c.builds, "both environments share the workspace's connection")
+	assert.Equal(t, 2, c.lookups, "each environment resolves its own Function handle")
+	assert.Equal(t, "staging", c.lastParams.Environment)
+
+	// The handle from the first invocation is still cached, so this resolves
+	// nothing: lastParams is untouched and still names staging.
+	invoke("main")
+	assert.Equal(t, 2, c.lookups, "a handle is kept per environment")
+	assert.Equal(t, 3, c.spawns)
+	assert.Zero(t, c.closes)
+}
+
 func TestModalClientCache_ClosesIdleConnections(t *testing.T) {
 	stubModalSecretSource(t, newFakeSecretSource())
 	c := &fakeModalClient{}

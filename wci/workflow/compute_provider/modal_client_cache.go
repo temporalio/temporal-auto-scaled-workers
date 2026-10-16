@@ -9,17 +9,17 @@ import (
 )
 
 type (
-	// modalClientKey identifies a Modal connection. Everything that decides which
-	// identity the connection authenticates as is part of the key, so two grants
-	// can never share one.
+	// modalClientKey identifies a Modal connection. Credentials are scoped to a
+	// workspace, so one connection serves every environment within it.
 	modalClientKey struct {
 		accountID   string
 		workspaceID string
-		environment string
 	}
 
-	// modalFunctionKey identifies a deployed Function within a workspace.
+	// modalFunctionKey identifies a deployed Function. App and Function names are
+	// unique only within an environment, so it is part of the key.
 	modalFunctionKey struct {
+		environment  string
 		appName      string
 		functionName string
 		version      int
@@ -31,18 +31,13 @@ type (
 // pinging Modal every 30s; without this the connections and the map entries
 // holding them would grow with every grant the process ever served and never
 // shrink. It is a constant rather than dynamic config: closing a connection is
-// transparent, the next use rebuilds it, so there is nothing an operator would
-// tune it for.
+// transparent, the next use rebuilds it.
 const modalClientIdleTimeout = 30 * time.Minute
 
 // modalClientCache keeps one Modal connection per grant and the Function handles
 // resolved over it. Without it every worker invocation would open a gRPC
 // connection, mint an auth token and spend a FunctionGet round trip before it
 // could spawn anything; with it a steady-state invocation is just the spawn.
-//
-// Nothing cached here is secret, so this is purely a process-local optimization:
-// it adds nothing to workflow or activity history and needs no coordination
-// between hosts.
 type modalClientCache struct {
 	mu      sync.Mutex
 	entries map[modalClientKey]*modalClientEntry
@@ -72,7 +67,7 @@ func newModalClientCache() *modalClientCache {
 	}
 }
 
-// entryFor returns the grant's connection, building one if there is none and
+// entryFor returns the connection for key, building one if there is none and
 // replacing it when the credentials behind it have rotated.
 func (c *modalClientCache) entryFor(
 	ctx context.Context,
@@ -144,11 +139,7 @@ func (c *modalClientCache) evictIdleLocked() {
 // at that version, which is the whole reason for pinning; unpinned, Modal routes
 // it to the App's current deployment. Either way re-resolving on a schedule
 // would either defeat the pin or change nothing.
-func (e *modalClientEntry) function(
-	ctx context.Context,
-	key modalFunctionKey,
-	params ModalParams,
-) (modalFunction, error) {
+func (e *modalClientEntry) function(ctx context.Context, key modalFunctionKey) (modalFunction, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -157,7 +148,7 @@ func (e *modalClientEntry) function(
 	}
 
 	fn, err := e.client.FunctionFromName(ctx, key.appName, key.functionName, &modal.FunctionFromNameParams{
-		Environment: params.Environment,
+		Environment: key.environment,
 		Version:     key.version,
 	})
 	if err != nil {

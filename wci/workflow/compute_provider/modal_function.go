@@ -194,7 +194,6 @@ func (p *modalFunctionComputeProvider) spawnWithCredentials(
 	clientKey := modalClientKey{
 		accountID:   accountID,
 		workspaceID: params.WorkspaceID,
-		environment: params.Environment,
 	}
 	entry, err := modalClients.entryFor(ctx, clientKey, params, creds, digest)
 	if err != nil {
@@ -202,18 +201,16 @@ func (p *modalFunctionComputeProvider) spawnWithCredentials(
 	}
 
 	functionKey := modalFunctionKey{
+		environment:  params.Environment,
 		appName:      params.AppName,
 		functionName: params.FunctionName,
 		version:      params.Version,
 	}
-	fn, err := entry.function(ctx, functionKey, params)
+	fn, err := entry.function(ctx, functionKey)
 	if err != nil {
 		return fmt.Errorf("failed to look up Modal Function %q in app %q: %w", params.FunctionName, params.AppName, err)
 	}
 
-	// No arguments, as the AWS Lambda provider invokes with no payload: the
-	// worker reads its deployment version from its own configuration, so a
-	// Function deployed with any signature stays callable.
 	if err := fn.Spawn(ctx, nil, nil); err != nil {
 		// Take the handle at its word that it no longer works and drop it, so the
 		// next invocation resolves afresh rather than retrying against something
@@ -230,13 +227,13 @@ func (p *modalFunctionComputeProvider) spawnWithCredentials(
 // package-level variable so tests can swap it for a mock without reaching Modal.
 var newModalClientFn = newModalClient
 
-func newModalClient(_ context.Context, params ModalParams, creds *ModalCredentials) (modalAPI, error) {
-	clientParams := &modal.ClientParams{Environment: params.Environment}
+func newModalClient(_ context.Context, _ ModalParams, creds *ModalCredentials) (modalAPI, error) {
+	// No environment: it is only a default for calls that omit their own, and
+	// every call this package makes names one.
+	clientParams := &modal.ClientParams{}
 
-	// With a grant resolved, OAuthCredentials is supplied explicitly, which makes
-	// the SDK discard anything it picked up from the environment or a profile:
-	// WCI authenticates as that grant or not at all. Without one, the SDK finds
-	// its own credentials, as the AWS and GCP providers let their SDKs do.
+	// If OAuthCredentials is set it will use them instead of falling back to the
+	// OSS Modal API key / token ID by env var mechanism.
 	if creds.OAuth != nil {
 		clientParams.OAuthCredentials = &modal.OAuthCredentialsParams{
 			RefreshToken: creds.OAuth.RefreshToken,
@@ -292,7 +289,6 @@ func SetModalVaultConfig(cfg ModalVaultConfig) {
 	modalVaultConfig = cfg
 }
 
-// GetModalVaultConfig returns the installed Vault configuration.
 func GetModalVaultConfig() ModalVaultConfig {
 	modalVaultConfigMu.RLock()
 	defer modalVaultConfigMu.RUnlock()
@@ -300,9 +296,7 @@ func GetModalVaultConfig() ModalVaultConfig {
 }
 
 // modalSecretSource is where Modal credentials come from. The default leaves
-// them to the Modal SDK -- one API key for the process, as every other provider
-// does with its own SDK. A deployment serving many accounts installs a source
-// that resolves a grant per account instead.
+// them to the Modal SDK -- one API key for the process.
 var (
 	modalSecretSourceMu sync.RWMutex
 	modalSecretSource   ModalSecretSource = APIKeyModalSecretSource{}
@@ -317,21 +311,15 @@ func (APIKeyModalSecretSource) Credentials(context.Context, string, string) (*Mo
 	return &ModalCredentials{APIKey: true}, nil
 }
 
-// FailingModalSecretSource is installed when a deployment asked for per-account
+// FailingModalSecretSource is installed when a deployment asked for Vault-backed
 // credentials and the source could not be built. It fails every lookup rather
-// than leaving the API key default in place, which would quietly serve every
-// account from one key -- the opposite of what asking for per-account
-// credentials meant.
+// than leaving the API key default in place.
 type FailingModalSecretSource struct{ Reason error }
 
 func (f FailingModalSecretSource) Credentials(context.Context, string, string) (*ModalCredentials, error) {
 	return nil, fmt.Errorf("the Modal secret source could not be built: %w", f.Reason)
 }
 
-// SetModalSecretSource installs the secret source the Modal compute provider
-// reads credentials through. Called once at startup with the Vault-backed
-// source built from ModalVaultConfig, or with a deployment's own source if it
-// keeps Modal OAuth material elsewhere. A nil source is ignored.
 func SetModalSecretSource(src ModalSecretSource) {
 	modalSecretSourceMu.Lock()
 	defer modalSecretSourceMu.Unlock()
