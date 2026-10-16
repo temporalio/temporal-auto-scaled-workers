@@ -3,6 +3,7 @@ package computeprovider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -52,21 +53,24 @@ func newFakeVault() *fakeVault {
 	}
 }
 
-func (v *fakeVault) ReadWithContext(_ context.Context, path string) (*vaultapi.Secret, error) {
+// Get stands in for client.KVv2(mount).Get. Paths here are the logical secret
+// paths, without the "data/" segment -- the library owns that now, so the tests
+// should not be restating it.
+func (v *fakeVault) Get(_ context.Context, secretPath string) (*vaultapi.KVSecret, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	v.readPaths = append(v.readPaths, path)
+	v.readPaths = append(v.readPaths, secretPath)
 	v.readTokens = append(v.readTokens, v.token)
 
 	if v.readErr != nil {
 		return nil, v.readErr
 	}
-	data, ok := v.secrets[path]
+	data, ok := v.secrets[secretPath]
 	if !ok {
-		return nil, nil
+		return nil, fmt.Errorf("%w: at %s/data/%s", vaultapi.ErrSecretNotFound, testVaultConfig().KVMount, secretPath)
 	}
-	return &vaultapi.Secret{Data: map[string]any{"data": data}}, nil
+	return &vaultapi.KVSecret{Data: data}, nil
 }
 
 // Login stands in for client.Auth().Login, which the real source uses and which
@@ -105,9 +109,9 @@ func newTestVaultSource(t *testing.T, v *fakeVault, now *time.Time) *vaultModalS
 // and only because the method is rebuilt on every login.
 func newTestVaultSourceWithToken(v *fakeVault, now *time.Time, tokenPath string) *vaultModalSecretSource {
 	return &vaultModalSecretSource{
-		cfg:     testVaultConfig(),
-		logical: v,
-		auth:    v,
+		cfg:  testVaultConfig(),
+		kv:   v,
+		auth: v,
 		newAuthMethod: func() (vaultapi.AuthMethod, error) {
 			v.mu.Lock()
 			v.authMethodBuilds++
@@ -129,7 +133,7 @@ func vaultResponseError(status int) error {
 func TestVaultSecretSource_ReadsSigningKey(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
-	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
+	v.secrets["compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
 	s := newTestVaultSource(t, v, &now)
 
 	jwtKey, err := s.signingKey(t.Context())
@@ -137,7 +141,7 @@ func TestVaultSecretSource_ReadsSigningKey(t *testing.T) {
 	assert.Equal(t, "pem-key", jwtKey)
 
 	// And through the interface the provider actually uses.
-	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
+	v.secrets["compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
 	creds, err := s.Credentials(t.Context(), "acct1", "ws-1")
 	require.NoError(t, err)
 	require.NotNil(t, creds.OAuth)
@@ -150,7 +154,7 @@ func TestVaultSecretSource_ReadsSigningKey(t *testing.T) {
 func TestVaultSecretSource_ReadsRefreshTokenByAccountAndWorkspace(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
-	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
+	v.secrets["compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
 	s := newTestVaultSource(t, v, &now)
 
 	token, err := s.refreshToken(t.Context(), "acct1", "ws-1")
@@ -178,7 +182,7 @@ func TestVaultSecretSource_RejectsPathTraversal(t *testing.T) {
 func TestVaultSecretSource_LogsInOnceAndReusesToken(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
-	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k"}
+	v.secrets["compute/modal-oauth/test"] = map[string]any{"jwtKey": "k"}
 	s := newTestVaultSource(t, v, &now)
 
 	for range 5 {
@@ -194,7 +198,7 @@ func TestVaultSecretSource_ReloginsBeforeLeaseExpiry(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
 	v.leaseSeconds = 300
-	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
+	v.secrets["compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
 	s := newTestVaultSource(t, v, &now)
 
 	// Driven through the refresh token: it is read every time, where the signing
@@ -220,13 +224,13 @@ func TestVaultSecretSource_ReloginsBeforeLeaseExpiry(t *testing.T) {
 func TestVaultSecretSource_ReloginsOnRejectedToken(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
-	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k"}
+	v.secrets["compute/modal-oauth/test"] = map[string]any{"jwtKey": "k"}
 	s := newTestVaultSource(t, v, &now)
 
 	// The token is revoked out from under us: the first read is refused, and only
 	// a fresh login gets through.
 	var once sync.Once
-	s.logical = &rejectOnceVault{fakeVault: v, trigger: &once}
+	s.kv = &rejectOnceVault{fakeVault: v, trigger: &once}
 
 	_, err := s.signingKey(t.Context())
 	require.NoError(t, err)
@@ -272,7 +276,7 @@ func TestVaultSecretSource_MissingSecretIsAnError(t *testing.T) {
 
 	_, err := s.signingKey(t.Context())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "global/data/compute/modal-oauth/test")
+	assert.Contains(t, err.Error(), "compute/modal-oauth/test")
 }
 
 func TestNewVaultModalSecretSource_RequiresConfiguration(t *testing.T) {
@@ -311,16 +315,16 @@ type rejectOnceVault struct {
 	trigger *sync.Once
 }
 
-func (v *rejectOnceVault) ReadWithContext(ctx context.Context, path string) (*vaultapi.Secret, error) {
+func (v *rejectOnceVault) Get(ctx context.Context, secretPath string) (*vaultapi.KVSecret, error) {
 	rejected := false
 	v.trigger.Do(func() { rejected = true })
 	if rejected {
 		v.mu.Lock()
-		v.readPaths = append(v.readPaths, path)
+		v.readPaths = append(v.readPaths, secretPath)
 		v.mu.Unlock()
 		return nil, vaultResponseError(http.StatusForbidden)
 	}
-	return v.fakeVault.ReadWithContext(ctx, path)
+	return v.fakeVault.Get(ctx, secretPath)
 }
 
 func TestModalVaultConfig_WithDefaults(t *testing.T) {
@@ -374,9 +378,9 @@ func countReads(v *fakeVault, suffix string) int {
 func TestVaultSecretSource_SigningKeyReadOncePerProcess(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
-	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
+	v.secrets["compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
 	for _, g := range []string{"acct1/ws-1", "acct1/ws-2", "acct2/ws-3"} {
-		v.secrets["global/data/compute/modal-oauth/grants/"+g] = map[string]any{"refreshToken": "rt-" + g}
+		v.secrets["compute/modal-oauth/grants/"+g] = map[string]any{"refreshToken": "rt-" + g}
 	}
 	s := newTestVaultSource(t, v, &now)
 
@@ -396,8 +400,8 @@ func TestVaultSecretSource_SigningKeyReadOncePerProcess(t *testing.T) {
 func TestVaultSecretSource_ReResolveDoesNotRereadSigningKey(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
-	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
-	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-original"}
+	v.secrets["compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
+	v.secrets["compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-original"}
 	s := newTestVaultSource(t, v, &now)
 
 	_, err := s.Credentials(t.Context(), "acct1", "ws-1")
@@ -405,7 +409,7 @@ func TestVaultSecretSource_ReResolveDoesNotRereadSigningKey(t *testing.T) {
 
 	// What a rotation behind our back looks like: Modal rejected the old token,
 	// the operator wrote a new one, and we resolve again.
-	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-rotated"}
+	v.secrets["compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-rotated"}
 	creds, err := s.Credentials(t.Context(), "acct1", "ws-1")
 	require.NoError(t, err)
 	assert.Equal(t, "rt-rotated", creds.OAuth.RefreshToken, "the refresh token is re-read")
@@ -419,7 +423,7 @@ func TestVaultSecretSource_ReResolveDoesNotRereadSigningKey(t *testing.T) {
 func TestVaultSecretSource_FailedSigningKeyReadIsNotCached(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
-	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
+	v.secrets["compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
 	s := newTestVaultSource(t, v, &now)
 
 	// Vault has no signing key yet.
@@ -427,7 +431,7 @@ func TestVaultSecretSource_FailedSigningKeyReadIsNotCached(t *testing.T) {
 	require.Error(t, err)
 
 	// It appears; the source must not be stuck on the earlier failure.
-	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
+	v.secrets["compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
 	creds, err := s.Credentials(t.Context(), "acct1", "ws-1")
 	require.NoError(t, err)
 	assert.Equal(t, "pem-key", creds.OAuth.JWTKey)
@@ -437,7 +441,7 @@ func TestVaultSecretSource_RebuildsAuthMethodPerLogin(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
 	v.leaseSeconds = 300
-	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
+	v.secrets["compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
 
 	tokenPath := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(tokenPath, []byte("sa-jwt-first"), 0o600))
@@ -465,7 +469,7 @@ func TestVaultSecretSource_RemovedTokenFailsTheNextLogin(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
 	v.leaseSeconds = 300
-	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
+	v.secrets["compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
 
 	tokenPath := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(tokenPath, []byte("sa-jwt"), 0o600))

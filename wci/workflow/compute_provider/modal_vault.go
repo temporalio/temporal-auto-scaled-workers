@@ -113,8 +113,11 @@ func (c ModalVaultConfig) Validate() error {
 // vaultLogical and vaultAuth are the slices of the Vault API the secret source
 // uses, narrowed so tests can drive it without a server.
 type (
-	vaultLogical interface {
-		ReadWithContext(ctx context.Context, path string) (*vaultapi.Secret, error)
+	// vaultKV reads from a KV v2 mount. The library builds the "data/" segment
+	// into the path and unwraps the nested response, so neither is ours to get
+	// right.
+	vaultKV interface {
+		Get(ctx context.Context, secretPath string) (*vaultapi.KVSecret, error)
 	}
 
 	vaultAuth interface {
@@ -127,8 +130,8 @@ type (
 type vaultModalSecretSource struct {
 	cfg ModalVaultConfig
 
-	logical vaultLogical
-	auth    vaultAuth
+	kv   vaultKV
+	auth vaultAuth
 	// newAuthMethod builds the Kubernetes auth method for a login. It is called
 	// once per login, never cached: KubernetesAuth reads the service account
 	// token when it is constructed rather than when it logs in, and the kubelet
@@ -185,9 +188,9 @@ func newVaultModalSecretSource(cfg ModalVaultConfig) (*vaultModalSecretSource, e
 	}
 
 	return &vaultModalSecretSource{
-		cfg:     cfg,
-		logical: c.Logical(),
-		auth:    c.Auth(),
+		cfg:  cfg,
+		kv:   c.KVv2(cfg.KVMount),
+		auth: c.Auth(),
 		newAuthMethod: func() (vaultapi.AuthMethod, error) {
 			return kubernetesauth.NewKubernetesAuth(
 				cfg.AuthRole,
@@ -296,19 +299,16 @@ func (s *vaultModalSecretSource) readKV(ctx context.Context, secretPath string) 
 }
 
 func (s *vaultModalSecretSource) read(ctx context.Context, secretPath string) (map[string]any, error) {
-	full := path.Join(s.cfg.KVMount, "data", secretPath)
-	secret, err := s.logical.ReadWithContext(ctx, full)
+	secret, err := s.kv.Get(ctx, secretPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read %s from Vault: %w", full, err)
+		return nil, fmt.Errorf("failed to read %s from the %s mount in Vault: %w", secretPath, s.cfg.KVMount, err)
 	}
+	// Get returns no error for a secret whose latest version was deleted; the
+	// data is simply absent.
 	if secret == nil || secret.Data == nil {
-		return nil, fmt.Errorf("%s does not exist in Vault", full)
+		return nil, fmt.Errorf("%s holds no data on the %s mount in Vault", secretPath, s.cfg.KVMount)
 	}
-	data, ok := secret.Data["data"].(map[string]any)
-	if !ok || data == nil {
-		return nil, fmt.Errorf("%s does not hold KV v2 secret data", full)
-	}
-	return data, nil
+	return secret.Data, nil
 }
 
 // ensureToken logs in when there is no token, when the current one is near
