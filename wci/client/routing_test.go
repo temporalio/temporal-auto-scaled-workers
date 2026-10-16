@@ -53,8 +53,13 @@ func (f *fakeBackend) ListWorkerControllerInstances(_ context.Context, _ *namesp
 	return f.listItems, f.listNext, f.err
 }
 
+// newTestRouter enables routing unless settings say otherwise.
 func newTestRouter(workflow, chasm *fakeBackend, settings dynamicconfig.StaticClient) *routingClient {
-	return newRoutingClient(workflow, chasm, dynamicconfig.NewCollection(settings, log.NewNoopLogger()), metrics.NoopMetricsHandler)
+	merged := dynamicconfig.StaticClient{WorkerControllerCHASMRoutingEnabled.Key(): true}
+	for k, v := range settings {
+		merged[k] = v
+	}
+	return newRoutingClient(workflow, chasm, dynamicconfig.NewCollection(merged, log.NewNoopLogger()), metrics.NoopMetricsHandler)
 }
 
 func TestRouting_DescribeFallsThrough(t *testing.T) {

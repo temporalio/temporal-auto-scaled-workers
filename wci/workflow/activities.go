@@ -187,7 +187,8 @@ func (a *Activities) chasmMigrationGateOpen(deploymentName, buildID string) bool
 		return false
 	}
 	ns := a.namespace.Name().String()
-	if !client.WorkerControllerCHASMMigrationEnabled.Get(a.dc)(ns) {
+	// Without routing, clients could not reach the migrated WCI and an update would recreate it as a workflow.
+	if !client.WorkerControllerCHASMRoutingEnabled.Get(a.dc)(ns) || !client.WorkerControllerCHASMMigrationEnabled.Get(a.dc)(ns) {
 		return false
 	}
 	// Rollout key: do not change while a rollout is in progress.

@@ -100,8 +100,8 @@ var (
 	)
 	WorkerControllerCHASMRoutingEnabled = dynamicconfig.NewNamespaceBoolSetting(
 		"workercontroller.chasm.routing_enabled",
-		true,
-		`WorkerControllerCHASMRoutingEnabled makes clients try the CHASM backend first, falling back to the workflow.`,
+		false,
+		`WorkerControllerCHASMRoutingEnabled makes clients try the CHASM backend first, falling back to the workflow. Creation and migration also require it. Migrate WCIs back to the workflow before turning it off, or CHASM WCIs become unreachable.`,
 	)
 	WorkerControllerCHASMMigrationEnabled = dynamicconfig.NewNamespaceBoolSetting(
 		"workercontroller.chasm.migration_enabled",

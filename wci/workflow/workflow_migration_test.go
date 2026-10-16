@@ -33,6 +33,10 @@ func (f *fakeMigrationClient) CreateFromWorkflowState(_ context.Context, args *i
 
 // runMigrationWorkflow drives one run to its CaN boundary; returns the handled task-add count and the workflow error.
 func runMigrationWorkflow(t *testing.T, version WorkerControllerInstanceWorkflowVersion, gateOpen bool, mc *fakeMigrationClient) (int, error) {
+	return runMigrationWorkflowWithRouting(t, version, gateOpen, true, mc)
+}
+
+func runMigrationWorkflowWithRouting(t *testing.T, version WorkerControllerInstanceWorkflowVersion, gateOpen, routing bool, mc *fakeMigrationClient) (int, error) {
 	t.Helper()
 
 	scalingConfig, err := sdk.PreferProtoDataConverter.ToPayload(iface.ScalingAlgorithmConfig{})
@@ -53,6 +57,7 @@ func runMigrationWorkflow(t *testing.T, version WorkerControllerInstanceWorkflow
 	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
 	dc := dynamicconfig.NewCollection(dynamicconfig.StaticClient{
 		client.WorkerControllerCHASMMigrationEnabled.Key():        gateOpen,
+		client.WorkerControllerCHASMRoutingEnabled.Key():          routing,
 		client.WorkerControllerCHASMMigrationRolloutPercent.Key(): 100,
 	}, log.NewNoopLogger())
 	activities := NewActivities(ns, dc, nil, mc)
@@ -137,6 +142,14 @@ func TestWorkflowStaysOnMigrationFailure(t *testing.T) {
 			require.Len(t, mc.calls, 1)
 		})
 	}
+}
+
+// With routing off a migrated WCI would be unreachable, so the gate stays closed.
+func TestWorkflowSkipsMigrationWithoutRouting(t *testing.T) {
+	mc := &fakeMigrationClient{}
+	_, err := runMigrationWorkflowWithRouting(t, MigrateToCHASMVersion, true, false, mc)
+	require.True(t, isContinueAsNew(err), "continues as new: %v", err)
+	require.Empty(t, mc.calls)
 }
 
 func TestWorkflowSkipsMigrationWhenGated(t *testing.T) {
