@@ -54,18 +54,10 @@ type ModalVaultConfig struct {
 	RequestTimeout time.Duration
 }
 
-const (
-	// serviceAccountTokenPath is where the kubelet projects the pod's service
-	// account token. It is the same in every cluster and the deployment mounts no
-	// token anywhere else, so it is fixed rather than configurable. The file is
-	// re-read on every login because the kubelet rotates it in place.
-	serviceAccountTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // G101: the path of a token, not a token.
-
-	// tokenRenewMargin is how long before a Vault token's expiry it is replaced.
-	// Comfortably longer than a read, so a token valid at the check stays valid
-	// through the call it authorizes.
-	tokenRenewMargin = 60 * time.Second
-)
+// tokenRenewMargin is how long before a Vault token's expiry it is replaced.
+// Comfortably longer than a read, so a token valid at the check stays valid
+// through the call it authorizes.
+const tokenRenewMargin = 60 * time.Second
 
 // WithDefaults fills in the secret layout a standard deployment uses, so the
 // deployment only supplies the parts that genuinely vary per cell.
@@ -192,10 +184,11 @@ func newVaultModalSecretSource(cfg ModalVaultConfig) (*vaultModalSecretSource, e
 		kv:   c.KVv2(cfg.KVMount),
 		auth: c.Auth(),
 		newAuthMethod: func() (vaultapi.AuthMethod, error) {
+			// No token path: the helper's default is the standard projected
+			// location, which is where the kubelet puts it in every cluster.
 			return kubernetesauth.NewKubernetesAuth(
 				cfg.AuthRole,
 				kubernetesauth.WithMountPath(cfg.AuthMount),
-				kubernetesauth.WithServiceAccountTokenPath(serviceAccountTokenPath),
 			)
 		},
 		now: time.Now,
