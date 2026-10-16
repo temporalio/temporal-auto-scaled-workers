@@ -90,6 +90,7 @@ func TestProcessTaskAdd_SignalErrorClassification(t *testing.T) {
 		{name: "success"},
 		// No WCI, or a closed one.
 		{name: "not_found", err: serviceerror.NewNotFound("workflow execution already completed")},
+		{name: "migration_pending", err: fmt.Errorf("%w: unavailable", ErrMigrationPending)},
 		{name: "busy_workflow", err: busy, wantBusy: 1},
 		{name: "busy_workflow_wrapped", err: fmt.Errorf("signal failed: %w", busy), wantBusy: 1},
 		// The cause travels in the gRPC status detail, not the message.
