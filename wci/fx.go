@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/membership"
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
@@ -57,11 +58,48 @@ var Module = fx.Options(
 	fx.Provide(func() computeprovider.GCPImpersonationChainProvider {
 		return computeprovider.NoopGCPImpersonationChainProvider{}
 	}),
+	fx.Provide(func() computeprovider.ModalAccountResolver {
+		return computeprovider.UnscopedModalAccountResolver{}
+	}),
+	// The zero value leaves the Modal compute provider disabled; a deployment
+	// that uses it decorates this with its own flags and environment.
+	fx.Provide(func() computeprovider.ModalVaultConfig {
+		return computeprovider.ModalVaultConfig{}
+	}),
 	// Install the (possibly fx.Decorate-replaced) chain provider into the
 	// compute_provider package singleton, where the GCP Cloud Run provider
 	// reads it. fx resolves the decorated value before this Invoke fires.
 	fx.Invoke(func(p computeprovider.GCPImpersonationChainProvider) {
 		computeprovider.SetGCPImpersonationChainProvider(p)
+	}),
+	// Same pattern for the Modal account resolver: the account that owns a
+	// namespace is derived here, server-side, never read from a version's config.
+	fx.Invoke(func(r computeprovider.ModalAccountResolver) {
+		computeprovider.SetModalAccountResolver(r)
+	}),
+	// Vault is opt-in: without an address the Modal provider uses the API key the
+	// Modal SDK finds for itself, the same way the AWS and GCP providers use the
+	// credentials theirs find. With one, credentials are resolved per account instead.
+	//
+	// Building the source here rather than lazily means a deployment whose Vault
+	// configuration is wrong finds out in its startup logs instead of on a
+	// customer's first scale-up. It is logged rather than returned: failing
+	// startup would take worker-controller down for every other provider over one
+	// provider's configuration.
+	fx.Invoke(func(cfg computeprovider.ModalVaultConfig, logger log.Logger) {
+		computeprovider.SetModalVaultConfig(cfg)
+		if cfg.Address == "" {
+			logger.Info("Modal compute provider using the API key the SDK finds for itself; set a Vault address to resolve credentials per account")
+			return
+		}
+		source, err := computeprovider.NewVaultModalSecretSource(cfg)
+		if err != nil {
+			logger.Error("Modal compute provider disabled: cannot build its secret source", tag.Error(err))
+			computeprovider.SetModalSecretSource(computeprovider.FailingModalSecretSource{Reason: err})
+			return
+		}
+		computeprovider.SetModalSecretSource(source)
+		logger.Info("Modal compute provider resolving credentials per account from Vault")
 	}),
 	fx.Invoke(ServiceLifetimeHooks),
 )

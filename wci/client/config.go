@@ -88,6 +88,16 @@ var (
 		true,
 		`WorkerControllerAWSRequireRoleAndExternalID controls whether AWS compute providers require a role ARN and external ID. Defaults to true. Set to false to allow configurations without these fields and accepting the associated security risks.`,
 	)
+	WorkerControllerModalCredentialReloadLimit = dynamicconfig.NewGlobalIntSetting(
+		"workercontroller.compute_providers.modal.credential_reload_limit",
+		2,
+		`WorkerControllerModalCredentialReloadLimit caps how many times WCI re-reads Vault for a grant whose credentials Modal rejected, before giving up for the cooldown window. This is deliberately small as to avoid overwhelming Vault.`,
+	)
+	WorkerControllerModalCredentialReloadCooldownSeconds = dynamicconfig.NewGlobalIntSetting(
+		"workercontroller.compute_providers.modal.credential_reload_cooldown_s",
+		int((15 * time.Minute).Seconds()), // 900
+		`WorkerControllerModalCredentialReloadCooldownSeconds is how long WCI stops reading Vault for a grant after WorkerControllerModalCredentialReloadLimit consecutive reads failed to produce working credentials.`,
+	)
 	WorkerControllerPeriodicValidationIntervalSeconds = dynamicconfig.NewGlobalIntSetting(
 		"workercontroller.periodic_validation_interval_s",
 		int((6 * time.Hour).Seconds()), // 21600

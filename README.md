@@ -21,6 +21,7 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 | AWS AgentCore | `aws-agentcore` | Invoke (one-off) |
 | AWS ECS | `aws-ecs` | Worker set (managed scaling) |
 | GCP Cloud Run | `gcp-cloud-run` | Worker set |
+| Modal Functions | `modal-function` | Invoke (one-off) |
 | Kubernetes | `k8s` | Worker set |
 | Subprocess | `subprocess` | Invoke (dev/test only) |
 
@@ -48,6 +49,8 @@ The development-only subprocess provider accepts an optional positive Go duratio
 | `WorkerControllerAWSIntermediaryRoles` | `[]` | IAM role chain for AWS STS |
 | `WorkerControllerGCPIntermediaryServiceAccounts` | `[]` | Service account chain for GCP |
 | `WorkerControllerAWSRequireRoleAndExternalID` | `true` | Enforce role + external ID on AWS configs |
+| `WorkerControllerModalCredentialReloadLimit` | `2` | Vault re-reads allowed for a grant Modal keeps rejecting |
+| `WorkerControllerModalCredentialReloadCooldownSeconds` | `900` | How long to stop reading Vault for a grant after that |
 
 ## Spec Format
 
@@ -90,6 +93,51 @@ A WCI spec is a map of named scaling groups:
   }
 }
 ```
+
+### `modal-function` compute provider config
+
+| Key | Required | Description |
+|---|---|---|
+| `app_name` | yes | Deployed Modal App name |
+| `function_name` | yes | Function within the App to spawn |
+| `environment` | yes | Modal environment the App is deployed in |
+| `workspace_id` | only with Vault | Modal workspace. Must be one the namespace's account has connected |
+| `version` | no | Pins the lookup to a deployed App version; omitted uses the current deployment |
+
+Modal Functions are invoke-based, so it pairs with the `no-sync` algorithm and takes the same scaling options as AWS Lambda.
+
+#### Credentials
+
+By default WCI leaves credentials to the Modal SDK, which reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` from the environment or `~/.modal.toml` — the same way the AWS and GCP providers leave their SDKs to find theirs. One API key, set once on the process, serves every worker deployment version. Nothing else is needed, and `workspace_id` is not required because the key already names the workspace.
+
+A deployment serving many accounts can opt into per-account credentials instead, by configuring Vault (see below). WCI then authenticates as the Modal grant belonging to the account that owns the namespace, derived server-side. In that mode `workspace_id` selects which of that account's connected workspaces to use, and is required. Either way the config cannot carry a credential or name another account: no credential is ever read from it, and the account half of the lookup comes from the namespace. The signing key and refresh token are read from Vault on a grant's first use and cached in process memory; they never enter workflow or activity history.
+
+A steady-state invocation costs one `Spawn`: the Modal connection is kept per grant and the resolved Function handle per `(app, function, version)`, so neither the connection setup nor the `FunctionGet` lookup repeats. Validation shares none of this — it re-reads the credentials, builds its own connection and resolves the Function itself, so a check reflects what Vault and Modal hold now rather than what a previous spawn cached. A grant revoked in Vault fails the check immediately, instead of passing on a copy that would survive only until the pod restarts. Handles are not re-resolved on a timer — pinned to a `version` a handle keeps pointing at that version, which is the point of pinning, and unpinned it follows the App's current deployment. A handle is dropped if a spawn fails against it, so the next invocation resolves a fresh one.
+
+#### Vault layout and deployment config (optional)
+
+Configuring a Vault address switches the provider from one process-wide API key to per-account grants. WCI then authenticates to Modal with an OAuth client assertion (RFC 7523), built from two secrets in a KV v2 mount:
+
+| What | Path | Field |
+|---|---|---|
+| RSA signing key | `<kv>/compute/modal-oauth/test` | `jwtKey` |
+| Refresh token | `<kv>/compute/modal-oauth/grants/<account id>/<workspace id>` | `refreshToken` |
+
+The signing key is WCI-owned and shared by every grant, so it is read once for the life of the process; rotating it takes a restart. That is the trade for never having to guess which half Modal rejected: the key was good when it was loaded, so a rejection is the refresh token's, and only the token is re-read. A refresh token belongs to exactly one account's grant on one workspace, which is what makes a grant reachable only by the account that holds it. The OAuth client ID is not secret, so it is supplied as deployment config rather than stored next to the key.
+
+Vault is reached over Kubernetes auth with the pod's service account token at the standard projected path, logging in on first use, before the lease expires, and once more if a token is refused mid-flight.
+
+Where Vault is and who WCI logs in as is **deployment configuration, not dynamic config** — the address is where the pod's service account token gets sent, so changing it should take the same privilege as changing the cell. The deployment installs a `computeprovider.ModalVaultConfig` through fx at startup (`SetModalVaultConfig`); leaving the address unset keeps the ambient default. If an address is set but the source cannot be built, the provider fails closed rather than falling back to ambient credentials, which would serve every account from one key. `WithDefaults` fills in the secret layout above, so a deployment normally supplies only:
+
+| Field | Example |
+|---|---|
+| `Address` | `https://vault.test.tmprl-test.cloud` |
+| `Namespace` | `admin` |
+| `AuthMount` | `s-mycell` (per-cell) |
+| `AuthRole` | `worker-controller` |
+| `OAuthClientID` | `oc-xxxxxxxx` |
+
+Only the runtime tuning knobs in the table above stay in dynamic config.
 
 A group with no `task_types` acts as a catch-all for any task type not claimed by another group. At most one catch-all group is allowed. The `scaling` block is optional; omitting it leaves the group with the default scaling configuration for the given compute provider.
 
