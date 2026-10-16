@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -175,23 +176,25 @@ func TestVaultSecretSource_ReloginsBeforeLeaseExpiry(t *testing.T) {
 	now := time.Now()
 	v := newFakeVault()
 	v.leaseSeconds = 300
-	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k"}
+	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
 	s := newTestVaultSource(t, v, &now)
 
-	_, err := s.signingKey(t.Context())
+	// Driven through the refresh token: it is read every time, where the signing
+	// key is read once for the process and would stop reaching Vault at all.
+	_, err := s.refreshToken(t.Context(), "acct1", "ws-1")
 	require.NoError(t, err)
 	require.Equal(t, 1, v.logins)
 
 	// Still comfortably inside the lease.
 	now = now.Add(2 * time.Minute)
-	_, err = s.signingKey(t.Context())
+	_, err = s.refreshToken(t.Context(), "acct1", "ws-1")
 	require.NoError(t, err)
 	assert.Equal(t, 1, v.logins)
 
 	// Inside the renew margin, so the token is replaced before it can expire
 	// mid-read.
 	now = now.Add(3 * time.Minute)
-	_, err = s.signingKey(t.Context())
+	_, err = s.refreshToken(t.Context(), "acct1", "ws-1")
 	require.NoError(t, err)
 	assert.Equal(t, 2, v.logins)
 }
@@ -336,4 +339,79 @@ func TestModalVaultConfig_WithDefaults_KeepsOverrides(t *testing.T) {
 func TestModalVaultConfig_ZeroValueIsInvalid(t *testing.T) {
 	require.Error(t, ModalVaultConfig{}.Validate(),
 		"an unconfigured cell must leave the provider disabled rather than half-working")
+}
+
+// countReads returns how many Vault reads hit the given path suffix.
+func countReads(v *fakeVault, suffix string) int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	n := 0
+	for _, p := range v.readPaths {
+		if strings.HasSuffix(p, suffix) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestVaultSecretSource_SigningKeyReadOncePerProcess(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
+	for _, g := range []string{"acct1/ws-1", "acct1/ws-2", "acct2/ws-3"} {
+		v.secrets["global/data/compute/modal-oauth/grants/"+g] = map[string]any{"refreshToken": "rt-" + g}
+	}
+	s := newTestVaultSource(t, v, &now)
+
+	for _, g := range [][2]string{{"acct1", "ws-1"}, {"acct1", "ws-2"}, {"acct2", "ws-3"}} {
+		creds, err := s.Credentials(t.Context(), g[0], g[1])
+		require.NoError(t, err)
+		require.NotNil(t, creds.OAuth)
+		assert.Equal(t, "pem-key", creds.OAuth.JWTKey)
+		assert.Equal(t, "rt-"+g[0]+"/"+g[1], creds.OAuth.RefreshToken)
+	}
+
+	assert.Equal(t, 1, countReads(v, "modal-oauth/test"),
+		"the signing key is one secret shared by every grant; reading it per grant would scale Vault traffic with the account count")
+	assert.Equal(t, 3, countReads(v, "/grants/acct1/ws-1")+countReads(v, "/grants/acct1/ws-2")+countReads(v, "/grants/acct2/ws-3"))
+}
+
+func TestVaultSecretSource_ReResolveDoesNotRereadSigningKey(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
+	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-original"}
+	s := newTestVaultSource(t, v, &now)
+
+	_, err := s.Credentials(t.Context(), "acct1", "ws-1")
+	require.NoError(t, err)
+
+	// What a rotation behind our back looks like: Modal rejected the old token,
+	// the operator wrote a new one, and we resolve again.
+	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-rotated"}
+	creds, err := s.Credentials(t.Context(), "acct1", "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, "rt-rotated", creds.OAuth.RefreshToken, "the refresh token is re-read")
+	assert.Equal(t, "pem-key", creds.OAuth.JWTKey)
+
+	assert.Equal(t, 1, countReads(v, "modal-oauth/test"),
+		"a rejection is the token's: the key was good when it was loaded, so re-reading it buys nothing")
+	assert.Equal(t, 2, countReads(v, "/grants/acct1/ws-1"))
+}
+
+func TestVaultSecretSource_FailedSigningKeyReadIsNotCached(t *testing.T) {
+	now := time.Now()
+	v := newFakeVault()
+	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
+	s := newTestVaultSource(t, v, &now)
+
+	// Vault has no signing key yet.
+	_, err := s.Credentials(t.Context(), "acct1", "ws-1")
+	require.Error(t, err)
+
+	// It appears; the source must not be stuck on the earlier failure.
+	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
+	creds, err := s.Credentials(t.Context(), "acct1", "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, "pem-key", creds.OAuth.JWTKey)
 }

@@ -129,6 +129,16 @@ type vaultModalSecretSource struct {
 	// production; a test points it at a file it controls.
 	tokenPath string
 
+	// signingKeyMu guards the cached signing key below. It is only ever taken
+	// while already holding a credential cache entry's lock, never the other way
+	// round, so the two cannot deadlock against each other.
+	signingKeyMu sync.Mutex
+	// signingKey is WCI's own key, shared by every grant and read once for the
+	// life of the process. Rotating it takes a restart, which is the trade for
+	// never having to guess whether Modal rejected the key or the refresh token:
+	// the key was good when it was loaded, so a rejection is the token's.
+	cachedSigningKey string
+
 	// mu guards the login state. Vault tokens expire and the Kubernetes auth
 	// login has to be redone; serializing it means a burst of readers triggers
 	// one login rather than one each.
@@ -180,6 +190,9 @@ func newVaultModalSecretSource(cfg ModalVaultConfig) (*vaultModalSecretSource, e
 // material for a client assertion. It fails rather than falling back when no
 // such grant exists: a workspace an account has not connected has no secret at
 // that path, which is what keeps one account's grant unreachable from another's.
+//
+// Only the refresh token is read per grant, and re-read when Modal rejects the
+// credentials. The signing key is read once for the process.
 func (s *vaultModalSecretSource) Credentials(ctx context.Context, accountID, workspaceID string) (*ModalCredentials, error) {
 	jwtKey, err := s.signingKey(ctx)
 	if err != nil {
@@ -198,7 +211,21 @@ func (s *vaultModalSecretSource) Credentials(ctx context.Context, accountID, wor
 	}}, nil
 }
 
+// signingKey returns WCI's signing key, reading it from Vault the first time and
+// never again. It is one secret shared by every grant, so reading it per grant
+// would multiply Vault traffic by the number of accounts a process serves, for
+// material that is identical every time.
+//
+// A failed read is not cached: Vault being briefly unavailable the first time a
+// grant is used should not disable Modal for the life of the pod.
 func (s *vaultModalSecretSource) signingKey(ctx context.Context) (string, error) {
+	s.signingKeyMu.Lock()
+	defer s.signingKeyMu.Unlock()
+
+	if s.cachedSigningKey != "" {
+		return s.cachedSigningKey, nil
+	}
+
 	data, err := s.readKV(ctx, s.cfg.SigningKeyPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read the Modal signing key: %w", err)
@@ -208,6 +235,8 @@ func (s *vaultModalSecretSource) signingKey(ctx context.Context) (string, error)
 	if jwtKey == "" {
 		return "", errors.New("the Modal signing key secret carries no private key")
 	}
+
+	s.cachedSigningKey = jwtKey
 	return jwtKey, nil
 }
 

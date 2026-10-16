@@ -123,7 +123,7 @@ Configuring a Vault address switches the provider from one process-wide API key 
 | RSA signing key | `<kv>/compute/modal-oauth/test` | `jwtKey` |
 | Refresh token | `<kv>/compute/modal-oauth/grants/<account id>/<workspace id>` | `refreshToken` |
 
-The signing key is WCI-owned and shared by every grant. A refresh token belongs to exactly one account's grant on one workspace, which is what makes a grant reachable only by the account that holds it. The OAuth client ID is not secret, so it is supplied as deployment config rather than stored next to the key.
+The signing key is WCI-owned and shared by every grant, so it is read once for the life of the process; rotating it takes a restart. That is the trade for never having to guess which half Modal rejected: the key was good when it was loaded, so a rejection is the refresh token's, and only the token is re-read. A refresh token belongs to exactly one account's grant on one workspace, which is what makes a grant reachable only by the account that holds it. The OAuth client ID is not secret, so it is supplied as deployment config rather than stored next to the key.
 
 Vault is reached over Kubernetes auth with the pod's service account token at the standard projected path, logging in on first use, before the lease expires, and once more if a token is refused mid-flight.
 
