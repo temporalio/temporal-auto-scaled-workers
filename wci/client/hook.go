@@ -118,6 +118,10 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	if errors.As(err, &notFound) {
 		return
 	}
+	// Mid-migration to the workflow backend; the next poll covers the dropped signal.
+	if errors.Is(err, ErrMigrationPending) {
+		return
+	}
 	var resourceExhaustedErr *serviceerror.ResourceExhausted
 	if errors.As(err, &resourceExhaustedErr) && resourceExhaustedErr.Cause == enumspb.RESOURCE_EXHAUSTED_CAUSE_BUSY_WORKFLOW {
 		wcimetrics.WorkflowBusyCount.With(th.metricsHandler).Record(1)

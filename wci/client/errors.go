@@ -21,6 +21,7 @@ const (
 var (
 	ErrInstanceClosed              = errors.New("worker controller instance migrated away or deleted")
 	ErrProviderNotSupportedOnCHASM = errors.New("compute provider not supported on CHASM")
+	ErrMigrationPending            = errors.New("worker controller instance is migrating to the workflow backend")
 )
 
 func isFailedPreconditionOrNotFound(err error) bool {
