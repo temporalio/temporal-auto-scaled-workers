@@ -176,17 +176,42 @@ func newVaultModalSecretSource(cfg ModalVaultConfig) (*vaultModalSecretSource, e
 	}, nil
 }
 
-func (s *vaultModalSecretSource) SigningKey(ctx context.Context) (string, error) {
+// Credentials resolves the grant accountID holds on workspaceID into the
+// material for a client assertion. It fails rather than falling back when no
+// such grant exists: a workspace an account has not connected has no secret at
+// that path, which is what keeps one account's grant unreachable from another's.
+func (s *vaultModalSecretSource) Credentials(ctx context.Context, accountID, workspaceID string) (*ModalCredentials, error) {
+	jwtKey, err := s.signingKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	refreshToken, err := s.refreshToken(ctx, accountID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ModalCredentials{OAuth: &ModalOAuthCredentials{
+		ClientID:     s.cfg.OAuthClientID,
+		JWTKey:       jwtKey,
+		RefreshToken: refreshToken,
+	}}, nil
+}
+
+func (s *vaultModalSecretSource) signingKey(ctx context.Context) (string, error) {
 	data, err := s.readKV(ctx, s.cfg.SigningKeyPath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read the Modal signing key: %w", err)
 	}
 
 	jwtKey, _ := data[s.cfg.SigningKeyField].(string)
+	if jwtKey == "" {
+		return "", errors.New("the Modal signing key secret carries no private key")
+	}
 	return jwtKey, nil
 }
 
-func (s *vaultModalSecretSource) RefreshToken(ctx context.Context, accountID, workspaceID string) (string, error) {
+func (s *vaultModalSecretSource) refreshToken(ctx context.Context, accountID, workspaceID string) (string, error) {
 	if err := validateVaultPathSegment("account", accountID); err != nil {
 		return "", err
 	}
@@ -200,6 +225,9 @@ func (s *vaultModalSecretSource) RefreshToken(ctx context.Context, accountID, wo
 	}
 
 	token, _ := data[s.cfg.RefreshTokenField].(string)
+	if token == "" {
+		return "", fmt.Errorf("no Modal grant for workspace %q", workspaceID)
+	}
 	return token, nil
 }
 

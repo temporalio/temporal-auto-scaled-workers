@@ -112,9 +112,19 @@ func TestVaultSecretSource_ReadsSigningKey(t *testing.T) {
 	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "pem-key"}
 	s := newTestVaultSource(t, v, &now)
 
-	jwtKey, err := s.SigningKey(t.Context())
+	jwtKey, err := s.signingKey(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, "pem-key", jwtKey)
+
+	// And through the interface the provider actually uses.
+	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
+	creds, err := s.Credentials(t.Context(), "acct1", "ws-1")
+	require.NoError(t, err)
+	require.NotNil(t, creds.OAuth)
+	assert.Equal(t, "oc-test", creds.OAuth.ClientID, "the client ID comes from deployment config, not Vault")
+	assert.Equal(t, "pem-key", creds.OAuth.JWTKey)
+	assert.Equal(t, "rt-1", creds.OAuth.RefreshToken)
+	assert.False(t, creds.Ambient)
 }
 
 func TestVaultSecretSource_ReadsRefreshTokenByAccountAndWorkspace(t *testing.T) {
@@ -123,13 +133,13 @@ func TestVaultSecretSource_ReadsRefreshTokenByAccountAndWorkspace(t *testing.T) 
 	v.secrets["global/data/compute/modal-oauth/grants/acct1/ws-1"] = map[string]any{"refreshToken": "rt-1"}
 	s := newTestVaultSource(t, v, &now)
 
-	token, err := s.RefreshToken(t.Context(), "acct1", "ws-1")
+	token, err := s.refreshToken(t.Context(), "acct1", "ws-1")
 	require.NoError(t, err)
 	assert.Equal(t, "rt-1", token)
 
 	// Another account's grant on the same workspace is a different path, so it is
 	// simply not found rather than silently shared.
-	_, err = s.RefreshToken(t.Context(), "acct2", "ws-1")
+	_, err = s.refreshToken(t.Context(), "acct2", "ws-1")
 	require.Error(t, err)
 }
 
@@ -139,7 +149,7 @@ func TestVaultSecretSource_RejectsPathTraversal(t *testing.T) {
 	s := newTestVaultSource(t, v, &now)
 
 	for _, workspace := range []string{"../acct2/ws-1", "ws/..", "..", "", "a\\b"} {
-		_, err := s.RefreshToken(t.Context(), "acct1", workspace)
+		_, err := s.refreshToken(t.Context(), "acct1", workspace)
 		require.Error(t, err, "workspace %q must be rejected", workspace)
 	}
 	assert.Empty(t, v.readPaths, "a rejected id must not reach Vault at all")
@@ -152,7 +162,7 @@ func TestVaultSecretSource_LogsInOnceAndReusesToken(t *testing.T) {
 	s := newTestVaultSource(t, v, &now)
 
 	for range 5 {
-		_, err := s.SigningKey(t.Context())
+		_, err := s.signingKey(t.Context())
 		require.NoError(t, err)
 	}
 
@@ -168,20 +178,20 @@ func TestVaultSecretSource_ReloginsBeforeLeaseExpiry(t *testing.T) {
 	v.secrets["global/data/compute/modal-oauth/test"] = map[string]any{"jwtKey": "k"}
 	s := newTestVaultSource(t, v, &now)
 
-	_, err := s.SigningKey(t.Context())
+	_, err := s.signingKey(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, 1, v.logins)
 
 	// Still comfortably inside the lease.
 	now = now.Add(2 * time.Minute)
-	_, err = s.SigningKey(t.Context())
+	_, err = s.signingKey(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 1, v.logins)
 
 	// Inside the renew margin, so the token is replaced before it can expire
 	// mid-read.
 	now = now.Add(3 * time.Minute)
-	_, err = s.SigningKey(t.Context())
+	_, err = s.signingKey(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 2, v.logins)
 }
@@ -197,7 +207,7 @@ func TestVaultSecretSource_ReloginsOnRejectedToken(t *testing.T) {
 	var once sync.Once
 	s.logical = &rejectOnceVault{fakeVault: v, trigger: &once}
 
-	_, err := s.SigningKey(t.Context())
+	_, err := s.signingKey(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 2, v.logins, "a rejected token must be replaced and the read retried")
 }
@@ -208,7 +218,7 @@ func TestVaultSecretSource_DoesNotReloginOnOtherErrors(t *testing.T) {
 	v.readErr = errors.New("connection refused")
 	s := newTestVaultSource(t, v, &now)
 
-	_, err := s.SigningKey(t.Context())
+	_, err := s.signingKey(t.Context())
 	require.Error(t, err)
 	assert.Equal(t, 1, v.logins, "a transport failure is not a credential problem")
 }
@@ -219,7 +229,7 @@ func TestVaultSecretSource_SurfacesLoginFailure(t *testing.T) {
 	v.loginErr = errors.New("role not found")
 	s := newTestVaultSource(t, v, &now)
 
-	_, err := s.SigningKey(t.Context())
+	_, err := s.signingKey(t.Context())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "worker-controller")
 }
@@ -230,7 +240,7 @@ func TestVaultSecretSource_SurfacesMissingServiceAccountToken(t *testing.T) {
 	s := newTestVaultSource(t, v, &now)
 	s.tokenPath = filepath.Join(t.TempDir(), "absent")
 
-	_, err := s.SigningKey(t.Context())
+	_, err := s.signingKey(t.Context())
 	require.Error(t, err)
 	assert.Zero(t, v.logins)
 }
@@ -240,7 +250,7 @@ func TestVaultSecretSource_MissingSecretIsAnError(t *testing.T) {
 	v := newFakeVault()
 	s := newTestVaultSource(t, v, &now)
 
-	_, err := s.SigningKey(t.Context())
+	_, err := s.signingKey(t.Context())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "global/data/compute/modal-oauth/test")
 }

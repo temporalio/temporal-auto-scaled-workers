@@ -17,11 +17,20 @@ type (
 	}
 
 	// NamespaceSuffixModalAccountResolver derives the account from the namespace's
-	// own name, which the server supplies. It is the default; a deployment whose
-	// namespaces are named differently installs its own resolver through
-	// SetModalAccountResolver.
+	// own name, for a deployment whose namespaces are named "<namespace>.<account>".
 	NamespaceSuffixModalAccountResolver struct{}
+
+	// UnscopedModalAccountResolver resolves every namespace to the same account.
+	// It is the default, and it is what a deployment serving a single Modal
+	// workspace wants: there is one set of credentials, so there is nothing to
+	// scope them by. A deployment serving many accounts installs a resolver that
+	// tells them apart.
+	UnscopedModalAccountResolver struct{}
 )
+
+// unscopedModalAccount is the account every namespace resolves to by default.
+// It is not an identity, just a stable cache key.
+const unscopedModalAccount = "default"
 
 // namespaceSuffixRE matches "<namespace>.<account id>", the internal namespace
 // naming convention. The account is the suffix, so it is the second group.
@@ -29,7 +38,7 @@ var namespaceSuffixRE = regexp.MustCompile(`^([a-z][a-z0-9-]*[^-])[.]([a-z0-9][a
 
 var (
 	modalAccountResolverMu sync.RWMutex
-	modalAccountResolver   ModalAccountResolver = NamespaceSuffixModalAccountResolver{}
+	modalAccountResolver   ModalAccountResolver = UnscopedModalAccountResolver{}
 )
 
 // SetModalAccountResolver installs the process-wide account resolver used by the
@@ -47,6 +56,10 @@ func getModalAccountResolver() ModalAccountResolver {
 	modalAccountResolverMu.RLock()
 	defer modalAccountResolverMu.RUnlock()
 	return modalAccountResolver
+}
+
+func (UnscopedModalAccountResolver) ResolveAccountID(context.Context, string) (string, error) {
+	return unscopedModalAccount, nil
 }
 
 func (NamespaceSuffixModalAccountResolver) ResolveAccountID(_ context.Context, namespaceName string) (string, error) {

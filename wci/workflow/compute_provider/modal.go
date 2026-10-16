@@ -134,9 +134,6 @@ func (p *modalComputeProvider) withFunction(
 	do func(context.Context, modalFunction) error,
 ) error {
 	source := getModalSecretSource()
-	if source == nil {
-		return fmt.Errorf("%w: the Modal compute provider has no secret source; it is not configured in this cell", errWCIOwned)
-	}
 
 	accountID, err := getModalAccountResolver().ResolveAccountID(ctx, rc.NamespaceName)
 	if err != nil {
@@ -144,7 +141,7 @@ func (p *modalComputeProvider) withFunction(
 	}
 
 	key := modalGrantKey{accountID: accountID, workspaceID: params.WorkspaceID}
-	creds, digest, err := modalCredentials.get(ctx, source, p.vaultConfig.OAuthClientID, key, p.credentialReloadPolicy)
+	creds, digest, err := modalCredentials.get(ctx, source, key, p.credentialReloadPolicy)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
@@ -158,7 +155,7 @@ func (p *modalComputeProvider) withFunction(
 		return err
 	}
 
-	rotated, changed, reloadErr := modalCredentials.reload(ctx, source, p.vaultConfig.OAuthClientID, key, digest, p.credentialReloadPolicy)
+	rotated, changed, reloadErr := modalCredentials.reload(ctx, source, key, digest, p.credentialReloadPolicy)
 	if reloadErr != nil {
 		return fmt.Errorf("%w: Modal rejected the credentials and they could not be re-read: %w", errWCIOwned, reloadErr)
 	}
@@ -218,17 +215,21 @@ func (p *modalComputeProvider) runWithCredentials(
 var newModalClientFn = newModalClient
 
 func newModalClient(_ context.Context, params ModalParams, creds *ModalCredentials) (modalAPI, error) {
-	// OAuthCredentials is always supplied, which makes the SDK discard anything
-	// it picked up from the environment or an ambient profile: WCI authenticates
-	// as the resolved grant or not at all.
-	c, err := modal.NewClientWithOptions(&modal.ClientParams{
-		OAuthCredentials: &modal.OAuthCredentialsParams{
-			RefreshToken: creds.RefreshToken,
-			ClientID:     creds.OAuthClientID,
-			JWTKey:       creds.OAuthJWTKey,
-		},
-		Environment: params.Environment,
-	})
+	clientParams := &modal.ClientParams{Environment: params.Environment}
+
+	// With a grant resolved, OAuthCredentials is supplied explicitly, which makes
+	// the SDK discard anything it picked up from the environment or a profile:
+	// WCI authenticates as that grant or not at all. Without one, the SDK finds
+	// its own credentials, as the AWS and GCP providers let their SDKs do.
+	if creds.OAuth != nil {
+		clientParams.OAuthCredentials = &modal.OAuthCredentialsParams{
+			RefreshToken: creds.OAuth.RefreshToken,
+			ClientID:     creds.OAuth.ClientID,
+			JWTKey:       creds.OAuth.JWTKey,
+		}
+	}
+
+	c, err := modal.NewClientWithOptions(clientParams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create the Modal client: %w", err)
 	}
@@ -282,12 +283,34 @@ func GetModalVaultConfig() ModalVaultConfig {
 	return modalVaultConfig
 }
 
-// modalSecretSource is where Modal OAuth material is read from, installed once
-// at startup. Leaving it unset disables the provider, which then fails closed.
+// modalSecretSource is where Modal credentials come from. The default leaves
+// them to the Modal SDK -- one API key for the process, as every other provider
+// does with its own SDK. A deployment serving many accounts installs a source
+// that resolves a grant per account instead.
 var (
 	modalSecretSourceMu sync.RWMutex
-	modalSecretSource   ModalSecretSource
+	modalSecretSource   ModalSecretSource = AmbientModalSecretSource{}
 )
+
+// AmbientModalSecretSource leaves credentials to the Modal SDK, which reads
+// MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml. It ignores the account and
+// workspace: one API key serves the whole process.
+type AmbientModalSecretSource struct{}
+
+func (AmbientModalSecretSource) Credentials(context.Context, string, string) (*ModalCredentials, error) {
+	return &ModalCredentials{Ambient: true}, nil
+}
+
+// FailingModalSecretSource is installed when a deployment asked for per-account
+// credentials and the source could not be built. It fails every lookup rather
+// than leaving the ambient default in place, which would quietly serve every
+// account from one key -- the opposite of what asking for per-account
+// credentials meant.
+type FailingModalSecretSource struct{ Reason error }
+
+func (f FailingModalSecretSource) Credentials(context.Context, string, string) (*ModalCredentials, error) {
+	return nil, fmt.Errorf("the Modal secret source could not be built: %w", f.Reason)
+}
 
 // SetModalSecretSource installs the secret source the Modal compute provider
 // reads credentials through. Called once at startup with the Vault-backed
@@ -307,12 +330,11 @@ func getModalSecretSource() ModalSecretSource {
 	return modalSecretSource
 }
 
-// clearModalSecretSource removes the installed source. Only tests need this;
-// a live process installs one at startup and never retracts it.
+// clearModalSecretSource restores the ambient default. Only tests need this.
 func clearModalSecretSource() {
 	modalSecretSourceMu.Lock()
 	defer modalSecretSourceMu.Unlock()
-	modalSecretSource = nil
+	modalSecretSource = AmbientModalSecretSource{}
 }
 
 func resolveModalParams(cfg ComputeProviderConfig) (ModalParams, error) {
@@ -328,12 +350,15 @@ func resolveModalParams(cfg ComputeProviderConfig) (ModalParams, error) {
 	if environment == "" {
 		return ModalParams{}, fmt.Errorf("the Modal compute provider requires %q to be configured", configModalEnvironment)
 	}
+	// workspace_id selects which of the account's grants to use. It is only
+	// meaningful when a secret source resolves grants; with one API key for the
+	// process the key already determines the workspace, so it is optional and the
+	// source rejects an empty one if it needs it.
 	workspaceID, _ := cfg[configModalWorkspaceID].(string)
-	if workspaceID == "" {
-		return ModalParams{}, fmt.Errorf("the Modal compute provider requires %q to be configured", configModalWorkspaceID)
-	}
-	if err := validateVaultPathSegment("workspace", workspaceID); err != nil {
-		return ModalParams{}, fmt.Errorf("the Modal compute provider %q is invalid: %w", configModalWorkspaceID, err)
+	if workspaceID != "" {
+		if err := validateVaultPathSegment("workspace", workspaceID); err != nil {
+			return ModalParams{}, fmt.Errorf("the Modal compute provider %q is invalid: %w", configModalWorkspaceID, err)
+		}
 	}
 
 	version, err := modalConfigVersion(cfg)

@@ -11,26 +11,34 @@ import (
 )
 
 type (
-	// ModalCredentials is the OAuth material a Modal client is built from: WCI's
-	// own client identity and signing key, plus the refresh token for one
-	// account's grant on one workspace.
+	// ModalCredentials is what a Modal client is built from. Exactly one form is
+	// in play: either the SDK's own ambient credentials, or an OAuth grant
+	// resolved from secret storage.
 	ModalCredentials struct {
-		OAuthClientID string
-		OAuthJWTKey   string
-		RefreshToken  string
+		// Ambient leaves the Modal SDK to find its own credentials, from
+		// MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml, the way the AWS and
+		// GCP providers leave their SDKs to find theirs. This is the default: one
+		// API key for the whole process, set once and never rotated by us.
+		Ambient bool
+		// OAuth is set only when a secret source resolved a per-account grant.
+		OAuth *ModalOAuthCredentials
 	}
 
-	// ModalSecretSource reads Modal OAuth material from secret storage. Split in
-	// two because the signing key is WCI-owned and shared by every grant, while a
-	// refresh token belongs to exactly one (account, workspace) pair. The client
-	// ID is not here: it is not secret, so it comes from deployment config.
+	// ModalOAuthCredentials is the material for an RFC 7523 client assertion:
+	// WCI's own client identity and signing key, plus the refresh token for one
+	// account's grant on one workspace.
+	ModalOAuthCredentials struct {
+		ClientID     string
+		JWTKey       string
+		RefreshToken string
+	}
+
+	// ModalSecretSource resolves the credentials for one account's grant on one
+	// workspace. Installing one opts the provider out of ambient credentials and
+	// into per-account grants; a deployment that serves a single Modal workspace
+	// never needs one.
 	ModalSecretSource interface {
-		// SigningKey returns the PEM-encoded RSA private key WCI signs client
-		// assertions with.
-		SigningKey(ctx context.Context) (string, error)
-		// RefreshToken returns the refresh token for the grant accountID holds on
-		// workspaceID. It must fail rather than fall back when no such grant exists.
-		RefreshToken(ctx context.Context, accountID, workspaceID string) (string, error)
+		Credentials(ctx context.Context, accountID, workspaceID string) (*ModalCredentials, error)
 	}
 
 	// modalGrantKey identifies one account's grant on one workspace. The account
@@ -109,7 +117,6 @@ func (c *modalCredentialCache) entry(key modalGrantKey) *modalCredentialEntry {
 func (c *modalCredentialCache) get(
 	ctx context.Context,
 	src ModalSecretSource,
-	clientID string,
 	key modalGrantKey,
 	policy modalCredentialPolicy,
 ) (*ModalCredentials, string, error) {
@@ -121,7 +128,7 @@ func (c *modalCredentialCache) get(
 	if e.creds != nil {
 		return e.creds, e.digest, nil
 	}
-	return c.loadLocked(ctx, src, clientID, e, policy)
+	return c.loadLocked(ctx, src, e, policy)
 }
 
 // reload re-reads the grant from secret storage after Modal rejected the cached
@@ -135,7 +142,6 @@ func (c *modalCredentialCache) get(
 func (c *modalCredentialCache) reload(
 	ctx context.Context,
 	src ModalSecretSource,
-	clientID string,
 	key modalGrantKey,
 	seenDigest string,
 	policy modalCredentialPolicy,
@@ -149,7 +155,7 @@ func (c *modalCredentialCache) reload(
 		return e.creds, true, nil
 	}
 
-	creds, digest, err := c.loadLocked(ctx, src, clientID, e, policy)
+	creds, digest, err := c.loadLocked(ctx, src, e, policy)
 	if err != nil {
 		return nil, false, err
 	}
@@ -161,7 +167,6 @@ func (c *modalCredentialCache) reload(
 func (c *modalCredentialCache) loadLocked(
 	ctx context.Context,
 	src ModalSecretSource,
-	clientID string,
 	e *modalCredentialEntry,
 	policy modalCredentialPolicy,
 ) (*ModalCredentials, string, error) {
@@ -176,7 +181,7 @@ func (c *modalCredentialCache) loadLocked(
 		e.consecutiveFailures = 0
 	}
 
-	creds, err := loadModalCredentials(ctx, src, clientID, e.grant)
+	creds, err := loadModalCredentials(ctx, src, e.grant)
 	if err != nil {
 		c.penalizeLocked(e, policy)
 		return nil, "", err
@@ -204,39 +209,30 @@ func (c *modalCredentialCache) penalizeLocked(e *modalCredentialEntry, policy mo
 	}
 }
 
-func loadModalCredentials(ctx context.Context, src ModalSecretSource, clientID string, key modalGrantKey) (*ModalCredentials, error) {
-	if clientID == "" {
-		return nil, errors.New("no Modal OAuth client ID is configured")
-	}
-
-	jwtKey, err := src.SigningKey(ctx)
+func loadModalCredentials(ctx context.Context, src ModalSecretSource, key modalGrantKey) (*ModalCredentials, error) {
+	creds, err := src.Credentials(ctx, key.accountID, key.workspaceID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read the Modal signing key: %w", err)
+		return nil, fmt.Errorf("failed to resolve Modal credentials for workspace %q: %w", key.workspaceID, err)
 	}
-	if jwtKey == "" {
-		return nil, errors.New("the Modal signing key secret carries no private key")
+	if creds == nil {
+		return nil, fmt.Errorf("no Modal credentials for workspace %q", key.workspaceID)
 	}
-
-	refreshToken, err := src.RefreshToken(ctx, key.accountID, key.workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the Modal grant for workspace %q: %w", key.workspaceID, err)
+	if !creds.Ambient && creds.OAuth == nil {
+		return nil, fmt.Errorf("the Modal credentials for workspace %q carry no usable material", key.workspaceID)
 	}
-	if refreshToken == "" {
-		return nil, fmt.Errorf("no Modal grant for workspace %q", key.workspaceID)
-	}
-
-	return &ModalCredentials{
-		OAuthClientID: clientID,
-		OAuthJWTKey:   jwtKey,
-		RefreshToken:  refreshToken,
-	}, nil
+	return creds, nil
 }
 
 // modalCredentialDigest fingerprints credentials so rotation can be detected
-// without retaining a second copy of the secret material anywhere.
+// without retaining a second copy of the secret material anywhere. Ambient
+// credentials hash to a constant: the SDK owns them, so there is nothing here
+// that could rotate.
 func modalCredentialDigest(c *ModalCredentials) string {
+	if c.OAuth == nil {
+		return "ambient"
+	}
 	h := sha256.New()
-	for _, part := range []string{c.OAuthClientID, c.OAuthJWTKey, c.RefreshToken} {
+	for _, part := range []string{c.OAuth.ClientID, c.OAuth.JWTKey, c.OAuth.RefreshToken} {
 		_, _ = h.Write([]byte(part))
 		_, _ = h.Write([]byte{0})
 	}

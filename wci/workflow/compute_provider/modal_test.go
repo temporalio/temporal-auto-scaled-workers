@@ -37,6 +37,7 @@ func testModalConfig() ComputeProviderConfig {
 // fakeSecretSource serves credentials from memory and counts reads, which is how
 // the tests assert that secret storage stays off the invocation path.
 type fakeSecretSource struct {
+	clientID     string
 	jwtKey       string
 	refreshToken string
 
@@ -55,44 +56,69 @@ type fakeSecretSource struct {
 
 func newFakeSecretSource() *fakeSecretSource {
 	return &fakeSecretSource{
+		clientID:     testModalClientID,
 		jwtKey:       testModalJWTKey,
 		refreshToken: "rt-original",
 	}
 }
 
-func (f *fakeSecretSource) SigningKey(context.Context) (string, error) {
+func (f *fakeSecretSource) Credentials(_ context.Context, accountID, workspaceID string) (*ModalCredentials, error) {
 	f.signingKeyReads++
 	if f.signingKeyErr != nil {
-		return "", f.signingKeyErr
+		return nil, f.signingKeyErr
 	}
-	return f.jwtKey, nil
-}
 
-func (f *fakeSecretSource) RefreshToken(_ context.Context, accountID, workspaceID string) (string, error) {
 	f.refreshTokenReads++
 	f.lastAccountID = accountID
 	f.lastWorkspaceID = workspaceID
 	if f.refreshTokenErr != nil {
-		return "", f.refreshTokenErr
+		return nil, f.refreshTokenErr
 	}
+	// A grant is identified by an account and a workspace; neither can be empty.
+	if accountID == "" || workspaceID == "" {
+		return nil, fmt.Errorf("cannot resolve a grant for account %q workspace %q", accountID, workspaceID)
+	}
+
+	token := f.refreshToken
 	if f.grants != nil {
-		token, ok := f.grants[modalGrantKey{accountID: accountID, workspaceID: workspaceID}]
+		var ok bool
+		token, ok = f.grants[modalGrantKey{accountID: accountID, workspaceID: workspaceID}]
 		if !ok {
-			return "", fmt.Errorf("no grant for %s/%s", accountID, workspaceID)
+			return nil, fmt.Errorf("no grant for %s/%s", accountID, workspaceID)
 		}
-		return token, nil
 	}
-	return f.refreshToken, nil
+	if token == "" {
+		return nil, fmt.Errorf("no Modal grant for workspace %q", workspaceID)
+	}
+	if f.clientID == "" {
+		return nil, errors.New("no Modal OAuth client ID is configured")
+	}
+	if f.jwtKey == "" {
+		return nil, errors.New("the Modal signing key secret carries no private key")
+	}
+
+	return &ModalCredentials{OAuth: &ModalOAuthCredentials{
+		ClientID:     f.clientID,
+		JWTKey:       f.jwtKey,
+		RefreshToken: token,
+	}}, nil
 }
 
 // stubModalSecretSource installs src as the provider's secret source and clears
 // the process-wide credential cache around the test.
+// stubModalSecretSource puts the provider in per-account mode: a source that
+// resolves grants, and a resolver that tells accounts apart. The two go
+// together -- resolving a grant is meaningless without an account to resolve it
+// for.
 func stubModalSecretSource(t *testing.T, src ModalSecretSource) {
 	t.Helper()
 	SetModalSecretSource(src)
+	origResolver := getModalAccountResolver()
+	SetModalAccountResolver(NamespaceSuffixModalAccountResolver{})
 	resetModalCredentialCacheForTest()
 	t.Cleanup(func() {
 		clearModalSecretSource()
+		SetModalAccountResolver(origResolver)
 		resetModalCredentialCacheForTest()
 	})
 }
@@ -221,9 +247,9 @@ func TestModalInvokeWorker_UsesResolvedGrantCredentials(t *testing.T) {
 
 	assert.Equal(t, testModalAccount, src.lastAccountID, "the account must come from the namespace, not the config")
 	assert.Equal(t, testModalWorkspace, src.lastWorkspaceID)
-	assert.Equal(t, "rt-for-acct1", c.lastCreds.RefreshToken)
-	assert.Equal(t, testModalClientID, c.lastCreds.OAuthClientID)
-	assert.Equal(t, testModalJWTKey, c.lastCreds.OAuthJWTKey)
+	assert.Equal(t, "rt-for-acct1", c.lastCreds.OAuth.RefreshToken)
+	assert.Equal(t, testModalClientID, c.lastCreds.OAuth.ClientID)
+	assert.Equal(t, testModalJWTKey, c.lastCreds.OAuth.JWTKey)
 }
 
 func TestModalInvokeWorker_CachesCredentialsAcrossInvocations(t *testing.T) {
@@ -255,12 +281,12 @@ func TestModalInvokeWorker_CachesPerGrant(t *testing.T) {
 	cfgA := testModalConfig()
 	cfgA[configModalWorkspaceID] = "ws-a"
 	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), cfgA))
-	assert.Equal(t, "rt-a", c.lastCreds.RefreshToken)
+	assert.Equal(t, "rt-a", c.lastCreds.OAuth.RefreshToken)
 
 	cfgB := testModalConfig()
 	cfgB[configModalWorkspaceID] = "ws-b"
 	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), cfgB))
-	assert.Equal(t, "rt-b", c.lastCreds.RefreshToken)
+	assert.Equal(t, "rt-b", c.lastCreds.OAuth.RefreshToken)
 
 	assert.Equal(t, 2, src.refreshTokenReads, "each grant is read once")
 }
@@ -301,7 +327,7 @@ func TestModalInvokeWorker_RetriesOnceAfterRotation(t *testing.T) {
 
 	c := &fakeModalClient{
 		spawnErr: func(creds ModalCredentials) error {
-			if creds.RefreshToken == "rt-stale" {
+			if creds.OAuth.RefreshToken == "rt-stale" {
 				return status.Error(codes.Unauthenticated, "token rejected")
 			}
 			return nil
@@ -322,7 +348,7 @@ func TestModalInvokeWorker_RetriesOnceAfterRotation(t *testing.T) {
 
 	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
 	assert.Equal(t, spawnsBefore+2, c.spawns, "the rejected attempt is retried once with the re-read credentials")
-	assert.Equal(t, "rt-rotated", c.lastCreds.RefreshToken)
+	assert.Equal(t, "rt-rotated", c.lastCreds.OAuth.RefreshToken)
 
 	// The rotated credentials are now cached, so a later invocation reads nothing.
 	readsAfterRotation := src.refreshTokenReads
@@ -438,7 +464,9 @@ func TestModalValidateConfig_WrapsLookupError(t *testing.T) {
 }
 
 func TestModalValidateConfig_RequiresFields(t *testing.T) {
-	for _, key := range []string{configModalAppName, configModalFunctionName, configModalEnvironment, configModalWorkspaceID} {
+	// workspace_id is not here: it selects which grant to use, so it is only
+	// required when a source resolves grants, and the source rejects an empty one.
+	for _, key := range []string{configModalAppName, configModalFunctionName, configModalEnvironment} {
 		t.Run(key, func(t *testing.T) {
 			cfg := testModalConfig()
 			delete(cfg, key)
@@ -448,6 +476,17 @@ func TestModalValidateConfig_RequiresFields(t *testing.T) {
 			assert.Contains(t, err.Error(), key)
 		})
 	}
+}
+
+func TestModalValidateConfig_GrantModeNeedsWorkspace(t *testing.T) {
+	stubModalSecretSource(t, newFakeSecretSource())
+	stubModalClient(t, &fakeModalClient{})
+
+	cfg := testModalConfig()
+	delete(cfg, configModalWorkspaceID)
+
+	err := newModalProvider().ValidateConfig(t.Context(), modalRequestContext(), cfg)
+	require.Error(t, err, "a source that resolves grants must reject an empty workspace")
 }
 
 func TestResolveModalParams_RejectsWorkspaceTraversal(t *testing.T) {
@@ -583,7 +622,7 @@ func TestModalInvokeWorker_RebuildsClientAfterRotation(t *testing.T) {
 
 	c := &fakeModalClient{
 		spawnErr: func(creds ModalCredentials) error {
-			if creds.RefreshToken == "rt-stale" {
+			if creds.OAuth.RefreshToken == "rt-stale" {
 				return status.Error(codes.Unauthenticated, "token rejected")
 			}
 			return nil
@@ -600,7 +639,7 @@ func TestModalInvokeWorker_RebuildsClientAfterRotation(t *testing.T) {
 
 	assert.Equal(t, buildsBefore+1, c.builds, "rotated credentials retire the connection built on the old ones")
 	assert.Equal(t, 1, c.closes, "the retired connection is closed")
-	assert.Equal(t, "rt-rotated", c.lastCreds.RefreshToken)
+	assert.Equal(t, "rt-rotated", c.lastCreds.OAuth.RefreshToken)
 }
 
 func TestModalInvokeWorker_KeepsConnectionsPerGrant(t *testing.T) {
@@ -653,22 +692,63 @@ func stubModalClientCacheClock(t *testing.T, now *time.Time) {
 	t.Cleanup(func() { modalClients.now = orig })
 }
 
-func TestModalInvokeWorker_FailsWithoutSecretSource(t *testing.T) {
-	// An unconfigured cell installs no secret source at startup.
+func TestModalInvokeWorker_UsesAmbientCredentialsByDefault(t *testing.T) {
+	// No secret source installed, which is the open-source default: the Modal
+	// SDK finds its own API key, as the AWS and GCP providers let their SDKs do.
 	clearModalSecretSource()
 	t.Cleanup(clearModalSecretSource)
+	resetModalCredentialCacheForTest()
 
 	c := &fakeModalClient{}
 	stubModalClient(t, c)
 
-	p := &modalComputeProvider{
-		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
-	}
+	cfg := testModalConfig()
+	delete(cfg, configModalWorkspaceID) // the API key already names the workspace
 
-	err := p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig())
+	require.NoError(t, newModalProvider().InvokeWorker(t.Context(), modalRequestContext(), cfg))
+	assert.Equal(t, 1, c.spawns)
+	assert.True(t, c.lastCreds.Ambient, "the SDK should be left to find its own credentials")
+	assert.Nil(t, c.lastCreds.OAuth, "no grant material should be supplied")
+}
+
+func TestModalInvokeWorker_AmbientWorksForAnyNamespace(t *testing.T) {
+	// The default resolver must not reject a namespace that is just a name, which
+	// is what an open-source deployment has.
+	clearModalSecretSource()
+	t.Cleanup(clearModalSecretSource)
+	resetModalCredentialCacheForTest()
+
+	orig := getModalAccountResolver()
+	SetModalAccountResolver(UnscopedModalAccountResolver{})
+	t.Cleanup(func() { SetModalAccountResolver(orig) })
+
+	c := &fakeModalClient{}
+	stubModalClient(t, c)
+
+	rc := modalRequestContext()
+	rc.NamespaceName = "default"
+
+	cfg := testModalConfig()
+	delete(cfg, configModalWorkspaceID)
+
+	require.NoError(t, newModalProvider().InvokeWorker(t.Context(), rc, cfg))
+	assert.Equal(t, 1, c.spawns)
+}
+
+func TestModalInvokeWorker_FailingSourceDoesNotFallBackToAmbient(t *testing.T) {
+	// A deployment that asked for per-account credentials and could not build the
+	// source must fail, not quietly serve every account from one key.
+	SetModalSecretSource(FailingModalSecretSource{Reason: errors.New("vault unreachable")})
+	t.Cleanup(clearModalSecretSource)
+	resetModalCredentialCacheForTest()
+
+	c := &fakeModalClient{}
+	stubModalClient(t, c)
+
+	err := newModalProvider().InvokeWorker(t.Context(), modalRequestContext(), testModalConfig())
 	require.Error(t, err)
-	assert.ErrorIs(t, err, errWCIOwned, "an unconfigured cell is our problem, not the customer's")
-	assert.Zero(t, c.lookups)
+	assert.ErrorIs(t, err, errWCIOwned)
+	assert.Zero(t, c.spawns)
 }
 
 func TestSetModalVaultConfig_RoundTrips(t *testing.T) {
@@ -697,7 +777,6 @@ func TestSetModalSecretSource_IsWhatTheProviderReads(t *testing.T) {
 
 	// No Vault configuration at all: the installed source is what gets read.
 	p := &modalComputeProvider{
-		vaultConfig:            ModalVaultConfig{OAuthClientID: testModalClientID},
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
 	}
 

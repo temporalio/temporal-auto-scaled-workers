@@ -44,6 +44,7 @@ func TestWCISuite(t *testing.T) {
 	t.Run("ListWorkerDeploymentsPagination", testWCIListWorkerDeploymentsPagination)
 	t.Run("ManagerIdentityEnforcedOnSetCurrent", testWCIManagerIdentityEnforcedOnSetCurrent)
 	t.Run("MetricsPollInvokesOnBacklog", testWCIMetricsPollInvokesOnBacklog)
+	t.Run("ModalAmbientCredentials", testWCIModalAmbientCredentials)
 	t.Run("ModalCreateVersionFunctionNotFound", testWCIModalCreateVersionFunctionNotFound)
 	t.Run("ModalCreateVersionInvalidConfig", testWCIModalCreateVersionInvalidConfig)
 	t.Run("ModalCreateVersionWithoutGrant", testWCIModalCreateVersionWithoutGrant)

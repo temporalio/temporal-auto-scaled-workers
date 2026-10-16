@@ -59,7 +59,7 @@ var Module = fx.Options(
 		return computeprovider.NoopGCPImpersonationChainProvider{}
 	}),
 	fx.Provide(func() computeprovider.ModalAccountResolver {
-		return computeprovider.NamespaceSuffixModalAccountResolver{}
+		return computeprovider.UnscopedModalAccountResolver{}
 	}),
 	// The zero value leaves the Modal compute provider disabled; a deployment
 	// that uses it decorates this with its own flags and environment.
@@ -77,23 +77,29 @@ var Module = fx.Options(
 	fx.Invoke(func(r computeprovider.ModalAccountResolver) {
 		computeprovider.SetModalAccountResolver(r)
 	}),
-	// Build the Modal secret source once, here, rather than lazily on first use.
-	// A cell whose Vault configuration is wrong finds out in its startup logs
-	// instead of on a customer's first scale-up. It is logged rather than
-	// returned: failing startup would take worker-controller down for every
-	// other provider over one provider's configuration, so Modal is left
-	// disabled and fails closed on its own.
+	// Vault is opt-in: without an address the Modal provider uses the credentials
+	// the Modal SDK finds for itself, the same way the AWS and GCP providers use
+	// theirs. With one, credentials are resolved per account instead.
+	//
+	// Building the source here rather than lazily means a deployment whose Vault
+	// configuration is wrong finds out in its startup logs instead of on a
+	// customer's first scale-up. It is logged rather than returned: failing
+	// startup would take worker-controller down for every other provider over one
+	// provider's configuration.
 	fx.Invoke(func(cfg computeprovider.ModalVaultConfig, logger log.Logger) {
 		computeprovider.SetModalVaultConfig(cfg)
 		if cfg.Address == "" {
+			logger.Info("Modal compute provider using ambient SDK credentials; set a Vault address to resolve credentials per account")
 			return
 		}
 		source, err := computeprovider.NewVaultModalSecretSource(cfg)
 		if err != nil {
 			logger.Error("Modal compute provider disabled: cannot build its secret source", tag.Error(err))
+			computeprovider.SetModalSecretSource(computeprovider.FailingModalSecretSource{Reason: err})
 			return
 		}
 		computeprovider.SetModalSecretSource(source)
+		logger.Info("Modal compute provider resolving credentials per account from Vault")
 	}),
 	fx.Invoke(ServiceLifetimeHooks),
 )

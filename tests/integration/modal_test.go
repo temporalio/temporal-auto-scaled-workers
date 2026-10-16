@@ -75,22 +75,21 @@ func newModalFakeSecrets() *modalFakeSecrets {
 	}
 }
 
-func (s *modalFakeSecrets) SigningKey(context.Context) (string, error) {
+func (s *modalFakeSecrets) Credentials(_ context.Context, accountID, workspaceID string) (*computeprovider.ModalCredentials, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.signingKeyReads++
-	return s.jwtKey, nil
-}
-
-func (s *modalFakeSecrets) RefreshToken(_ context.Context, accountID, workspaceID string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.refreshTokenReads++
+
 	token, ok := s.grants[accountID+"/"+workspaceID]
 	if !ok {
-		return "", status.Errorf(codes.NotFound, "no grant for %s on %s", accountID, workspaceID)
+		return nil, status.Errorf(codes.NotFound, "no grant for %s on %s", accountID, workspaceID)
 	}
-	return token, nil
+	return &computeprovider.ModalCredentials{OAuth: &computeprovider.ModalOAuthCredentials{
+		ClientID:     modalTestClientID,
+		JWTKey:       s.jwtKey,
+		RefreshToken: token,
+	}}, nil
 }
 
 func (s *modalFakeSecrets) reads() (int, int) {
@@ -179,26 +178,9 @@ func installModalFakes(t *testing.T, secrets computeprovider.ModalSecretSource, 
 		},
 	}))
 
-	installModalDeploymentConfig(t)
-
 	orig := modalAccountResolverForTest()
 	computeprovider.SetModalAccountResolver(fixedAccountResolver{accountID: modalTestAccount})
 	t.Cleanup(func() { computeprovider.SetModalAccountResolver(orig) })
-}
-
-// installModalDeploymentConfig supplies the Vault configuration a cell would
-// pass in from its own flags and environment. Only the client ID matters here;
-// the secret source itself is faked.
-func installModalDeploymentConfig(t *testing.T) {
-	t.Helper()
-	prev := computeprovider.GetModalVaultConfig()
-	computeprovider.SetModalVaultConfig(computeprovider.ModalVaultConfig{
-		Address:       "https://vault.invalid",
-		AuthMount:     "s-testcell",
-		AuthRole:      "worker-controller",
-		OAuthClientID: modalTestClientID,
-	})
-	t.Cleanup(func() { computeprovider.SetModalVaultConfig(prev) })
 }
 
 // modalAccountResolverForTest returns the resolver to restore after a test. The
@@ -309,9 +291,10 @@ func testWCIModalScaleUp(t *testing.T) {
 
 	// Every spawn authenticated as the grant resolved for the namespace's account.
 	for _, creds := range spy.credentials() {
-		assert.Equal(t, "rt-integration", creds.RefreshToken)
-		assert.Equal(t, modalTestClientID, creds.OAuthClientID)
-		assert.Equal(t, modalTestJWTKey, creds.OAuthJWTKey)
+		require.NotNil(t, creds.OAuth, "per-account mode must supply grant material")
+		assert.Equal(t, "rt-integration", creds.OAuth.RefreshToken)
+		assert.Equal(t, modalTestClientID, creds.OAuth.ClientID)
+		assert.Equal(t, modalTestJWTKey, creds.OAuth.JWTKey)
 	}
 
 	signingReads, grantReads := secrets.reads()
@@ -387,7 +370,6 @@ func testWCIModalCreateVersionFunctionNotFound(t *testing.T) {
 			return modal.NotFoundError{Exception: "Function 'temporal-workers/spawn_worker' not found"}
 		},
 	}))
-	installModalDeploymentConfig(t)
 	orig := modalAccountResolverForTest()
 	computeprovider.SetModalAccountResolver(fixedAccountResolver{accountID: modalTestAccount})
 	t.Cleanup(func() { computeprovider.SetModalAccountResolver(orig) })
@@ -400,4 +382,41 @@ func testWCIModalCreateVersionFunctionNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 	assert.Zero(t, spy.spawnCount())
+}
+
+// With no secret source installed -- the open-source default -- a version works
+// without naming a workspace, and the Modal SDK is left to find the one API key
+// configured for the process.
+func testWCIModalAmbientCredentials(t *testing.T) {
+	env := createModalTestEnv(t)
+	ctx := env.Context()
+	cli := env.SdkClient()
+
+	spy := newModalSpy()
+	t.Cleanup(computeprovider.SetModalTestClient(computeprovider.ModalTestClientConfig{
+		LookupFn: func(_ context.Context, appName, functionName string, _ *modal.FunctionFromNameParams, creds computeprovider.ModalCredentials) error {
+			spy.recordLookup(appName, functionName, creds)
+			return nil
+		},
+		Function: computeprovider.ModalTestFunction{
+			SpawnFn: func(_ context.Context, appName, functionName string) error {
+				spy.recordSpawn(appName, functionName)
+				return nil
+			},
+		},
+	}))
+
+	deploymentName := uuid.NewString()
+	createWorkerDeployment(t, env, deploymentName)
+
+	version := &deploymentpb.WorkerDeploymentVersion{DeploymentName: deploymentName, BuildId: uuid.NewString()}
+	cfg := modalComputeConfig(map[string]string{"workspace_id": ""})
+
+	require.NoError(t, createModalVersion(t, ctx, cli, env.Namespace().String(), version, cfg))
+
+	waitForInvoke(t, spy.events, 60*time.Second, "register-task-queues spawn")
+	for _, creds := range spy.credentials() {
+		assert.True(t, creds.Ambient, "the SDK should be left to find its own credentials")
+		assert.Nil(t, creds.OAuth, "no grant material should be supplied")
+	}
 }

@@ -41,10 +41,11 @@ func SetModalTestClient(cfg ModalTestClientConfig) func() {
 	}
 }
 
-// SetModalTestSecretSource swaps the secret source seam for src and returns a
-// function restoring the Vault-backed one. The process-wide credential cache is
-// cleared on both installation and restore, so a test never sees credentials
-// another test cached and never leaves its own behind.
+// SetModalTestSecretSource puts the provider in per-account mode with src
+// resolving grants, and returns a function restoring the ambient default. The
+// process-wide credential cache is cleared on both installation and restore, so
+// a test never sees credentials another test cached and never leaves its own
+// behind.
 func SetModalTestSecretSource(src ModalSecretSource) func() {
 	SetModalSecretSource(src)
 	ResetModalCredentialCache()
