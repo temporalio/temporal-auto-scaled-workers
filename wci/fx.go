@@ -77,9 +77,9 @@ var Module = fx.Options(
 	fx.Invoke(func(r computeprovider.ModalAccountResolver) {
 		computeprovider.SetModalAccountResolver(r)
 	}),
-	// Vault is opt-in: without an address the Modal provider uses the credentials
-	// the Modal SDK finds for itself, the same way the AWS and GCP providers use
-	// theirs. With one, credentials are resolved per account instead.
+	// Vault is opt-in: without an address the Modal provider uses the API key the
+	// Modal SDK finds for itself, the same way the AWS and GCP providers use the
+	// credentials theirs find. With one, credentials are resolved per account instead.
 	//
 	// Building the source here rather than lazily means a deployment whose Vault
 	// configuration is wrong finds out in its startup logs instead of on a
@@ -89,7 +89,7 @@ var Module = fx.Options(
 	fx.Invoke(func(cfg computeprovider.ModalVaultConfig, logger log.Logger) {
 		computeprovider.SetModalVaultConfig(cfg)
 		if cfg.Address == "" {
-			logger.Info("Modal compute provider using ambient SDK credentials; set a Vault address to resolve credentials per account")
+			logger.Info("Modal compute provider using the API key the SDK finds for itself; set a Vault address to resolve credentials per account")
 			return
 		}
 		source, err := computeprovider.NewVaultModalSecretSource(cfg)

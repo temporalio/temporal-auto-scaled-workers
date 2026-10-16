@@ -387,7 +387,7 @@ func testWCIModalCreateVersionFunctionNotFound(t *testing.T) {
 // With no secret source installed -- the open-source default -- a version works
 // without naming a workspace, and the Modal SDK is left to find the one API key
 // configured for the process.
-func testWCIModalAmbientCredentials(t *testing.T) {
+func testWCIModalAPIKeyCredentials(t *testing.T) {
 	env := createModalTestEnv(t)
 	ctx := env.Context()
 	cli := env.SdkClient()
@@ -416,7 +416,7 @@ func testWCIModalAmbientCredentials(t *testing.T) {
 
 	waitForInvoke(t, spy.events, 60*time.Second, "register-task-queues spawn")
 	for _, creds := range spy.credentials() {
-		assert.True(t, creds.Ambient, "the SDK should be left to find its own credentials")
+		assert.True(t, creds.APIKey, "the SDK should be left to find its own API key")
 		assert.Nil(t, creds.OAuth, "no grant material should be supplied")
 	}
 }

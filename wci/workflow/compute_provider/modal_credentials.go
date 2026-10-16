@@ -12,14 +12,14 @@ import (
 
 type (
 	// ModalCredentials is what a Modal client is built from. Exactly one form is
-	// in play: either the SDK's own ambient credentials, or an OAuth grant
+	// in play: either an API key the SDK finds for itself, or an OAuth grant
 	// resolved from secret storage.
 	ModalCredentials struct {
-		// Ambient leaves the Modal SDK to find its own credentials, from
+		// APIKey leaves the Modal SDK to find its own API key, from
 		// MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml, the way the AWS and
-		// GCP providers leave their SDKs to find theirs. This is the default: one
-		// API key for the whole process, set once and never rotated by us.
-		Ambient bool
+		// GCP providers leave their SDKs to find their credentials. This is the
+		// default: one key for the whole process, set once and never rotated by us.
+		APIKey bool
 		// OAuth is set only when a secret source resolved a per-account grant.
 		OAuth *ModalOAuthCredentials
 	}
@@ -34,7 +34,7 @@ type (
 	}
 
 	// ModalSecretSource resolves the credentials for one account's grant on one
-	// workspace. Installing one opts the provider out of ambient credentials and
+	// workspace. Installing one opts the provider out of a single API key and
 	// into per-account grants; a deployment that serves a single Modal workspace
 	// never needs one.
 	ModalSecretSource interface {
@@ -217,19 +217,19 @@ func loadModalCredentials(ctx context.Context, src ModalSecretSource, key modalG
 	if creds == nil {
 		return nil, fmt.Errorf("no Modal credentials for workspace %q", key.workspaceID)
 	}
-	if !creds.Ambient && creds.OAuth == nil {
+	if !creds.APIKey && creds.OAuth == nil {
 		return nil, fmt.Errorf("the Modal credentials for workspace %q carry no usable material", key.workspaceID)
 	}
 	return creds, nil
 }
 
 // modalCredentialDigest fingerprints credentials so rotation can be detected
-// without retaining a second copy of the secret material anywhere. Ambient
-// credentials hash to a constant: the SDK owns them, so there is nothing here
-// that could rotate.
+// without retaining a second copy of the secret material anywhere. An API key
+// hashes to a constant: the SDK owns it, so there is nothing here that could
+// rotate.
 func modalCredentialDigest(c *ModalCredentials) string {
 	if c.OAuth == nil {
-		return "ambient"
+		return "api-key"
 	}
 	h := sha256.New()
 	for _, part := range []string{c.OAuth.ClientID, c.OAuth.JWTKey, c.OAuth.RefreshToken} {

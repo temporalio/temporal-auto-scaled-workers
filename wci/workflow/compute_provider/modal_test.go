@@ -692,7 +692,7 @@ func stubModalClientCacheClock(t *testing.T, now *time.Time) {
 	t.Cleanup(func() { modalClients.now = orig })
 }
 
-func TestModalInvokeWorker_UsesAmbientCredentialsByDefault(t *testing.T) {
+func TestModalInvokeWorker_UsesAPIKeyByDefault(t *testing.T) {
 	// No secret source installed, which is the open-source default: the Modal
 	// SDK finds its own API key, as the AWS and GCP providers let their SDKs do.
 	clearModalSecretSource()
@@ -707,11 +707,11 @@ func TestModalInvokeWorker_UsesAmbientCredentialsByDefault(t *testing.T) {
 
 	require.NoError(t, newModalProvider().InvokeWorker(t.Context(), modalRequestContext(), cfg))
 	assert.Equal(t, 1, c.spawns)
-	assert.True(t, c.lastCreds.Ambient, "the SDK should be left to find its own credentials")
+	assert.True(t, c.lastCreds.APIKey, "the SDK should be left to find its own API key")
 	assert.Nil(t, c.lastCreds.OAuth, "no grant material should be supplied")
 }
 
-func TestModalInvokeWorker_AmbientWorksForAnyNamespace(t *testing.T) {
+func TestModalInvokeWorker_APIKeyWorksForAnyNamespace(t *testing.T) {
 	// The default resolver must not reject a namespace that is just a name, which
 	// is what an open-source deployment has.
 	clearModalSecretSource()
@@ -735,7 +735,7 @@ func TestModalInvokeWorker_AmbientWorksForAnyNamespace(t *testing.T) {
 	assert.Equal(t, 1, c.spawns)
 }
 
-func TestModalInvokeWorker_FailingSourceDoesNotFallBackToAmbient(t *testing.T) {
+func TestModalInvokeWorker_FailingSourceDoesNotFallBackToAPIKey(t *testing.T) {
 	// A deployment that asked for per-account credentials and could not build the
 	// source must fail, not quietly serve every account from one key.
 	SetModalSecretSource(FailingModalSecretSource{Reason: errors.New("vault unreachable")})

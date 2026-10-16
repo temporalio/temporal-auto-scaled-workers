@@ -289,21 +289,21 @@ func GetModalVaultConfig() ModalVaultConfig {
 // that resolves a grant per account instead.
 var (
 	modalSecretSourceMu sync.RWMutex
-	modalSecretSource   ModalSecretSource = AmbientModalSecretSource{}
+	modalSecretSource   ModalSecretSource = APIKeyModalSecretSource{}
 )
 
-// AmbientModalSecretSource leaves credentials to the Modal SDK, which reads
-// MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml. It ignores the account and
-// workspace: one API key serves the whole process.
-type AmbientModalSecretSource struct{}
+// APIKeyModalSecretSource leaves credentials to the Modal SDK, which reads an
+// API key from MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml. It ignores
+// the account and workspace: one key serves the whole process.
+type APIKeyModalSecretSource struct{}
 
-func (AmbientModalSecretSource) Credentials(context.Context, string, string) (*ModalCredentials, error) {
-	return &ModalCredentials{Ambient: true}, nil
+func (APIKeyModalSecretSource) Credentials(context.Context, string, string) (*ModalCredentials, error) {
+	return &ModalCredentials{APIKey: true}, nil
 }
 
 // FailingModalSecretSource is installed when a deployment asked for per-account
 // credentials and the source could not be built. It fails every lookup rather
-// than leaving the ambient default in place, which would quietly serve every
+// than leaving the API key default in place, which would quietly serve every
 // account from one key -- the opposite of what asking for per-account
 // credentials meant.
 type FailingModalSecretSource struct{ Reason error }
@@ -330,11 +330,11 @@ func getModalSecretSource() ModalSecretSource {
 	return modalSecretSource
 }
 
-// clearModalSecretSource restores the ambient default. Only tests need this.
+// clearModalSecretSource restores the API key default. Only tests need this.
 func clearModalSecretSource() {
 	modalSecretSourceMu.Lock()
 	defer modalSecretSourceMu.Unlock()
-	modalSecretSource = AmbientModalSecretSource{}
+	modalSecretSource = APIKeyModalSecretSource{}
 }
 
 func resolveModalParams(cfg ComputeProviderConfig) (ModalParams, error) {

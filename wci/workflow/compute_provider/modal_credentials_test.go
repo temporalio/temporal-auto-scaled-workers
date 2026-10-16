@@ -222,11 +222,11 @@ func TestModalCredentialDigest_DistinguishesFields(t *testing.T) {
 	// Without a separator, "a"+"bc" and "ab"+"c" would hash the same.
 	assert.NotEqual(t, modalCredentialDigest(oauth("a", "bc", "")), modalCredentialDigest(oauth("ab", "c", "")))
 
-	// Ambient credentials are the SDK's, so there is nothing to fingerprint and
+	// An API key is the SDK's to find, so there is nothing to fingerprint and
 	// nothing that could rotate.
-	ambient := modalCredentialDigest(&ModalCredentials{Ambient: true})
-	assert.Equal(t, "ambient", ambient)
-	assert.NotEqual(t, ambient, same)
+	apiKey := modalCredentialDigest(&ModalCredentials{APIKey: true})
+	assert.Equal(t, "api-key", apiKey)
+	assert.NotEqual(t, apiKey, same)
 }
 
 // countingSecretSource makes fakeSecretSource's counters safe to read from

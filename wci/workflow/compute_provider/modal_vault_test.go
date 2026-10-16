@@ -148,7 +148,7 @@ func TestVaultSecretSource_ReadsSigningKey(t *testing.T) {
 	assert.Equal(t, "oc-test", creds.OAuth.ClientID, "the client ID comes from deployment config, not Vault")
 	assert.Equal(t, "pem-key", creds.OAuth.JWTKey)
 	assert.Equal(t, "rt-1", creds.OAuth.RefreshToken)
-	assert.False(t, creds.Ambient)
+	assert.False(t, creds.APIKey)
 }
 
 func TestVaultSecretSource_ReadsRefreshTokenByAccountAndWorkspace(t *testing.T) {
