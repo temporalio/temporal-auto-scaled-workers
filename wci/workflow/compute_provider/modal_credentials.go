@@ -162,6 +162,35 @@ func (c *modalCredentialCache) reload(
 	return creds, digest != seenDigest, nil
 }
 
+// refresh re-reads the grant from secret storage and replaces what is cached.
+// Validation uses it so a check reflects what secret storage holds now, rather
+// than what this process happened to read earlier: a grant deleted from storage
+// leaves a cached copy that keeps working until the pod restarts, and a check
+// passing on that copy promises something no fresh process could deliver.
+//
+// It sits outside the reload budget on purpose. That budget keeps a failing
+// data path off secret storage; validation is not the data path, running at
+// version create, config update, a connection check and a periodic sweep. A
+// successful refresh clears the budget, so repairing a grant and re-checking it
+// unblocks the data path immediately instead of waiting out the cooldown.
+func (c *modalCredentialCache) refresh(ctx context.Context, src ModalSecretSource, key modalGrantKey) (*ModalCredentials, error) {
+	e := c.entry(key)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	creds, err := loadModalCredentials(ctx, src, e.grant)
+	if err != nil {
+		return nil, err
+	}
+
+	e.creds = creds
+	e.digest = modalCredentialDigest(creds)
+	e.consecutiveFailures = 0
+	e.blockedUntil = time.Time{}
+	return creds, nil
+}
+
 // loadLocked reads the grant and updates the entry's failure accounting. The
 // caller must hold e.mu.
 func (c *modalCredentialCache) loadLocked(

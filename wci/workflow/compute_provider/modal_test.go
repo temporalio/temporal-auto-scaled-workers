@@ -480,20 +480,66 @@ func TestModalValidateConfig_NeverServedFromCache(t *testing.T) {
 	assert.Equal(t, 4, c.lookups, "the spawn path keeps its cached handle")
 }
 
-func TestModalValidateConfig_ReusesCachedCredentials(t *testing.T) {
+func TestModalValidateConfig_RereadsCredentials(t *testing.T) {
 	src := newFakeSecretSource()
 	stubModalSecretSource(t, src)
 	stubModalClient(t, &fakeModalClient{})
 
 	p := newModalProvider()
-	for range 3 {
+	for i := range 3 {
 		require.NoError(t, p.ValidateConfig(t.Context(), modalRequestContext(), testModalConfig()))
+		assert.Equal(t, i+1, src.refreshTokenReads,
+			"a check must reflect what secret storage holds now, not what this process read earlier")
 	}
+}
 
-	// A button press must not put secret storage on its path. A credential that
-	// has gone bad still surfaces, because validation's fresh connection has to
-	// authenticate with it.
-	assert.Equal(t, 1, src.refreshTokenReads)
+func TestModalValidateConfig_SeesAGrantRevokedInStorage(t *testing.T) {
+	src := newFakeSecretSource()
+	stubModalSecretSource(t, src)
+	stubModalClient(t, &fakeModalClient{})
+
+	p := newModalProvider()
+	require.NoError(t, p.ValidateConfig(t.Context(), modalRequestContext(), testModalConfig()))
+
+	// The customer disconnects Modal and the grant is removed. The copy this
+	// process cached would keep working until it restarts, so a check that
+	// consulted it would pass while no fresh process could start a worker.
+	src.grants = map[modalGrantKey]string{}
+
+	err := p.ValidateConfig(t.Context(), modalRequestContext(), testModalConfig())
+	require.Error(t, err, "a grant removed from secret storage must fail the check")
+}
+
+func TestModalValidateConfig_ClearsTheReloadCooldown(t *testing.T) {
+	src := newFakeSecretSource()
+	src.refreshToken = "rt-stale"
+	stubModalSecretSource(t, src)
+
+	c := &fakeModalClient{
+		spawnErr: func(creds ModalCredentials) error {
+			if creds.OAuth.RefreshToken == "rt-stale" {
+				return status.Error(codes.Unauthenticated, "token rejected")
+			}
+			return nil
+		},
+	}
+	stubModalClient(t, c)
+
+	p := newModalProvider()
+	p.credentialReloadPolicy = modalCredentialPolicy{reloadLimit: 1, reloadCooldown: time.Hour}
+
+	// Burn the budget: the spawn fails, the re-read finds the same material.
+	require.Error(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
+	require.Error(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
+
+	// Repair the grant and check the connection. Validation is not the data path,
+	// so it is not held by the cooldown -- and succeeding releases it.
+	src.refreshToken = "rt-repaired"
+	require.NoError(t, p.ValidateConfig(t.Context(), modalRequestContext(), testModalConfig()))
+
+	// The data path is unblocked immediately rather than waiting out the hour.
+	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
+	assert.Equal(t, "rt-repaired", c.lastCreds.OAuth.RefreshToken)
 }
 
 func TestModalValidateConfig_WrapsLookupError(t *testing.T) {

@@ -92,13 +92,15 @@ func (p *modalFunctionComputeProvider) ValidateConfig(ctx context.Context, rc Re
 		return err
 	}
 
-	// Validation runs on its own connection and its own lookup, never the cached
-	// ones a spawn uses. A cached handle would report a Function deleted an hour
-	// ago as present, and a cached connection rides an auth token the SDK minted
-	// earlier, so a revoked grant would pass until that token happened to expire.
-	// A fresh client holds no token and must mint one, which is what makes this
-	// test the credentials rather than the cache. The AWS Lambda provider
-	// validates the same way, with a fresh client and a real GetFunction.
+	// Validation shares nothing with a spawn: it re-reads the credentials, builds
+	// its own connection and resolves the Function itself. A cached handle would
+	// report a Function deleted an hour ago as present, a cached connection rides
+	// an auth token minted before a grant was revoked, and a cached credential
+	// outlives its own deletion from secret storage until the pod restarts. A
+	// fresh client holds no auth token and must mint one from the refresh token,
+	// which is what makes this test the credentials rather than replay an earlier
+	// success. The AWS Lambda provider validates the same way, with a fresh
+	// client and a real GetFunction.
 	//
 	// It costs a connection and two round trips, on a path that runs at version
 	// create, config update, the connection-check button, and a periodic sweep --
@@ -115,13 +117,13 @@ func (p *modalFunctionComputeProvider) validateUncached(ctx context.Context, rc 
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
 
-	// Credentials still come from the cache. Whether secret storage holds a
-	// second copy of a credential we are authenticating with says nothing about
-	// whether a worker can be started, and re-reading it here would put a button
-	// press on the path to Vault. A credential that has gone bad surfaces anyway:
-	// the fresh connection below has to mint an auth token to make any call.
+	// Credentials are re-read, not taken from the cache. Every restart rebuilds
+	// them from secret storage, so a grant that has been revoked there leaves a
+	// cached copy that works only until this pod goes away -- and a check passing
+	// on it would promise a worker no fresh process could start. With one API key
+	// for the process this costs nothing: that source holds no secrets to re-read.
 	key := modalGrantKey{accountID: accountID, workspaceID: params.WorkspaceID}
-	creds, _, err := modalCredentials.get(ctx, getModalSecretSource(), key, p.credentialReloadPolicy)
+	creds, err := modalCredentials.refresh(ctx, getModalSecretSource(), key)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
