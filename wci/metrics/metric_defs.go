@@ -84,6 +84,8 @@ const (
 	MigrationOutcomeTagName    = "migration_outcome"
 	ActivityErrorTypeTagName   = "activity_error_type"
 	PathTagName                = "path"
+	// BackendTagName marks CHASM-served emissions; workflow emissions omit it.
+	BackendTagName = "backend"
 )
 
 // ComputeProviderNone is the sentinel compute_provider tag value used when a

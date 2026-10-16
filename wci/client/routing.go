@@ -71,7 +71,7 @@ func (r *routingClient) backend(name string) Client {
 }
 
 func (r *routingClient) served(operation, backend string) {
-	wcimetrics.ClientRequests.With(r.metricsHandler).Record(1, metrics.OperationTag(operation), metrics.StringTag("backend", backend))
+	wcimetrics.ClientRequests.With(r.metricsHandler).Record(1, metrics.OperationTag(operation), metrics.StringTag(wcimetrics.BackendTagName, backend))
 }
 
 func (r *routingClient) UpdateTaskQueueName(ctx context.Context, newTaskQueueName string) error {
