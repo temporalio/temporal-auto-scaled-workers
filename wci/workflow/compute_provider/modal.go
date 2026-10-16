@@ -92,11 +92,51 @@ func (p *modalFunctionComputeProvider) ValidateConfig(ctx context.Context, rc Re
 		return err
 	}
 
-	// Looking the Function up proves three things at once: the grant resolves,
-	// Modal accepts the credentials it yields, and the named Function exists in
-	// the named workspace and environment.
-	if err := p.withFunction(ctx, rc, params, func(context.Context, modalFunction) error { return nil }); err != nil {
+	// Validation runs on its own connection and its own lookup, never the cached
+	// ones a spawn uses. A cached handle would report a Function deleted an hour
+	// ago as present, and a cached connection rides an auth token the SDK minted
+	// earlier, so a revoked grant would pass until that token happened to expire.
+	// A fresh client holds no token and must mint one, which is what makes this
+	// test the credentials rather than the cache. The AWS Lambda provider
+	// validates the same way, with a fresh client and a real GetFunction.
+	//
+	// It costs a connection and two round trips, on a path that runs at version
+	// create, config update, the connection-check button, and a periodic sweep --
+	// nowhere near the rate the caches exist for.
+	if err := p.validateUncached(ctx, rc, params); err != nil {
 		return fmt.Errorf("cannot access the compute resource: %w", err)
+	}
+	return nil
+}
+
+func (p *modalFunctionComputeProvider) validateUncached(ctx context.Context, rc RequestContext, params ModalParams) error {
+	accountID, err := getModalAccountResolver().ResolveAccountID(ctx, rc.NamespaceName)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errWCIOwned, err)
+	}
+
+	// Credentials still come from the cache. Whether secret storage holds a
+	// second copy of a credential we are authenticating with says nothing about
+	// whether a worker can be started, and re-reading it here would put a button
+	// press on the path to Vault. A credential that has gone bad surfaces anyway:
+	// the fresh connection below has to mint an auth token to make any call.
+	key := modalGrantKey{accountID: accountID, workspaceID: params.WorkspaceID}
+	creds, _, err := modalCredentials.get(ctx, getModalSecretSource(), key, p.credentialReloadPolicy)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errWCIOwned, err)
+	}
+
+	client, err := newModalClientFn(ctx, params, creds)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if _, err := client.FunctionFromName(ctx, params.AppName, params.FunctionName, &modal.FunctionFromNameParams{
+		Environment: params.Environment,
+		Version:     params.Version,
+	}); err != nil {
+		return fmt.Errorf("failed to look up Modal Function %q in app %q: %w", params.FunctionName, params.AppName, err)
 	}
 	return nil
 }

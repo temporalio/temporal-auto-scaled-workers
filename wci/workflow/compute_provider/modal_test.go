@@ -448,6 +448,52 @@ func TestModalValidateConfig_LooksUpFunction(t *testing.T) {
 	require.NoError(t, newModalProvider().ValidateConfig(t.Context(), modalRequestContext(), testModalConfig()))
 	assert.Equal(t, 1, c.lookups)
 	assert.Zero(t, c.spawns, "validation must not start a worker")
+	assert.Equal(t, 1, c.closes, "validation's connection is its own and is closed after")
+}
+
+func TestModalValidateConfig_NeverServedFromCache(t *testing.T) {
+	stubModalSecretSource(t, newFakeSecretSource())
+	c := &fakeModalClient{}
+	stubModalClient(t, c)
+
+	p := newModalProvider()
+
+	// Warm every cache a spawn uses.
+	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
+	require.Equal(t, 1, c.builds)
+	require.Equal(t, 1, c.lookups)
+
+	// Each validation must still reach Modal. A cached handle would report a
+	// Function deleted an hour ago as present; a cached connection would ride an
+	// auth token minted before the grant was revoked.
+	for i := range 3 {
+		require.NoError(t, p.ValidateConfig(t.Context(), modalRequestContext(), testModalConfig()))
+		assert.Equal(t, 2+i, c.builds, "validation must build its own connection")
+		assert.Equal(t, 2+i, c.lookups, "validation must resolve the Function itself")
+	}
+
+	// And none of that disturbed the caches the spawn path uses.
+	spawnsBefore := c.spawns
+	require.NoError(t, p.InvokeWorker(t.Context(), modalRequestContext(), testModalConfig()))
+	assert.Equal(t, spawnsBefore+1, c.spawns)
+	assert.Equal(t, 4, c.builds, "the spawn path keeps its cached connection")
+	assert.Equal(t, 4, c.lookups, "the spawn path keeps its cached handle")
+}
+
+func TestModalValidateConfig_ReusesCachedCredentials(t *testing.T) {
+	src := newFakeSecretSource()
+	stubModalSecretSource(t, src)
+	stubModalClient(t, &fakeModalClient{})
+
+	p := newModalProvider()
+	for range 3 {
+		require.NoError(t, p.ValidateConfig(t.Context(), modalRequestContext(), testModalConfig()))
+	}
+
+	// A button press must not put secret storage on its path. A credential that
+	// has gone bad still surfaces, because validation's fresh connection has to
+	// authenticate with it.
+	assert.Equal(t, 1, src.refreshTokenReads)
 }
 
 func TestModalValidateConfig_WrapsLookupError(t *testing.T) {

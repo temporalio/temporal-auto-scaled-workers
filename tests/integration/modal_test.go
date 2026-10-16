@@ -301,10 +301,12 @@ func testWCIModalScaleUp(t *testing.T) {
 	assert.Equal(t, 1, signingReads, "secret storage must be read once for the process, not per spawn")
 	assert.Equal(t, 1, grantReads)
 
-	// Validating the version resolved the Function; every spawn since has reused
-	// that handle and its connection rather than paying for a lookup of its own.
-	assert.Equal(t, 1, spy.lookupCount(), "the Function handle must be resolved once, not per spawn")
-	assert.Greater(t, spy.spawnCount(), 1)
+	// Two lookups, and the split between them is the point. Validation resolves
+	// the Function itself every time, on its own connection, so a config check
+	// tests Modal rather than reading back what a spawn cached. The spawn path
+	// resolves once and caches, so the second and later spawns add nothing.
+	assert.Equal(t, 2, spy.lookupCount(), "one lookup for validation, one for the spawn path")
+	assert.Greater(t, spy.spawnCount(), 1, "more spawns than lookups is the caching working")
 
 	w := startVersionedWorker(t, cli, taskQueue, deploymentName, buildID)
 	t.Cleanup(w.Stop)
