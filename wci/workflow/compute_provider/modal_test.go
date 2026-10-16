@@ -187,8 +187,8 @@ func stubModalClient(t *testing.T, c *fakeModalClient) {
 	})
 }
 
-func newModalProvider() *modalComputeProvider {
-	return &modalComputeProvider{
+func newModalProvider() *modalFunctionComputeProvider {
+	return &modalFunctionComputeProvider{
 		vaultConfig:            ModalVaultConfig{OAuthClientID: testModalClientID},
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
 	}
@@ -776,7 +776,7 @@ func TestSetModalSecretSource_IsWhatTheProviderReads(t *testing.T) {
 	stubModalClient(t, c)
 
 	// No Vault configuration at all: the installed source is what gets read.
-	p := &modalComputeProvider{
+	p := &modalFunctionComputeProvider{
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
 	}
 

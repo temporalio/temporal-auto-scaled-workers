@@ -47,7 +47,7 @@ type (
 		Version int
 	}
 
-	modalComputeProvider struct {
+	modalFunctionComputeProvider struct {
 		vaultConfig            ModalVaultConfig
 		credentialReloadPolicy modalCredentialPolicy
 	}
@@ -60,11 +60,11 @@ type (
 var modalCredentials = newModalCredentialCache()
 
 func init() {
-	RegisterComputeProvider(iface.ComputeProviderTypeModal, NewModalComputeProvider)
+	RegisterComputeProvider(iface.ComputeProviderTypeModalFunction, NewModalFunctionComputeProvider)
 }
 
-func NewModalComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (ComputeProvider, error) {
-	p := &modalComputeProvider{
+func NewModalFunctionComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (ComputeProvider, error) {
+	p := &modalFunctionComputeProvider{
 		credentialReloadPolicy: modalCredentialPolicy{
 			reloadLimit:    2,
 			reloadCooldown: 15 * time.Minute,
@@ -82,11 +82,11 @@ func NewModalComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (C
 	return p, nil
 }
 
-func (p *modalComputeProvider) LaunchStrategy() LaunchStrategy {
+func (p *modalFunctionComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyInvoke
 }
 
-func (p *modalComputeProvider) ValidateConfig(ctx context.Context, rc RequestContext, cfg ComputeProviderConfig) error {
+func (p *modalFunctionComputeProvider) ValidateConfig(ctx context.Context, rc RequestContext, cfg ComputeProviderConfig) error {
 	params, err := resolveModalParams(cfg)
 	if err != nil {
 		return err
@@ -101,12 +101,12 @@ func (p *modalComputeProvider) ValidateConfig(ctx context.Context, rc RequestCon
 	return nil
 }
 
-func (p *modalComputeProvider) InvokeWorker(ctx context.Context, rc RequestContext, cfg ComputeProviderConfig) error {
+func (p *modalFunctionComputeProvider) InvokeWorker(ctx context.Context, rc RequestContext, cfg ComputeProviderConfig) error {
 	err := p.invokeWorker(ctx, rc, cfg)
 	return NewProviderError(classifyModalFailure(err), err)
 }
 
-func (p *modalComputeProvider) invokeWorker(ctx context.Context, rc RequestContext, cfg ComputeProviderConfig) error {
+func (p *modalFunctionComputeProvider) invokeWorker(ctx context.Context, rc RequestContext, cfg ComputeProviderConfig) error {
 	params, err := resolveModalParams(cfg)
 	if err != nil {
 		return err
@@ -120,14 +120,14 @@ func (p *modalComputeProvider) invokeWorker(ctx context.Context, rc RequestConte
 	})
 }
 
-func (p *modalComputeProvider) UpdateWorkerSetSize(_ context.Context, _ RequestContext, _ ComputeProviderConfig, _ int32) error {
+func (p *modalFunctionComputeProvider) UpdateWorkerSetSize(_ context.Context, _ RequestContext, _ ComputeProviderConfig, _ int32) error {
 	return errors.ErrUnsupported
 }
 
 // withFunction resolves the grant, gets a Function handle and runs do against
 // it. One failure is worth a retry: credentials Modal rejected that secret
 // storage has since rotated. Anything else is returned as-is.
-func (p *modalComputeProvider) withFunction(
+func (p *modalFunctionComputeProvider) withFunction(
 	ctx context.Context,
 	rc RequestContext,
 	params ModalParams,
@@ -170,7 +170,7 @@ func (p *modalComputeProvider) withFunction(
 	return p.runWithCredentials(ctx, accountID, params, rotated, modalCredentialDigest(rotated), do)
 }
 
-func (p *modalComputeProvider) runWithCredentials(
+func (p *modalFunctionComputeProvider) runWithCredentials(
 	ctx context.Context,
 	accountID string,
 	params ModalParams,

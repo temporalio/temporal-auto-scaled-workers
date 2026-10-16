@@ -21,7 +21,7 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 | AWS AgentCore | `aws-agentcore` | Invoke (one-off) |
 | AWS ECS | `aws-ecs` | Worker set (managed scaling) |
 | GCP Cloud Run | `gcp-cloud-run` | Worker set |
-| Modal | `modal` | Invoke (one-off) |
+| Modal Functions | `modal-function` | Invoke (one-off) |
 | Kubernetes | `k8s` | Worker set |
 | Subprocess | `subprocess` | Invoke (dev/test only) |
 
@@ -94,7 +94,7 @@ A WCI spec is a map of named scaling groups:
 }
 ```
 
-### `modal` compute provider config
+### `modal-function` compute provider config
 
 | Key | Required | Description |
 |---|---|---|
@@ -104,7 +104,7 @@ A WCI spec is a map of named scaling groups:
 | `workspace_id` | only with Vault | Modal workspace. Must be one the namespace's account has connected |
 | `version` | no | Pins the lookup to a deployed App version; omitted uses the current deployment |
 
-Modal is invoke-based, so it pairs with the `no-sync` algorithm and takes the same scaling options as AWS Lambda.
+Modal Functions are invoke-based, so it pairs with the `no-sync` algorithm and takes the same scaling options as AWS Lambda.
 
 #### Credentials
 

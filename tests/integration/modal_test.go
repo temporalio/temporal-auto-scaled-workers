@@ -46,7 +46,7 @@ func createModalTestEnv(t *testing.T) *testcore.TestEnv {
 	return testcore.NewEnv(t,
 		testcore.WithDynamicConfig(client.WorkerControllerEnabled, true),
 		testcore.WithDynamicConfig(client.WorkerControllerEnabledComputeProviders, []string{
-			string(iface.ComputeProviderTypeModal),
+			string(iface.ComputeProviderTypeModalFunction),
 		}),
 		testcore.WithDynamicConfig(dynamicconfig.VersionDrainageStatusRefreshInterval, testVersionDrainageRefreshInterval),
 		testcore.WithDynamicConfig(dynamicconfig.VersionDrainageStatusVisibilityGracePeriod, testVersionDrainageVisibilityGracePeriod),
@@ -219,7 +219,7 @@ func modalComputeConfig(overrides map[string]string) *computepb.ComputeConfig {
 		ScalingGroups: map[string]*computepb.ComputeConfigScalingGroup{
 			"default": {
 				Provider: &computepb.ComputeProvider{
-					Type:    "modal",
+					Type:    "modal-function",
 					Details: payload,
 				},
 				Scaler: &computepb.ComputeScaler{
