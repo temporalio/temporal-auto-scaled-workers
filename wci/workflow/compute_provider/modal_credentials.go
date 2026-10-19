@@ -25,7 +25,7 @@ type (
 	}
 
 	// ModalOAuthCredentials is the material for an RFC 7523 client assertion:
-	// WCI's own client identity and signing key, plus the refresh token for one
+	// TEmporal's own client identity and signing key, plus the refresh token for one
 	// account's grant on one workspace.
 	ModalOAuthCredentials struct {
 		ClientID     string
@@ -35,8 +35,7 @@ type (
 
 	// ModalSecretSource resolves the credentials for one account's grant on one
 	// workspace. Installing one opts the provider out of a single API key and
-	// into per-account grants; a deployment that serves a single Modal workspace
-	// never needs one.
+	// into per-account grants.
 	ModalSecretSource interface {
 		Credentials(ctx context.Context, accountID, workspaceID string) (*ModalCredentials, error)
 	}
@@ -50,9 +49,7 @@ type (
 )
 
 // errModalCredentialsExhausted is returned once a grant has used up its reload
-// budget. It keeps Vault reads off the data plane: Vault is not provisioned for
-// per-invocation traffic, so a grant whose credentials Modal keeps rejecting
-// stops being looked up at all until the cooldown elapses.
+// budget. It minimizes requests to Vault.
 var errModalCredentialsExhausted = errors.New("modal credential reloads exhausted; not reading secret storage again until the cooldown elapses")
 
 // modalCredentialEntry is one grant's cached credentials plus the state bounding

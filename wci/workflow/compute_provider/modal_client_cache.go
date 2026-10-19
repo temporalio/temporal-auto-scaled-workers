@@ -137,8 +137,7 @@ func (c *modalClientCache) evictIdleLocked() {
 //
 // A handle does not go stale on a timer. Pinned to a version it keeps pointing
 // at that version, which is the whole reason for pinning; unpinned, Modal routes
-// it to the App's current deployment. Either way re-resolving on a schedule
-// would either defeat the pin or change nothing.
+// it to the App's latest deployment.
 func (e *modalClientEntry) function(ctx context.Context, key modalFunctionKey) (modalFunction, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -168,7 +167,7 @@ func (e *modalClientEntry) forgetFunction(key modalFunctionKey) {
 }
 
 // reset drops every cached connection. Used by tests, and by nothing else: a
-// live process has no reason to discard connections wholesale.
+// live process has no reason to discard all connections.
 func (c *modalClientCache) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()

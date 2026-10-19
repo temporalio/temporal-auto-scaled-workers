@@ -11,8 +11,7 @@ import (
 
 // classifyModalFailure maps a Modal SDK error onto a FailureClass along two
 // axes: what kind of failure it was, and whose config caused it, read from
-// errWCIOwned. The SDK models some outcomes as its own error types and leaves
-// the rest as the underlying gRPC status, so both are consulted.
+// errWCIOwned.
 func classifyModalFailure(err error) FailureClass {
 	if err == nil {
 		return FailureUnclassified

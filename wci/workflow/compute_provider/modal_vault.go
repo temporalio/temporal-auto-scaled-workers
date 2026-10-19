@@ -27,7 +27,6 @@ type ModalVaultConfig struct {
 	// Namespace is the Vault Enterprise/HCP namespace (e.g. "admin"), if any.
 	Namespace string
 	// AuthMount is the Kubernetes auth method mount path, which is per-cell
-	// (e.g. "s-mycell").
 	AuthMount string
 	// AuthRole is the Vault role the pod's Kubernetes service account logs in as.
 	AuthRole string
