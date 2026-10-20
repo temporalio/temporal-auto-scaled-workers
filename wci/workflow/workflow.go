@@ -30,6 +30,8 @@ const (
 	RegisterTaskQueuesViaWorkersActivityTimeout  = 30 * time.Second
 	MigrateToCHASMActivityTimeout                = 15 * time.Second
 
+	maxActivateMigrationBackoff = time.Minute
+
 	periodicValidationInterval = 6 * time.Hour
 
 	errWorkerControllerDisabledMessage = "worker controller is disabled in namespace"
@@ -95,7 +97,9 @@ type (
 		metrics sdkclient.MetricsHandler
 		lock    workflow.Mutex
 
-		deleteInstance                   bool
+		deleteInstance bool
+		// migrating freezes the run while it hands over to CHASM: updates are rejected, nothing scales.
+		migrating                        bool
 		unsafeWorkerControllerEnabled    func() bool
 		unsafeMaxVersion                 func() int
 		unsafePeriodicValidationInterval func() time.Duration
@@ -171,6 +175,13 @@ func Workflow(
 
 func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	var err error
+
+	if d.PendingMigration != nil {
+		activated, err := d.awaitMigrationActivation(ctx)
+		if err != nil || !activated {
+			return err
+		}
+	}
 
 	// Create a Context to use for periodic background tasks.
 	// This allows us to cancel these tasks when the WCI is deleted.
@@ -347,13 +358,8 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	// we pass the current state as input to the next workflow execution, resulting in a new
 	// workflow history with just two initial events. This minimizes the risk of NDE (Non-Deterministic Execution)
 	// errors during server rollbacks.
-	if !d.limitPendingTaskAddSignals {
-		d.drainPendingTaskAddSignals()
-	} else {
-		d.drainTaskAddSignalChannelToQueue()
-	}
+	d.drainTaskAddSignalsForCaN()
 
-	// Ships the same args a CaN would, including the drained PendingTaskAddSignals.
 	if d.migrateToCHASM(ctx) {
 		return nil
 	}
@@ -361,36 +367,129 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	return workflow.NewContinueAsNewError(ctx, iface.WorkerControllerInstanceWorkflowType, d.WorkerControllerInstanceWorkflowArgs)
 }
 
-// migrateToCHASM reports whether CHASM now owns the WCI; on any failure the WCI stays a workflow.
+// migrateToCHASM hands the WCI to CHASM with a two-phase commit and reports whether CHASM now owns it.
+// The run stays frozen throughout; CHASM is pending, inert and invisible until activated.
 func (d *WorkflowRunner) migrateToCHASM(ctx workflow.Context) bool {
-	if !d.hasMinVersion(MigrateToCHASMVersion) {
+	if !d.hasMinVersion(MigrateToCHASMVersion) || !d.chasmMigrationGateOpen(ctx, "chasmMigrationGate") {
 		return false
 	}
-	var gateOpen bool
-	if err := workflow.MutableSideEffect(ctx, "chasmMigrationGate",
+	d.migrating = true
+	outcome := d.handOverToCHASM(ctx, workflow.GetInfo(ctx).WorkflowExecution.RunID)
+	d.migrating = outcome == migrationOutcomeMigrated
+	d.metrics.WithTags(map[string]string{wcimetrics.MigrationOutcomeTagName: outcome}).Counter(wcimetrics.CHASMMigrationCount.Name()).Inc(1)
+	return d.migrating
+}
+
+const (
+	migrationOutcomeMigrated    = "migrated"
+	migrationOutcomeFailed      = "failed"
+	migrationOutcomeUnsupported = "unsupported"
+	migrationOutcomeAborted     = "aborted"
+)
+
+func (d *WorkflowRunner) handOverToCHASM(ctx workflow.Context, token string) string {
+	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: MigrateToCHASMActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}})
+	req := func() *CHASMMigrationRequest {
+		return &CHASMMigrationRequest{Args: d.WorkerControllerInstanceWorkflowArgs, Token: token, PendingTaskAdds: d.State.PendingTaskAddSignals}
+	}
+
+	var prepared bool
+	if err := workflow.ExecuteLocalActivity(laCtx, d.a.PrepareCHASMMigration, req()).Get(ctx, &prepared); err != nil {
+		// Nothing is live on CHASM before activation, so an ambiguous prepare is safe to abort.
+		d.logger.Warn("Failed to prepare CHASM migration, staying a workflow", "error", err)
+		d.abortCHASMMigration(laCtx, req())
+		return migrationOutcomeFailed
+	}
+	if !prepared {
+		return migrationOutcomeUnsupported
+	}
+	if !d.chasmMigrationGateOpen(ctx, "chasmMigrationGateCommit") {
+		d.abortCHASMMigration(laCtx, req())
+		return migrationOutcomeAborted
+	}
+
+	// Commit point: CHASM may be live after any attempt, so only a definitive answer ends the loop,
+	// even if the run is cancelled.
+	commitCtx, _ := workflow.NewDisconnectedContext(ctx)
+	commitLACtx := workflow.WithLocalActivityOptions(commitCtx, workflow.GetLocalActivityOptions(laCtx))
+	for backoff := time.Second; ; backoff = min(2*backoff, maxActivateMigrationBackoff) {
+		d.drainTaskAddSignalsForCaN()
+		var activated bool
+		err := workflow.ExecuteLocalActivity(commitLACtx, d.a.ActivateCHASMMigration, req()).Get(commitCtx, &activated)
+		if err == nil {
+			if activated {
+				return migrationOutcomeMigrated
+			}
+			return migrationOutcomeAborted
+		}
+		d.logger.Warn("Ambiguous CHASM migration activation, retrying", "error", err)
+		if err := workflow.Sleep(commitCtx, backoff); err != nil {
+			d.logger.Warn("Activation retry interrupted", "error", err)
+		}
+	}
+}
+
+func (d *WorkflowRunner) abortCHASMMigration(laCtx workflow.Context, req *CHASMMigrationRequest) {
+	// Best effort: the pending target also expires on its own.
+	if err := workflow.ExecuteLocalActivity(laCtx, d.a.AbortCHASMMigration, req).Get(laCtx, nil); err != nil {
+		d.logger.Warn("Failed to abort CHASM migration; the target expires on its own", "error", err)
+	}
+}
+
+func (d *WorkflowRunner) chasmMigrationGateOpen(ctx workflow.Context, id string) bool {
+	var open bool
+	err := workflow.MutableSideEffect(ctx, id,
 		func(_ workflow.Context) any { return d.a.chasmMigrationGateOpen(d.DeploymentName, d.BuildId) },
 		func(a, b any) bool { return a == b }).
-		Get(&gateOpen); err != nil || !gateOpen {
-		return false
+		Get(&open)
+	return err == nil && open
+}
+
+// awaitMigrationActivation keeps a run started by CHASM → workflow migration inert until CHASM commits.
+func (d *WorkflowRunner) awaitMigrationActivation(ctx workflow.Context) (bool, error) {
+	pending := d.PendingMigration
+	var activated, aborted bool
+	validate := func(req *iface.MigrationTokenRequest) error {
+		if req == nil || req.Token != pending.Token {
+			return temporal.NewApplicationError("migration token mismatch", iface.ErrFailedPrecondition)
+		}
+		if aborted {
+			return temporal.NewApplicationError("migration aborted", iface.ErrFailedPrecondition)
+		}
+		return nil
+	}
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, iface.UpdateActivateMigration, func(_ workflow.Context, _ *iface.MigrationTokenRequest) error {
+		activated = true
+		return nil
+	}, workflow.UpdateHandlerOptions{Validator: validate}); err != nil {
+		return false, err
+	}
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, iface.UpdateAbortMigration, func(_ workflow.Context, _ *iface.MigrationTokenRequest) error {
+		aborted = true
+		return nil
+	}, workflow.UpdateHandlerOptions{Validator: func(req *iface.MigrationTokenRequest) error {
+		if err := validate(req); err != nil {
+			return err
+		}
+		if activated {
+			return temporal.NewApplicationError("migration already activated", iface.ErrFailedPrecondition)
+		}
+		return nil
+	}}); err != nil {
+		return false, err
 	}
 
-	var migrated bool
-	err := workflow.ExecuteLocalActivity(
-		workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: MigrateToCHASMActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
-		d.a.MigrateToCHASM,
-		d.WorkerControllerInstanceWorkflowArgs,
-	).Get(ctx, &migrated)
-
-	outcome := "migrated"
-	switch {
-	case err != nil:
-		outcome = "failed"
-		d.logger.Warn("Failed to migrate to CHASM, staying a workflow", "error", err)
-	case !migrated:
-		outcome = "unsupported"
+	timeout := max(pending.ExpireTime.AsTime().Sub(workflow.Now(ctx)), 0)
+	if _, err := workflow.AwaitWithTimeout(ctx, timeout, func() bool { return activated || aborted }); err != nil {
+		return false, err
 	}
-	d.metrics.WithTags(map[string]string{wcimetrics.MigrationOutcomeTagName: outcome}).Counter(wcimetrics.CHASMMigrationCount.Name()).Inc(1)
-	return err == nil && migrated
+	// Re-read the flag: an activation accepted in the same task as the expiry must still win.
+	if !activated {
+		d.logger.Info("Pending migration not activated; completing", "aborted", aborted)
+		return false, nil
+	}
+	d.PendingMigration = nil
+	return true, nil
 }
 
 func (d *WorkflowRunner) runTimerSelectorLoop(ctx workflow.Context, timerSel workflow.Selector) {
@@ -433,6 +532,9 @@ func (d *WorkflowRunner) hasQueuedTaskAdds() bool {
 func (d *WorkflowRunner) validateValidateSpec(args *iface.ValidateSpecRequest) error {
 	// Unlike validateUpdateInstance, an empty request is valid here.
 	// It allows validating the current configuration rather than a dry-run of changes.
+	if err := d.ensureNotMigrating(); err != nil {
+		return err
+	}
 	return d.ensureNotDeleted()
 }
 
@@ -497,6 +599,9 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 }
 
 func (d *WorkflowRunner) validateUpdateInstance(args *iface.UpdateWorkerControllerInstanceRequest) error {
+	if err := d.ensureNotMigrating(); err != nil {
+		return err
+	}
 	if err := d.ensureNotDeleted(); err != nil {
 		return err
 	}
@@ -611,6 +716,9 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 }
 
 func (d *WorkflowRunner) validateDeleteInstance(args *iface.DeleteWorkerControllerInstanceRequest) error {
+	if err := d.ensureNotMigrating(); err != nil {
+		return err
+	}
 	if err := d.ensureNotDeleted(); err != nil {
 		return err
 	}
@@ -993,6 +1101,14 @@ func (d *WorkflowRunner) drainTaskAddSignalChannelToQueue() {
 	}
 }
 
+func (d *WorkflowRunner) drainTaskAddSignalsForCaN() {
+	if !d.limitPendingTaskAddSignals {
+		d.drainPendingTaskAddSignals()
+	} else {
+		d.drainTaskAddSignalChannelToQueue()
+	}
+}
+
 func (d *WorkflowRunner) drainPendingTaskAddSignals() {
 	if d.State == nil || d.signalHandler == nil || d.signalHandler.taskAddSignalChannel == nil {
 		return
@@ -1046,6 +1162,13 @@ func (d *WorkflowRunner) requestContext() RequestContext {
 		DeploymentName:    d.DeploymentName,
 		DeploymentBuildID: d.BuildId,
 	}
+}
+
+func (d *WorkflowRunner) ensureNotMigrating() error {
+	if d.migrating {
+		return temporal.NewApplicationError(iface.ErrMigrationPending, iface.ErrMigrationPending)
+	}
+	return nil
 }
 
 func (d *WorkflowRunner) ensureNotDeleted() error {

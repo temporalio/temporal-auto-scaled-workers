@@ -34,6 +34,9 @@ const (
 	UpdateWorkerControllerInstance       = "update-worker-controller-instance"
 	DeleteWorkerControllerInstance       = "delete-worker-controller-instance"
 	ValidateWorkerControllerInstanceSpec = "validate-spec"
+	// Sent by CHASM to a workflow it started pending (CHASM → workflow migration).
+	UpdateActivateMigration = "activate-migration"
+	UpdateAbortMigration    = "abort-migration"
 
 	// Signals
 	SignalTaskAdd = "task-add-signal"
@@ -41,6 +44,7 @@ const (
 	// Errors
 	ErrInstanceDeleted    = "worker deployment deleted" // returned in the race condition that the deployment is deleted but the workflow is not yet closed.
 	ErrLongHistory        = "errLongHistory"            // update is not accepted until CaN happens. client should retry
+	ErrMigrationPending   = "errMigrationPending"       // frozen while handing over to CHASM. client should retry
 	ErrFailedPrecondition = "FailedPrecondition"
 
 	// ValidationResult values
@@ -76,6 +80,17 @@ type (
 		DeploymentName string                              `json:"deployment_name,omitempty"`
 		BuildId        string                              `json:"build_id,omitempty"`
 		State          *WorkerControllerInstanceLocalState `json:"state"`
+		// Set only by CHASM → workflow migration: the run stays inert until activated.
+		PendingMigration *PendingMigration `json:"pending_migration,omitempty"`
+	}
+
+	PendingMigration struct {
+		Token      string                 `json:"token"`
+		ExpireTime *timestamppb.Timestamp `json:"expire_time"`
+	}
+
+	MigrationTokenRequest struct {
+		Token string `json:"token"`
 	}
 
 	WorkerControllerInstanceLocalState struct {

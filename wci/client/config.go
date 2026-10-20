@@ -108,6 +108,11 @@ var (
 		false,
 		`WorkerControllerCHASMMigrationEnabled migrates running workflow-backed WCIs to CHASM.`,
 	)
+	WorkerControllerCHASMMigrationPendingTTL = dynamicconfig.NewGlobalDurationSetting(
+		"workercontroller.chasm.migration_pending_ttl",
+		10*time.Minute,
+		`WorkerControllerCHASMMigrationPendingTTL is how long a migration target waits, inert, for the source to activate it before aborting itself. It must exceed the source's activation retries.`,
+	)
 	WorkerControllerCHASMMigrationRolloutPercent = dynamicconfig.NewNamespaceIntSetting(
 		"workercontroller.chasm.migration_rollout_percent",
 		0,

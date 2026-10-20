@@ -195,19 +195,43 @@ func (a *Activities) chasmMigrationGateOpen(deploymentName, buildID string) bool
 	return dynamicconfig.RolloutAccepts([]byte(deploymentName+"\x00"+buildID), client.WorkerControllerCHASMMigrationRolloutPercent.Get(a.dc)(ns))
 }
 
-// MigrateToCHASM creates the CHASM WCI from workflow state; false means stay a workflow.
-func (a *Activities) MigrateToCHASM(ctx context.Context, args *iface.WorkerControllerInstanceWorkflowArgs) (bool, error) {
+// CHASMMigrationRequest carries one step of the two-phase handover to CHASM.
+type CHASMMigrationRequest struct {
+	Args            *iface.WorkerControllerInstanceWorkflowArgs `json:"args"`
+	Token           string                                      `json:"token"`
+	PendingTaskAdds []*iface.SignalTaskAddRequest               `json:"pending_task_adds,omitempty"`
+}
+
+// PrepareCHASMMigration creates the pending CHASM WCI; false means stay a workflow.
+func (a *Activities) PrepareCHASMMigration(ctx context.Context, req *CHASMMigrationRequest) (bool, error) {
 	if a.migrationClient == nil {
 		return false, nil
 	}
-	err := a.migrationClient.CreateFromWorkflowState(ctx, args)
+	expireTime := time.Now().Add(client.WorkerControllerCHASMMigrationPendingTTL.Get(a.dc)())
+	err := a.migrationClient.CreateFromWorkflowState(ctx, req.Args, req.Token, expireTime)
 	if stderrors.Is(err, client.ErrProviderNotSupportedOnCHASM) {
 		return false, nil
 	}
-	if err != nil {
-		return false, err
+	return err == nil, err
+}
+
+// ActivateCHASMMigration commits; false means the target is gone, so the workflow keeps the WCI.
+func (a *Activities) ActivateCHASMMigration(ctx context.Context, req *CHASMMigrationRequest) (bool, error) {
+	if a.migrationClient == nil {
+		return false, nil
 	}
-	return true, nil
+	err := a.migrationClient.ActivateMigration(ctx, req.Args, req.Token, req.PendingTaskAdds)
+	if stderrors.Is(err, client.ErrMigrationAborted) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (a *Activities) AbortCHASMMigration(ctx context.Context, req *CHASMMigrationRequest) error {
+	if a.migrationClient == nil {
+		return nil
+	}
+	return a.migrationClient.AbortMigration(ctx, req.Args, req.Token)
 }
 
 // workerControllerEnabled checks whether the Worker Controller Instance (WCI) feature is enabled for the current
