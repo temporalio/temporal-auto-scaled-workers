@@ -1072,7 +1072,6 @@ func TestInvokeWorkersToRegisterTaskQueues_RateLimitFailsClosed(t *testing.T) {
 	}
 }
 
-
 func TestValidateSpecSkipsProviderValidationForUnchangedGroups(t *testing.T) {
 	failingConfig, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{"illegal_field": "x"})
 	require.NoError(t, err)

@@ -11,6 +11,7 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
 	updatepb "go.temporal.io/api/update/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -220,6 +221,9 @@ func (d *workflowClient) UpdateWorkerControllerInstance(
 	}
 
 	if failure := outcome.GetFailure(); failure != nil {
+		if err := migrationPendingError(failure); err != nil {
+			return nil, err
+		}
 		if appFailureInfo := failure.GetApplicationFailureInfo(); appFailureInfo != nil {
 			if appFailureInfo.Type == "InvalidArgument" {
 				return nil, serviceerror.NewInvalidArgument(failure.Message)
@@ -273,6 +277,9 @@ func (d *workflowClient) ValidateWorkerControllerInstanceSpec(
 			}
 		} else if outcome != nil {
 			if failure := outcome.GetFailure(); failure != nil {
+				if err := migrationPendingError(failure); err != nil {
+					return err
+				}
 				return serviceerror.NewInvalidArgument(failure.Message)
 			}
 			return nil
@@ -352,9 +359,20 @@ func (d *workflowClient) DeleteWorkerControllerInstance(
 	}
 
 	if failure := outcome.GetFailure(); failure != nil {
+		if err := migrationPendingError(failure); err != nil {
+			return err
+		}
 		return serviceerror.NewInternal(failure.Message)
 	}
 	return nil
+}
+
+// migrationPendingError maps a frozen workflow's rejection onto the retryable sentinel.
+func migrationPendingError(failure *failurepb.Failure) error {
+	if failure.GetApplicationFailureInfo().GetType() != iface.ErrMigrationPending {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrMigrationPending, serviceerror.NewUnavailable(failure.GetMessage()))
 }
 
 func (d *workflowClient) SignalTaskAddEvent(
