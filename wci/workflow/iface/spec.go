@@ -253,7 +253,49 @@ func (c *WorkerControllerInstanceSpec) validate() error {
 			return serviceerror.NewInvalidArgumentf("entry %s: catch-all serves no task types; other groups list workflow, activity and nexus wherever it applies", k)
 		}
 	}
+	return c.validateRegionsServeSameTaskTypes()
+}
+
+// validateRegionsServeSameTaskTypes requires every listed region to serve the same task types, so a failover can't
+// leave a type without compute.
+func (c *WorkerControllerInstanceSpec) validateRegionsServeSameTaskTypes() error {
+	regionIds := c.listedRegionIds()
+	if len(regionIds) < 2 {
+		return nil
+	}
+	firstRegionId := regionIds[0]
+	firstTaskTypes := c.taskTypesServedInRegion(firstRegionId)
+	for _, regionId := range regionIds[1:] {
+		if taskTypes := c.taskTypesServedInRegion(regionId); !slices.Equal(taskTypes, firstTaskTypes) {
+			return serviceerror.NewInvalidArgumentf("region %s serves task types %v, but region %s serves %v; every listed region must serve the same task types",
+				firstRegionId, firstTaskTypes, regionId, taskTypes)
+		}
+	}
 	return nil
+}
+
+// listedRegionIds returns every region ID that some scaling group lists, sorted.
+func (c *WorkerControllerInstanceSpec) listedRegionIds() []string {
+	var regionIds []string
+	for _, v := range c.ScalingGroupSpecs {
+		for _, regionId := range v.RegionIds {
+			if !slices.Contains(regionIds, regionId) {
+				regionIds = append(regionIds, regionId)
+			}
+		}
+	}
+	slices.Sort(regionIds)
+	return regionIds
+}
+
+func (c *WorkerControllerInstanceSpec) taskTypesServedInRegion(regionId string) []enumspb.TaskQueueType {
+	var taskTypes []enumspb.TaskQueueType
+	for _, t := range scalableTaskQueueTypes {
+		if c.ScalingGroupKeyForTaskQueueType(t, regionId) != "" {
+			taskTypes = append(taskTypes, t)
+		}
+	}
+	return taskTypes
 }
 
 func (config ScalingAlgorithmConfig) GetInt64Field(key string, defaultValue int64) int64 {

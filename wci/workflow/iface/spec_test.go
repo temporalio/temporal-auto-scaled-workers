@@ -313,6 +313,52 @@ func TestValidateRejectsCatchAllThatServesNothing(t *testing.T) {
 	}
 }
 
+func TestValidateRegionsServeSameTaskTypes(t *testing.T) {
+	gcp := []string{"gcp-us-central1"}
+	tests := []struct {
+		name    string
+		groups  map[string]ScalingGroupSpec
+		wantErr string
+	}{
+		{name: "same task types per region", groups: map[string]ScalingGroupSpec{"east": testGroup(east, wf, act), "west": testGroup(west, wf, act)}},
+		{name: "catch-all per region", groups: map[string]ScalingGroupSpec{"east": testGroup(east), "west": testGroup(west)}},
+		{name: "only one region listed", groups: map[string]ScalingGroupSpec{"west": testGroup(west)}},
+		{name: "group without regions fills a region's gap", groups: map[string]ScalingGroupSpec{"east": testGroup(east, wf, act), "west": testGroup(west, wf), "any-act": testGroup(nil, act)}},
+		{name: "one group listing both regions", groups: map[string]ScalingGroupSpec{"both": testGroup(eastWest)}},
+		{
+			name:    "region missing a task type",
+			groups:  map[string]ScalingGroupSpec{"east": testGroup(east, wf, act), "west": testGroup(west, wf)},
+			wantErr: "region " + testRegionEast + " serves task types [Activity Workflow], but region " + testRegionWest + " serves [Workflow]",
+		},
+		{
+			name:    "first region missing a task type",
+			groups:  map[string]ScalingGroupSpec{"east": testGroup(east, wf), "west": testGroup(west, wf, act)},
+			wantErr: "region " + testRegionEast + " serves task types [Workflow], but region " + testRegionWest + " serves [Activity Workflow]",
+		},
+		{
+			name:    "catch-all serves nexus but explicit group doesn't",
+			groups:  map[string]ScalingGroupSpec{"east": testGroup(east), "west": testGroup(west, wf, act)},
+			wantErr: "region " + testRegionEast + " serves task types [Activity Nexus Workflow], but region " + testRegionWest + " serves [Activity Workflow]",
+		},
+		{
+			name:    "third region differs",
+			groups:  map[string]ScalingGroupSpec{"east-west": testGroup(eastWest, wf), "gcp": testGroup(gcp, act)},
+			wantErr: "region " + testRegionEast + " serves task types [Workflow], but region gcp-us-central1 serves [Activity]",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&WorkerControllerInstanceSpec{ScalingGroupSpecs: tc.groups}).validate()
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
 func TestValidateRejectsRegionIds(t *testing.T) {
 	spec := &WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]ScalingGroupSpec{
 		"any":  testGroup(nil, act),
