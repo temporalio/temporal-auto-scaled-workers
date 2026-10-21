@@ -14,6 +14,7 @@ type (
 	// activity request type. Compute providers receive it to act on behalf of a
 	// specific namespace/deployment (e.g. resolving the GCP impersonation chain).
 	RequestContext struct {
+		NamespaceID       string `json:"namespace_id,omitempty"`
 		NamespaceName     string `json:"namespace_name"`
 		DeploymentName    string `json:"deployment_name"`
 		DeploymentBuildID string `json:"deployment_build_id"`

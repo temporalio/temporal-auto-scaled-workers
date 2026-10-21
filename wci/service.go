@@ -10,7 +10,9 @@ import (
 	"google.golang.org/grpc/reflection"
 
 	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/auto-scaled-workers/wci/computeservice"
 	wciLog "go.temporal.io/auto-scaled-workers/wci/log"
+	"go.temporal.io/server/api/workercontrollerservice/v1"
 	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/log/tag"
@@ -49,9 +51,10 @@ type (
 
 		perNamespaceWorkerManager *worker.PerNamespaceWorkerManager
 
-		server       *grpc.Server
-		grpcListener net.Listener
-		healthServer *health.Server
+		server        *grpc.Server
+		grpcListener  net.Listener
+		healthServer  *health.Server
+		computeServer *computeservice.Server
 	}
 )
 
@@ -69,6 +72,7 @@ func NewService(
 	server *grpc.Server,
 	grpcListener net.Listener,
 	healthServer *health.Server,
+	computeServer *computeservice.Server,
 ) (*Service, error) {
 	workerControllerServiceResolver, err := membershipMonitor.GetResolver(ServiceName)
 	if err != nil {
@@ -89,9 +93,10 @@ func NewService(
 
 		perNamespaceWorkerManager: perNamespaceWorkerManager,
 
-		server:       server,
-		grpcListener: grpcListener,
-		healthServer: healthServer,
+		server:        server,
+		grpcListener:  grpcListener,
+		healthServer:  healthServer,
+		computeServer: computeServer,
 	}
 	return s, nil
 }
@@ -117,6 +122,7 @@ func (s *Service) Start() {
 	)
 
 	healthpb.RegisterHealthServer(s.server, s.healthServer)
+	workercontrollerservice.RegisterWorkerControllerComputeServiceServer(s.server, s.computeServer)
 	s.healthServer.SetServingStatus(string(ServiceName), healthpb.HealthCheckResponse_SERVING)
 
 	reflection.Register(s.server)
