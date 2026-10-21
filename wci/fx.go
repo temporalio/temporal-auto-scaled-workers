@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/health"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	"go.temporal.io/auto-scaled-workers/wci/computeservice"
 	"go.temporal.io/auto-scaled-workers/wci/workercomponent"
 	instancewf "go.temporal.io/auto-scaled-workers/wci/workflow"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
@@ -61,6 +62,7 @@ var Module = fx.Options(
 	fx.Provide(GrpcServerProvider),
 	fx.Provide(resource.GrpcListenerProvider),
 	fx.Provide(health.NewServer),
+	fx.Provide(computeservice.NewServer),
 	fx.Provide(NewService),
 	fx.Provide(PerNamespaceWorkerManagerProvider),
 	fx.Provide(func() computeprovider.GCPImpersonationChainProvider {
