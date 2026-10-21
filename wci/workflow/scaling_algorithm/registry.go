@@ -111,6 +111,10 @@ type (
 		// invoke-only algorithms emit an InvokeWorker and leave Status untouched. The caller
 		// applies the actions and persists the Status.
 		TaskQueueRegistrationActions(ctx context.Context, config iface.ScalingAlgorithmConfig, status iface.ScalingAlgorithmStatus) (*TaskQueueRegistrationResponse, error)
+
+		// InactiveGroupActions returns the actions that scale down a group serving no task types where the worker
+		// controller runs, plus the status to persist. Invoke-only algorithms have nothing to release and return neither.
+		InactiveGroupActions(ctx context.Context, config iface.ScalingAlgorithmConfig, status iface.ScalingAlgorithmStatus) (*MetricsPollResponse, error)
 	}
 )
 

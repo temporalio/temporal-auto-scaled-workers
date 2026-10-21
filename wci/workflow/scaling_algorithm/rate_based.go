@@ -803,6 +803,20 @@ func (a *scalingAlgorithmRateBased) TaskQueueRegistrationActions(ctx context.Con
 	}, nil
 }
 
+// InactiveGroupActions scales the group's worker set to 0. Only the zero count is kept, so the first poll after the
+// group serves here again scales it back up to min_count instead of assuming initial_count workers.
+func (a *scalingAlgorithmRateBased) InactiveGroupActions(ctx context.Context, _ iface.ScalingAlgorithmConfig, status iface.ScalingAlgorithmStatus) (*MetricsPollResponse, error) {
+	updatedState := iface.ScalingAlgorithmStatus{stateRateBasedWorkerCount: int64(0)}
+	if cleanRateBasedState(ctx, status).GetInt64Field(stateRateBasedWorkerCount, 0) <= 0 {
+		return &MetricsPollResponse{Status: updatedState}, nil
+	}
+	size := int32(0)
+	return &MetricsPollResponse{
+		Actions: []ScalingAction{{Action: ActionTypeUpdateWorkerSetSize, Count: &size}},
+		Status:  updatedState,
+	}, nil
+}
+
 func estimatedRateBasedPerConsumerCapacity(config iface.ScalingAlgorithmConfig, state iface.ScalingAlgorithmStatus) float64 {
 	fallback := config.GetFloat64Field(configRateBasedInitialPerConsumerCapacityKey, configRateBasedInitialPerConsumerCapacityDefault)
 	if estimate, ok := state[stateRateBasedEWMAPerConsumerCapacity].(float64); ok && isPositiveFinite(estimate) {

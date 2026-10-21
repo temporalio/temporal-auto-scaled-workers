@@ -93,6 +93,10 @@ func (a *deferredScalingDecisionTestAlgorithm) TaskQueueRegistrationActions(_ co
 	return &scalingalgorithm.TaskQueueRegistrationResponse{Status: status}, nil
 }
 
+func (a *deferredScalingDecisionTestAlgorithm) InactiveGroupActions(context.Context, iface.ScalingAlgorithmConfig, iface.ScalingAlgorithmStatus) (*scalingalgorithm.MetricsPollResponse, error) {
+	return &scalingalgorithm.MetricsPollResponse{}, nil
+}
+
 func (a *deferredScalingDecisionTestAlgorithm) ProcessTaskAdd(
 	_ context.Context,
 	_ iface.ScalingAlgorithmConfig,

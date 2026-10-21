@@ -638,8 +638,28 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	for key, entry := range req.Spec.ScalingGroupSpecs {
 		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key, a.regionID())
 		if len(scalingGroupEffectiveTaskTypes) == 0 {
-			// Scoped to other regions, or other groups serve all of its task types here. Its status is dropped, since
-			// it would be stale by the time the group serves here again.
+			// Scoped to other regions, or other groups serve all of its task types here. Worker-set algorithms scale down
+			// workers left from when it served, e.g. before a failover.
+			scalingAlgo, scalingConfig, err := a.getScalingAlgorithmAndConfig(ctx, entry)
+			if err != nil {
+				logger.Error("failed to get scaling algorithm", "error", err)
+				updatedScalingStatus[key] = req.ScalingStatus[key]
+				continue
+			}
+			response, err := scalingAlgo.InactiveGroupActions(ctx, scalingConfig, req.ScalingStatus[key])
+			if err != nil {
+				logger.Error("failed to process inactive scaling group", "scaling_group_key", key, "error", err)
+				updatedScalingStatus[key] = req.ScalingStatus[key]
+				continue
+			}
+			// Save the status the algorithm returns; invoke-only algorithms return none and start fresh when the group serves here again.
+			if response.Status != nil {
+				updatedScalingStatus[key] = response.Status
+			}
+			for _, act := range response.Actions {
+				act.ScalingGroupKey = key
+				actions = append(actions, act)
+			}
 			continue
 		}
 		scalingStatus := req.ScalingStatus[key]

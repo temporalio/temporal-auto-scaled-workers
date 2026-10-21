@@ -505,6 +505,28 @@ func TestPullStatsSkipsGroupsShadowedByRegionScopedGroups(t *testing.T) {
 
 }
 
+func TestPullStatsScalesDownWorkerSetsOutsideRegion(t *testing.T) {
+	east := rateBasedWorkerSetGroup(t, enumspb.TASK_QUEUE_TYPE_WORKFLOW, 1)
+	east.RegionIds = []string{testRegionEast}
+	spec := &iface.WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{"east": east}}
+
+	t.Run("workers left from serving in another region", func(t *testing.T) {
+		resp := runPullStatsInRegion(t, spec, map[string]iface.ScalingAlgorithmStatus{"east": {"worker_count": int64(2)}}, testRegionWest)
+		require.Len(t, resp.Actions, 1)
+		assert.Equal(t, "east", resp.Actions[0].ScalingGroupKey)
+		assert.Equal(t, scalingalgorithm.ActionTypeUpdateWorkerSetSize, resp.Actions[0].Action)
+		require.NotNil(t, resp.Actions[0].Count)
+		assert.Equal(t, int32(0), *resp.Actions[0].Count)
+		assert.Equal(t, int64(0), resp.UpdatedScalingStatus["east"].GetInt64Field("worker_count", -1))
+	})
+
+	t.Run("no workers left", func(t *testing.T) {
+		resp := runPullStatsInRegion(t, spec, nil, testRegionWest)
+		assert.Empty(t, resp.Actions)
+		assert.Equal(t, int64(0), resp.UpdatedScalingStatus["east"].GetInt64Field("worker_count", -1), "the zero count is kept for when it serves again")
+	})
+}
+
 func TestValidateSpecRejectsRegionIdsWithoutRegionID(t *testing.T) {
 	tests := []struct {
 		name           string
