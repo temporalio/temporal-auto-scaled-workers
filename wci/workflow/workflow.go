@@ -3,6 +3,7 @@ package workflow
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"time"
 
@@ -635,6 +636,12 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		d.lock.Unlock()
 	}()
 
+	// Again under the lock: two updates holding the same token can both pass the validator.
+	if args.ConflictToken != nil && !bytes.Equal(args.ConflictToken, d.State.ConflictToken) {
+		return nil, temporal.NewApplicationError("conflict token mismatch", iface.ErrFailedPrecondition)
+	}
+	nextToken := nextConflictToken(d.State.ConflictToken, workflow.GetCurrentUpdateInfo(ctx).ID)
+
 	updatedSpec, scalingGroupsWithoutComputeProviderChanges, err := iface.BuildUpdatedSpec(d.State.Spec, args)
 	if err != nil {
 		d.updateMetric(wcimetrics.UpdateTypeUpdateInstance).recordFailure(wcimetrics.ErrorTypeBuildUpdatedSpecFailure)
@@ -646,7 +653,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		// that way no orphaned workflows stick around and waste cycles
 		if len(updatedSpec.ScalingGroupSpecs) == 0 {
 			d.markDeleted()
-			d.State.ConflictToken = args.ConflictToken
+			d.State.ConflictToken = nextToken
 			d.State.Spec = updatedSpec
 
 			d.updateMetric(wcimetrics.UpdateTypeUpdateInstance).recordSuccess()
@@ -708,7 +715,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 
 		d.State.ValidationStatus = iface.NewValidationStatusSuccess(validationTime)
 		d.signalVersionWorkflow(ctx)
-		d.State.ConflictToken = args.ConflictToken
+		d.State.ConflictToken = nextToken
 		d.State.Spec = updatedSpec
 	}
 
@@ -1133,6 +1140,15 @@ func (d *WorkflowRunner) drainPendingTaskAddSignals() {
 		d.State.PendingTaskAddSignals = append(d.State.PendingTaskAddSignals, req)
 		d.stateChanged = true
 	}
+}
+
+// nextConflictToken is unique per update and replay-stable; workflow.Now alone repeats for updates
+// handled in the same workflow task.
+func nextConflictToken(prev []byte, updateID string) []byte {
+	h := sha256.New()
+	h.Write(prev)
+	h.Write([]byte(updateID))
+	return h.Sum(nil)[:16]
 }
 
 func (d *WorkflowRunner) shouldContinueAsNew(ctx workflow.Context) bool {
