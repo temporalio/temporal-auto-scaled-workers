@@ -6,7 +6,7 @@ losing scale-ups or spec.
 
 A CHASM WCI calls its provider either inside history (`workercontroller.chasm.in_process_compute_providers`,
 default `test-invoke`, `test-worker-set`) or on the WCI process through `WorkerControllerComputeService`
-(`workercontroller.chasm.remote_compute_providers`, default empty). Both are global; in-process takes
+(`workercontroller.chasm.remote_compute_providers`, default empty). Both are namespace-scoped; in-process takes
 precedence. A WCI whose spec names a provider in neither list is created as, or stays, a workflow.
 
 ## Gates
