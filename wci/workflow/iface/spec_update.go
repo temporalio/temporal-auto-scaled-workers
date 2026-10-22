@@ -112,3 +112,20 @@ func BuildUpdatedSpec(current *WorkerControllerInstanceSpec, args *UpdateWorkerC
 
 	return &WorkerControllerInstanceSpec{ScalingGroupSpecs: newGroups}, nil
 }
+
+func (c *WorkerControllerInstanceSpec) ScalingGroupsWithIdenticalComputeProvider(other *WorkerControllerInstanceSpec) []string {
+	if c == nil || other == nil {
+		return nil
+	}
+	var keys []string
+	for _, key := range workflow.DeterministicKeys(other.ScalingGroupSpecs) {
+		if group, ok := c.ScalingGroupSpecs[key]; ok && group.Compute.equal(other.ScalingGroupSpecs[key].Compute) {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+func (c ComputeProviderSpec) equal(other ComputeProviderSpec) bool {
+	return c.ProviderType == other.ProviderType && proto.Equal(c.Config, other.Config)
+}

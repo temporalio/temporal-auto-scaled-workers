@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 )
 
@@ -64,6 +65,42 @@ func TestBuildUpdatedSpecRegionIds(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, updated.ScalingGroupSpecs["group"].RegionIds, "masked empty region ids must unset them")
+}
+
+func TestScalingGroupsWithIdenticalComputeProvider(t *testing.T) {
+	compute := func(data string) ComputeProviderSpec {
+		return ComputeProviderSpec{ProviderType: ComputeProviderTypeTestInvoke, Config: &commonpb.Payload{Data: []byte(data)}}
+	}
+	group := func(c ComputeProviderSpec, taskTypes ...enumspb.TaskQueueType) ScalingGroupSpec {
+		return ScalingGroupSpec{TaskTypes: taskTypes, Compute: c}
+	}
+	before := &WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]ScalingGroupSpec{
+		"same":           group(compute("a"), wf),
+		"tasks-changed":  group(compute("a"), wf),
+		"config-changed": group(compute("a"), wf),
+		"type-changed":   group(compute("a"), wf),
+		"nexus-changed":  group(compute("a"), wf),
+		"config-removed": group(compute("a"), wf),
+		"removed":        group(compute("a"), wf),
+	}}
+	typeChanged := compute("a")
+	typeChanged.ProviderType = ComputeProviderTypeTestWorkerSet
+	nexusChanged := compute("a")
+	nexusChanged.NexusEndpoint = "endpoint"
+	after := &WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]ScalingGroupSpec{
+		"same":           group(compute("a"), wf),
+		"tasks-changed":  group(compute("a"), act),
+		"config-changed": group(compute("b"), wf),
+		"type-changed":   group(typeChanged, wf),
+		"nexus-changed":  group(nexusChanged, wf),
+		"config-removed": group(ComputeProviderSpec{ProviderType: ComputeProviderTypeTestInvoke}, wf),
+		"new":            group(compute("a"), wf),
+	}}
+
+	assert.Equal(t, []string{"nexus-changed", "same", "tasks-changed"}, before.ScalingGroupsWithIdenticalComputeProvider(after), "provider validation doesn't use the nexus endpoint")
+	var noSpec *WorkerControllerInstanceSpec
+	assert.Nil(t, noSpec.ScalingGroupsWithIdenticalComputeProvider(after))
+	assert.Nil(t, before.ScalingGroupsWithIdenticalComputeProvider(nil))
 }
 
 func TestCloneCopiesRegionIds(t *testing.T) {

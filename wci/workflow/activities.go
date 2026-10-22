@@ -58,6 +58,8 @@ type (
 		RequestContext
 
 		Spec *iface.WorkerControllerInstanceSpec `json:"spec"`
+		// SkipProviderValidation lists scaling groups whose compute provider is identical to the stored one, so their ValidateConfig is skipped.
+		SkipProviderValidation []string `json:"skip_provider_validation,omitempty"`
 	}
 
 	InvokeWorkerActivityRequest struct {
@@ -215,9 +217,12 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 			recordError(wcimetrics.ErrorTypeInvalidRequest)
 			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
-		if err := provider.ValidateConfig(timeoutCtx, req.RequestContext, config); err != nil {
-			recordError(wcimetrics.ErrorTypeInvalidRequest)
-			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
+		// Skipping groups with an identical compute provider keeps an unrelated update from depending on that provider being reachable.
+		if !slices.Contains(req.SkipProviderValidation, key) {
+			if err := provider.ValidateConfig(timeoutCtx, req.RequestContext, config); err != nil {
+				recordError(wcimetrics.ErrorTypeInvalidRequest)
+				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
+			}
 		}
 
 		if entry.Scaling != nil {

@@ -180,6 +180,7 @@ type enabledTestEnv struct {
 
 	pullStatsCalled          bool
 	validateSpecCalled       bool
+	validateSpecRequests     []*ValidateSpecRequest
 	handleTaskAddSignalCalls int
 }
 
@@ -238,7 +239,10 @@ func newEnabledTestEnv(t *testing.T, workflowVersion WorkerControllerInstanceWor
 		Run(func(mock.Arguments) { h.pullStatsCalled = true })
 	h.env.OnActivity(activities.ValidateSpec, mock.Anything, mock.Anything).
 		Return(nil).
-		Run(func(mock.Arguments) { h.validateSpecCalled = true })
+		Run(func(args mock.Arguments) {
+			h.validateSpecCalled = true
+			h.validateSpecRequests = append(h.validateSpecRequests, args.Get(1).(*ValidateSpecRequest))
+		})
 	h.env.OnActivity(activities.InvokeWorkersToRegisterTaskQueues, mock.Anything, mock.Anything).
 		Return(&InvokeWorkersToRegisterTaskQueuesResponse{}, nil)
 	h.env.OnActivity(activities.HandleTaskAddSignal, mock.Anything, mock.Anything).
@@ -364,6 +368,73 @@ func TestVersionWorkflow_UpdateHandlersGatedOnEnabled(t *testing.T) {
 				require.NoError(t, updateErr)
 			}
 			require.Equal(t, tc.wantValidateSpecCalled, h.validateSpecCalled)
+		})
+	}
+}
+
+// Test that updates and dry runs only skip provider validation for groups whose compute provider is identical to the stored one.
+func TestVersionWorkflow_ValidateSpecSkipsIdenticalComputeProvider(t *testing.T) {
+	newGroup := iface.ScalingGroupSpec{
+		TaskTypes: []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_ACTIVITY},
+		Compute:   iface.ComputeProviderSpec{ProviderType: iface.ComputeProviderTypeTestWorkerSet},
+	}
+	changedConfig, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{"changed": true})
+	require.NoError(t, err)
+	upsert := func(key string, spec iface.ScalingGroupSpec, mask ...string) map[string]iface.ScalingGroupSpecUpdate {
+		return map[string]iface.ScalingGroupSpecUpdate{key: {Spec: spec, UpdateMask: mask}}
+	}
+
+	tests := []struct {
+		name       string
+		updateName string
+		updateArgs any
+		wantSkip   []string
+	}{
+		{
+			name:       "update adding a group skips the existing one",
+			updateName: iface.UpdateWorkerControllerInstance,
+			updateArgs: &iface.UpdateWorkerControllerInstanceRequest{UpsertScalingGroups: upsert("test", newGroup)},
+			wantSkip:   []string{"workflow"},
+		},
+		{
+			name:       "update changing a group's compute provider validates it",
+			updateName: iface.UpdateWorkerControllerInstance,
+			updateArgs: &iface.UpdateWorkerControllerInstanceRequest{UpsertScalingGroups: upsert("workflow",
+				iface.ScalingGroupSpec{Compute: iface.ComputeProviderSpec{Config: changedConfig}}, "provider.details")},
+		},
+		{
+			name:       "update changing only task types skips the group",
+			updateName: iface.UpdateWorkerControllerInstance,
+			updateArgs: &iface.UpdateWorkerControllerInstanceRequest{UpsertScalingGroups: upsert("workflow", newGroup, "task_queue_types")},
+			wantSkip:   []string{"workflow"},
+		},
+		{
+			name:       "dry run without changes validates every group",
+			updateName: iface.ValidateWorkerControllerInstanceSpec,
+			updateArgs: &iface.ValidateSpecRequest{},
+		},
+		{
+			name:       "dry run with changes skips the existing group",
+			updateName: iface.ValidateWorkerControllerInstanceSpec,
+			updateArgs: &iface.ValidateSpecRequest{UpsertScalingGroups: upsert("test", newGroup)},
+			wantSkip:   []string{"workflow"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newEnabledTestEnv(t, CheckWorkerControllerEnabledVersion, true)
+
+			var updateErr, deleteErr error
+			h.sendUpdate(time.Millisecond, tc.updateName, "update-1", tc.updateArgs, &updateErr)
+			h.sendUpdate(2*time.Millisecond, iface.DeleteWorkerControllerInstance, "delete-1", &iface.DeleteWorkerControllerInstanceRequest{}, &deleteErr)
+
+			h.env.ExecuteWorkflow(h.testWorkflow, h.args)
+
+			require.True(t, h.env.IsWorkflowCompleted())
+			require.NoError(t, updateErr)
+			require.Len(t, h.validateSpecRequests, 1)
+			require.Equal(t, tc.wantSkip, h.validateSpecRequests[0].SkipProviderValidation)
 		})
 	}
 }

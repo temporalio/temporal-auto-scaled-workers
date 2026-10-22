@@ -405,6 +405,7 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 		return nil, err
 	}
 
+	requestModifiesScalingGroups := len(args.RemoveScalingGroups) > 0 || len(args.UpsertScalingGroups) > 0
 	updatedSpec, err := iface.BuildUpdatedSpec(d.State.Spec, &iface.UpdateWorkerControllerInstanceRequest{
 		Identity:            args.Identity,
 		UpsertScalingGroups: args.UpsertScalingGroups,
@@ -423,18 +424,24 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 			return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 		}
 
+		// A dry run with changes skips groups whose compute provider is unchanged; one without changes validates every group.
+		var skipProviderValidation []string
+		if requestModifiesScalingGroups {
+			skipProviderValidation = d.State.Spec.ScalingGroupsWithIdenticalComputeProvider(updatedSpec)
+		}
 		if err := workflow.ExecuteActivity(
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.ValidateSpec,
 			&ValidateSpecRequest{
-				RequestContext: d.requestContext(),
-				Spec:           updatedSpec,
+				RequestContext:         d.requestContext(),
+				Spec:                   updatedSpec,
+				SkipProviderValidation: skipProviderValidation,
 			},
 		).Get(ctx, nil); err != nil {
 			d.updateMetric(wcimetrics.UpdateTypeValidateSpec).recordActivityError(err)
 
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
-				if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
+				if !requestModifiesScalingGroups {
 					d.State.ValidationStatus = iface.NewValidationStatusFailed(workflow.Now(ctx), appErr.Message())
 					d.signalVersionWorkflow(ctx)
 				}
@@ -445,7 +452,7 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 		}
 	}
 
-	if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
+	if !requestModifiesScalingGroups {
 		d.State.ValidationStatus = iface.NewValidationStatusSuccess(workflow.Now(ctx))
 		d.signalVersionWorkflow(ctx)
 	}
@@ -518,8 +525,9 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.ValidateSpec,
 			&ValidateSpecRequest{
-				RequestContext: d.requestContext(),
-				Spec:           updatedSpec,
+				RequestContext:         d.requestContext(),
+				Spec:                   updatedSpec,
+				SkipProviderValidation: d.State.Spec.ScalingGroupsWithIdenticalComputeProvider(updatedSpec),
 			},
 		).Get(ctx, nil); err != nil {
 			d.updateMetric(wcimetrics.UpdateTypeUpdateInstance).recordActivityError(err)
