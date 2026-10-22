@@ -33,13 +33,20 @@ func runValidateSpecWorkflow(
 	env := suite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(testWorkflow)
 
+	var validateSpecRequests []*ValidateSpecRequest
 	env.OnActivity(activities.ValidateSpec, mock.Anything, mock.Anything).
 		Return(nil).
-		Run(func(mock.Arguments) { validateSpecCalled = true })
+		Run(func(args mock.Arguments) {
+			validateSpecCalled = true
+			validateSpecRequests = append(validateSpecRequests, args.Get(1).(*ValidateSpecRequest))
+		})
 
 	env.ExecuteWorkflow(testWorkflow, args)
 
 	require.True(t, env.IsWorkflowCompleted())
+	for _, req := range validateSpecRequests {
+		require.Nil(t, req.ScalingGroupsToSkipProviderValidation, "a new version validates every group")
+	}
 	return env.GetWorkflowError(), validateSpecCalled
 }
 
