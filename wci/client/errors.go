@@ -34,7 +34,9 @@ func isFailedPreconditionOrNotFound(err error) bool {
 
 func isRetryableQueryError(err error) bool {
 	var internalErr *serviceerror.Internal
-	return api.IsRetryableError(err) && !errors.As(err, &internalErr)
+	// Buffer fills when queries race an in-flight workflow task (e.g. the version workflow's status sync).
+	return api.IsRetryableError(err) && !errors.As(err, &internalErr) ||
+		err.Error() == consts.ErrConsistentQueryBufferExceeded.Error()
 }
 
 func isInvalidArgumentError(err error) bool {
