@@ -50,6 +50,7 @@ type (
 
 const (
 	ComputeProviderTypeAWSLambda     ComputeProviderType = "aws-lambda"
+	ComputeProviderTypeAWSSNS        ComputeProviderType = "aws-sns"
 	ComputeProviderTypeAWSAgentCore  ComputeProviderType = "aws-agentcore"
 	ComputeProviderTypeAWSECS        ComputeProviderType = "aws-ecs"
 	ComputeProviderTypeSubprocess    ComputeProviderType = "subprocess"
@@ -64,6 +65,7 @@ const (
 
 var validComputeProviderTypes = map[string]ComputeProviderType{
 	string(ComputeProviderTypeAWSLambda):     ComputeProviderTypeAWSLambda,
+	string(ComputeProviderTypeAWSSNS):         ComputeProviderTypeAWSSNS,
 	string(ComputeProviderTypeAWSAgentCore):  ComputeProviderTypeAWSAgentCore,
 	string(ComputeProviderTypeAWSECS):        ComputeProviderTypeAWSECS,
 	string(ComputeProviderTypeSubprocess):    ComputeProviderTypeSubprocess,
