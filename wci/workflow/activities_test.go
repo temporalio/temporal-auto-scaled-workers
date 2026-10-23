@@ -1096,3 +1096,47 @@ func TestComputeProviderErrorType(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateSpecSkipsProviderValidationForListedGroups(t *testing.T) {
+	failingConfig, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{"illegal_field": "x"})
+	require.NoError(t, err)
+	okConfig, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{})
+	require.NoError(t, err)
+	group := func(providerType iface.ComputeProviderType, config *commonpb.Payload) iface.ScalingGroupSpec {
+		return iface.ScalingGroupSpec{Compute: iface.ComputeProviderSpec{ProviderType: providerType, Config: config}}
+	}
+
+	tests := []struct {
+		name    string
+		bad     iface.ScalingGroupSpec
+		skip    []string
+		wantErr string
+	}{
+		{"failing provider validation", group(iface.ComputeProviderTypeTestWorkerSet, failingConfig), nil, "bad: illegal_field found in config"},
+		{"failing provider validation skipped", group(iface.ComputeProviderTypeTestWorkerSet, failingConfig), []string{"bad"}, ""},
+		{"provider not enabled still fails when skipped", group(iface.ComputeProviderTypeTestInvoke, okConfig), []string{"bad"}, "bad: Could not instantiate compute provider"},
+	}
+	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			activities := NewActivities(ns, NewTestDynamicConfigCollection(), nil)
+			var suite testsuite.WorkflowTestSuite
+			env := suite.NewTestActivityEnvironment()
+			env.RegisterActivity(activities.ValidateSpec)
+
+			_, err := env.ExecuteActivity(activities.ValidateSpec, &ValidateSpecRequest{
+				Spec: &iface.WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{
+					"good": group(iface.ComputeProviderTypeTestWorkerSet, okConfig),
+					"bad":  tc.bad,
+				}},
+				SkipProviderValidation: tc.skip,
+			})
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
