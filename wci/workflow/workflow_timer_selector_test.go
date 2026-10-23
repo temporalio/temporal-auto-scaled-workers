@@ -35,7 +35,7 @@ func newTimerSelectorTest(t *testing.T) *timerSelectorTest {
 	rt := &timerSelectorTest{
 		t:          t,
 		env:        suite.NewTestWorkflowEnvironment(),
-		activities: NewActivities(nil, nil, nil),
+		activities: NewActivities(nil, nil, nil, nil),
 		args: &iface.WorkerControllerInstanceWorkflowArgs{
 			NamespaceName:  "test-namespace",
 			DeploymentName: "test-deployment",
@@ -171,7 +171,7 @@ func TestContinueAsNewCarriesBufferedTaskAddSignals(t *testing.T) {
 
 // Processing frees a slot before the pull, so a signal pulled into a full queue isn't dropped.
 func TestProcessTaskAddBatchDoesNotDropFromFullQueue(t *testing.T) {
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	args := newSignalQueueTestArgs(queuedTaskAddSignals(maxPendingTaskAddSignals)...)
 
 	testWorkflow := func(ctx sdkworkflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) ([]string, error) {
@@ -215,7 +215,7 @@ func TestProcessTaskAddBatchDoesNotDropFromFullQueue(t *testing.T) {
 
 // A delete landing mid-batch must stop further task-add processing, so nothing scales up after it.
 func TestProcessTaskAddBatchStopsAfterDelete(t *testing.T) {
-	activities := NewActivities(nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil)
 	args := newSignalQueueTestArgs(queuedTaskAddSignals(5)...)
 
 	var runner *WorkflowRunner
