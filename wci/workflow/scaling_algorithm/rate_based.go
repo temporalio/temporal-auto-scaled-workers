@@ -810,9 +810,8 @@ func (a *scalingAlgorithmRateBased) InactiveGroupActions(ctx context.Context, _ 
 	if cleanRateBasedState(ctx, status).GetInt64Field(stateRateBasedWorkerCount, 0) <= 0 {
 		return &MetricsPollResponse{Status: updatedState}, nil
 	}
-	size := int32(0)
 	return &MetricsPollResponse{
-		Actions: []ScalingAction{{Action: ActionTypeUpdateWorkerSetSize, Count: &size}},
+		Actions: []ScalingAction{{Action: ActionTypeUpdateWorkerSetSize, Count: new(int32(0))}},
 		Status:  updatedState,
 	}, nil
 }
