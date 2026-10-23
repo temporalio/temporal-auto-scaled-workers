@@ -140,16 +140,16 @@ const (
 )
 
 const (
-	SkippedReasonSpecMissing          SkippedReason = "spec_missing"
-	SkippedReasonWciDisabled          SkippedReason = "wci_disabled"
-	SkippedReasonInvalidRequest       SkippedReason = "invalid_request"
-	SkippedReasonAlgorithmUnavailable SkippedReason = "algorithm_unavailable"
-	SkippedReasonAlgorithmFailed      SkippedReason = "algorithm_failed"
-	SkippedReasonNoMatchingScaler     SkippedReason = "no_matching_scaler"
-	SkippedReasonInvalidCount         SkippedReason = "invalid_count"
-	SkippedReasonNoSourceRequest      SkippedReason = "no_source_request"
-	SkippedReasonTaskTypeMismatch     SkippedReason = "task_type_mismatch"
-	SkippedReasonQueueFull            SkippedReason = "queue_full"
+	SkippedReasonSpecMissing            SkippedReason = "spec_missing"
+	SkippedReasonWciDisabled            SkippedReason = "wci_disabled"
+	SkippedReasonInvalidRequest         SkippedReason = "invalid_request"
+	SkippedReasonAlgorithmUnavailable   SkippedReason = "algorithm_unavailable"
+	SkippedReasonAlgorithmFailed        SkippedReason = "algorithm_failed"
+	SkippedReasonNoMatchingScalingGroup SkippedReason = "no_matching_scaling_group"
+	SkippedReasonInvalidCount           SkippedReason = "invalid_count"
+	SkippedReasonNoSourceRequest        SkippedReason = "no_source_request"
+	SkippedReasonTaskTypeMismatch       SkippedReason = "task_type_mismatch"
+	SkippedReasonQueueFull              SkippedReason = "queue_full"
 	// SkippedReasonNone is the sentinel used when a metric's fixed tag schema requires the
 	// skip_reason tag on a non-skip path.
 	SkippedReasonNone SkippedReason = "none"

@@ -543,8 +543,8 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 
 	key := req.Spec.ScalingGroupKeyForTaskQueueType(req.Request.TaskQueueType, a.regionID())
 	if key == "" {
-		// no scaler configuration for the task type found, so nothing to do
-		recordSkipped(wcimetrics.SkippedReasonNoMatchingScaler)
+		// no scaling group serves the task type here, so nothing to do
+		recordSkipped(wcimetrics.SkippedReasonNoMatchingScalingGroup)
 		return &HandleTaskAddSignalActivityResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 	}
 	entry := req.Spec.ScalingGroupSpecs[key]

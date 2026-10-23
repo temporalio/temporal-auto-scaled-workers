@@ -104,7 +104,7 @@ func TestScalingGroupKeyForTaskQueueTypeAgreesWithEffectiveTaskTypes(t *testing.
 	types := []enumspb.TaskQueueType{enumspb.TASK_QUEUE_TYPE_UNSPECIFIED, wf, act, nex}
 	for _, groups := range specs {
 		spec := &WorkerControllerInstanceSpec{ScalingGroupSpecs: groups}
-		require.NoError(t, spec.validate())
+		require.NoError(t, spec.Validate())
 		for _, region := range []string{"", testRegionEast, testRegionWest, "gcp-us-central1"} {
 			for key := range groups {
 				effective := spec.EffectiveTaskTypesForGroup(key, region)
@@ -171,7 +171,7 @@ func TestEmptyRegionIdsMeansNoRegions(t *testing.T) {
 		}}
 	}
 	none, empty := withRegions(nil), withRegions([]string{})
-	require.NoError(t, empty.validate())
+	require.NoError(t, empty.Validate())
 	for _, region := range []string{"", testRegionEast, testRegionWest} {
 		for _, tt := range []enumspb.TaskQueueType{wf, act, nex} {
 			assert.Equal(t, none.ScalingGroupKeyForTaskQueueType(tt, region), empty.ScalingGroupKeyForTaskQueueType(tt, region), "region %q, task type %s", region, tt)
@@ -185,7 +185,7 @@ func TestEmptyRegionIdsMeansNoRegions(t *testing.T) {
 		"a": testGroup(nil, wf),
 		"b": {TaskTypes: []enumspb.TaskQueueType{wf}, RegionIds: []string{}, Compute: ComputeProviderSpec{ProviderType: ComputeProviderTypeTestInvoke}},
 	}}
-	err := collision.validate()
+	err := collision.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "appears in more than one entry", "groups with no and empty region lists are checked together")
 }
@@ -276,7 +276,7 @@ func TestValidateRegionScopedGroups(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := (&WorkerControllerInstanceSpec{ScalingGroupSpecs: tc.groups}).validate()
+			err := (&WorkerControllerInstanceSpec{ScalingGroupSpecs: tc.groups}).Validate()
 			if tc.wantErr == "" {
 				assert.NoError(t, err)
 				return
@@ -302,7 +302,7 @@ func TestValidateRejectsCatchAllThatServesNothing(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := (&WorkerControllerInstanceSpec{ScalingGroupSpecs: tc.groups}).validate()
+			err := (&WorkerControllerInstanceSpec{ScalingGroupSpecs: tc.groups}).Validate()
 			if !tc.wantErr {
 				assert.NoError(t, err)
 				return
@@ -348,7 +348,7 @@ func TestValidateRegionsServeSameTaskTypes(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := (&WorkerControllerInstanceSpec{ScalingGroupSpecs: tc.groups}).validate()
+			err := (&WorkerControllerInstanceSpec{ScalingGroupSpecs: tc.groups}).Validate()
 			if tc.wantErr == "" {
 				assert.NoError(t, err)
 				return
@@ -357,17 +357,6 @@ func TestValidateRegionsServeSameTaskTypes(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
-}
-
-func TestValidateRejectsRegionIds(t *testing.T) {
-	spec := &WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]ScalingGroupSpec{
-		"any":  testGroup(nil, act),
-		"east": testGroup(east, wf),
-	}}
-	require.ErrorContains(t, spec.Validate(), "entry east: region_ids is not supported yet")
-
-	spec.ScalingGroupSpecs["east"] = testGroup([]string{}, wf)
-	require.NoError(t, spec.Validate(), "empty region_ids means no regions")
 }
 
 func TestBuildUpdatedSpecRegionIds(t *testing.T) {

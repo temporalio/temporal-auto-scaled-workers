@@ -104,11 +104,9 @@ A WCI spec is a map of named scaling groups:
 ```
 
 Each group covers a set of `task_types`, or none to act as a catch-all, and optionally `region_ids`.
-Region-scoped scaling isn't enabled yet: any spec that sets `region_ids` is rejected until support is complete.
 A group with `region_ids` is only used by a worker controller whose regionId is one of them, which in a replicated namespace is where the namespace is active; groups without them apply in any region.
 In the example above, workflow tasks use the `us-west-2` Lambda while the namespace is active in `aws-us-west-2`, and the `us-east-1` Lambda anywhere else.
 The worker controller gets its region from a `*client.StaticConfig` that the server it runs in provides through fx; without one, specs that set `region_ids` are rejected.
-Region IDs use the form `<provider>-<region>`, e.g. `aws-us-east-1`.
 
 For each task type, the serving group is the first match in this order:
 
@@ -117,7 +115,7 @@ For each task type, the serving group is the first match in this order:
 3. A group without `region_ids` that lists the task type
 4. The catch-all group without `region_ids`
 
-Within each region, and among groups without `region_ids` (including the catch-all group without any region set), a task type may appear in at most one group and at most one group may be a catch-all. A catch-all must serve at least one task type where it applies, so a spec whose other groups list workflow, activity and nexus everywhere the catch-all applies is rejected. The `scaling` block is optional; omitting it leaves the group with the default scaling configuration for the given compute provider.
+Within each region, and among groups without `region_ids` (including the catch-all group without any region set), a task type may appear in at most one group and at most one group may be a catch-all. A catch-all must serve at least one task type where it applies, so a spec whose other groups list workflow, activity and nexus everywhere the catch-all applies is rejected. Every region that some group lists must serve the same task types, so a failover can't leave a task type without compute. The `scaling` block is optional; omitting it leaves the group with the default scaling configuration for the given compute provider.
 
 ### `no-sync` algorithm config
 

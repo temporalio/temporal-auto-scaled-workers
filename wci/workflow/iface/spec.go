@@ -163,19 +163,6 @@ func (c *WorkerControllerInstanceSpec) EffectiveTaskTypesForGroup(scalingGroupId
 
 // Validate ensures at least one entry, no duplicate task types per region, and each entry has valid spec.
 func (c *WorkerControllerInstanceSpec) Validate() error {
-	if err := c.validate(); err != nil {
-		return err
-	}
-	// Region-scoped scaling isn't implemented yet, so reject any config using region_ids until then.
-	for k, v := range c.ScalingGroupSpecs {
-		if len(v.RegionIds) > 0 {
-			return serviceerror.NewInvalidArgumentf("entry %s: region_ids is not supported yet", k)
-		}
-	}
-	return nil
-}
-
-func (c *WorkerControllerInstanceSpec) validate() error {
 	if c == nil {
 		return serviceerror.NewInvalidArgumentf("spec must be provided")
 	}
@@ -253,22 +240,15 @@ func (c *WorkerControllerInstanceSpec) validate() error {
 			return serviceerror.NewInvalidArgumentf("entry %s: catch-all serves no task types; other groups list workflow, activity and nexus wherever it applies", k)
 		}
 	}
-	return c.validateRegionsServeSameTaskTypes()
-}
-
-// validateRegionsServeSameTaskTypes requires every listed region to serve the same task types, so a failover can't
-// leave a type without compute.
-func (c *WorkerControllerInstanceSpec) validateRegionsServeSameTaskTypes() error {
-	regionIds := c.listedRegionIds()
-	if len(regionIds) < 2 {
-		return nil
-	}
-	firstRegionId := regionIds[0]
-	firstTaskTypes := c.taskTypesServedInRegion(firstRegionId)
-	for _, regionId := range regionIds[1:] {
-		if taskTypes := c.taskTypesServedInRegion(regionId); !slices.Equal(taskTypes, firstTaskTypes) {
-			return serviceerror.NewInvalidArgumentf("region %s serves task types %v, but region %s serves %v; every listed region must serve the same task types",
-				firstRegionId, firstTaskTypes, regionId, taskTypes)
+	// Every listed region must serve the same task types, so a failover can't leave a type without compute.
+	if regionIds := c.listedRegionIds(); len(regionIds) > 1 {
+		firstRegionId := regionIds[0]
+		firstTaskTypes := c.taskTypesServedInRegion(firstRegionId)
+		for _, regionId := range regionIds[1:] {
+			if taskTypes := c.taskTypesServedInRegion(regionId); !slices.Equal(taskTypes, firstTaskTypes) {
+				return serviceerror.NewInvalidArgumentf("region %s serves task types %v, but region %s serves %v; every listed region must serve the same task types",
+					firstRegionId, firstTaskTypes, regionId, taskTypes)
+			}
 		}
 	}
 	return nil

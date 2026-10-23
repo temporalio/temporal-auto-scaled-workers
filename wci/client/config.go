@@ -18,7 +18,7 @@ type (
 	}
 
 	StaticConfig struct {
-		RegionID string // <cloud provider>-<region>, e.g. "aws-us-west-2"
+		RegionID string
 	}
 )
 
