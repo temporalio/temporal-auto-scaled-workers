@@ -19,6 +19,9 @@ const (
 	backendWorkflow = "workflow"
 	backendCHASM    = "chasm"
 
+	// Bounds re-probing when the WCI keeps moving between backends.
+	maxUpdateAttempts = 3
+
 	signalBackendCacheSize = 10_000
 	signalBackendCacheTTL  = 5 * time.Minute
 
@@ -27,7 +30,7 @@ const (
 )
 
 type routingClient struct {
-	workflow Client
+	workflow workflowBackend
 	chasm    ChasmBackend
 
 	routingEnabled  dynamicconfig.BoolPropertyFnWithNamespaceFilter
@@ -41,7 +44,7 @@ type routingClient struct {
 
 var _ Client = (*routingClient)(nil)
 
-func newRoutingClient(workflow Client, chasm ChasmBackend, dc *dynamicconfig.Collection, metricsHandler metrics.Handler) *routingClient {
+func newRoutingClient(workflow workflowBackend, chasm ChasmBackend, dc *dynamicconfig.Collection, metricsHandler metrics.Handler) *routingClient {
 	return &routingClient{
 		workflow:        workflow,
 		chasm:           chasm,
@@ -155,29 +158,68 @@ func (r *routingClient) UpdateWorkerControllerInstance(
 	upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
 	removeScalingGroups []string,
 ) (*iface.UpdateWorkerControllerInstanceResponse, error) {
-	if r.useCHASM(ns) {
-		onCHASM, err := r.chasm.WorkerControllerInstanceExists(ctx, ns, version)
+	if !r.useCHASM(ns) {
+		r.served("update", backendWorkflow)
+		return r.workflow.UpdateWorkerControllerInstance(ctx, ns, version, conflictToken, identity, upsertScalingGroups, removeScalingGroups)
+	}
+	var err error
+	for range maxUpdateAttempts {
+		var resp *iface.UpdateWorkerControllerInstanceResponse
+		var retry bool
+		resp, retry, err = r.updateOnce(ctx, ns, version, conflictToken, identity, upsertScalingGroups, removeScalingGroups)
+		if !retry {
+			return resp, err
+		}
+	}
+	return nil, err
+}
+
+// updateOnce reports retry when the run it probed closed before the update; a handover moved the WCI.
+func (r *routingClient) updateOnce(
+	ctx context.Context,
+	ns *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+	conflictToken []byte,
+	identity string,
+	upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
+	removeScalingGroups []string,
+) (*iface.UpdateWorkerControllerInstanceResponse, bool, error) {
+	onCHASM, err := r.chasm.WorkerControllerInstanceExists(ctx, ns, version)
+	if err != nil {
+		return nil, false, err
+	}
+	create := false
+	if !onCHASM {
+		onWorkflow, err := r.workflow.WorkerControllerInstanceExists(ctx, ns, version)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		create := false
-		if !onCHASM {
-			onWorkflow, err := r.workflow.WorkerControllerInstanceExists(ctx, ns, version)
-			if err != nil {
-				return nil, err
+		if onWorkflow {
+			r.served("update", backendWorkflow)
+			resp, err := r.workflow.updateRunningWorkerControllerInstance(ctx, ns, version, conflictToken, identity, upsertScalingGroups, removeScalingGroups)
+			if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+				return nil, true, err
 			}
-			create = !onWorkflow && r.createOnCHASM(ns, version)
+			return resp, false, err
 		}
-		if onCHASM || create {
-			resp, err := r.chasm.UpdateWorkerControllerInstance(ctx, ns, version, conflictToken, identity, upsertScalingGroups, removeScalingGroups)
-			if !create || !errors.Is(err, ErrProviderNotSupportedOnCHASM) {
-				r.served("update", backendCHASM)
-				return resp, err
+		create = r.createOnCHASM(ns, version)
+		if !create {
+			// A workflow → CHASM handover may have activated between the probes.
+			if onCHASM, err = r.chasm.WorkerControllerInstanceExists(ctx, ns, version); err != nil {
+				return nil, false, err
 			}
 		}
 	}
+	if onCHASM || create {
+		resp, err := r.chasm.UpdateWorkerControllerInstance(ctx, ns, version, conflictToken, identity, upsertScalingGroups, removeScalingGroups)
+		if !create || !errors.Is(err, ErrProviderNotSupportedOnCHASM) {
+			r.served("update", backendCHASM)
+			return resp, false, err
+		}
+	}
 	r.served("update", backendWorkflow)
-	return r.workflow.UpdateWorkerControllerInstance(ctx, ns, version, conflictToken, identity, upsertScalingGroups, removeScalingGroups)
+	resp, err := r.workflow.UpdateWorkerControllerInstance(ctx, ns, version, conflictToken, identity, upsertScalingGroups, removeScalingGroups)
+	return resp, false, err
 }
 
 func (r *routingClient) createOnCHASM(ns *namespace.Namespace, version *deploymentpb.WorkerDeploymentVersion) bool {
@@ -220,7 +262,14 @@ func (r *routingClient) DeleteWorkerControllerInstance(ctx context.Context, ns *
 		}
 	}
 	r.served("delete", backendWorkflow)
-	return r.workflow.DeleteWorkerControllerInstance(ctx, ns, version, identity)
+	if err := r.workflow.DeleteWorkerControllerInstance(ctx, ns, version, identity); err != nil || !r.useCHASM(ns) {
+		return err
+	}
+	// The workflow reports a missing run as success; a handover may have moved the WCI to CHASM meanwhile.
+	if err := r.chasm.DeleteWorkerControllerInstance(ctx, ns, version, identity); !fallsThrough(err) {
+		return err
+	}
+	return nil
 }
 
 // SignalTaskAddEvent tries the cached backend first so steady state is one call.

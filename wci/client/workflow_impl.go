@@ -169,6 +169,32 @@ func (d *workflowClient) UpdateWorkerControllerInstance(
 	identity string,
 	upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
 	removeScalingGroups []string,
+) (*iface.UpdateWorkerControllerInstanceResponse, error) {
+	return d.updateWorkerControllerInstance(ctx, namespaceEntry, version, conflictToken, identity, upsertScalingGroups, removeScalingGroups, true)
+}
+
+// updateRunningWorkerControllerInstance never starts a run: NotFound if none is running.
+func (d *workflowClient) updateRunningWorkerControllerInstance(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+	conflictToken []byte,
+	identity string,
+	upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
+	removeScalingGroups []string,
+) (*iface.UpdateWorkerControllerInstanceResponse, error) {
+	return d.updateWorkerControllerInstance(ctx, namespaceEntry, version, conflictToken, identity, upsertScalingGroups, removeScalingGroups, false)
+}
+
+func (d *workflowClient) updateWorkerControllerInstance(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+	conflictToken []byte,
+	identity string,
+	upsertScalingGroups map[string]iface.ScalingGroupSpecUpdate,
+	removeScalingGroups []string,
+	start bool,
 ) (_ *iface.UpdateWorkerControllerInstanceResponse, retErr error) {
 	//revive:disable-next-line:defer
 	defer d.convertAndRecordError("UpdateWorkerControllerInstance", version, &retErr, namespaceEntry.Name(), identity)()
@@ -183,8 +209,10 @@ func (d *workflowClient) UpdateWorkerControllerInstance(
 	if err := d.checkWorkerControllerEnabled(ctx, namespaceEntry); err != nil {
 		return nil, err
 	}
-	if err := d.checkInstanceCount(ctx, namespaceEntry, version); err != nil {
-		return nil, err
+	if start {
+		if err := d.checkInstanceCount(ctx, namespaceEntry, version); err != nil {
+			return nil, err
+		}
 	}
 
 	requestID := uuid.NewString()
@@ -203,19 +231,32 @@ func (d *workflowClient) UpdateWorkerControllerInstance(
 		BuildId:        version.BuildId,
 	}
 
-	outcome, err := updateWorkflowWithStart(
-		ctx,
-		d.historyClient,
-		namespaceEntry,
-		d.controllerTaskQueueName,
-		iface.WorkerControllerInstanceWorkflowType,
-		workflowID,
-		startInput,
-		iface.UpdateWorkerControllerInstance,
-		updateReq,
-		identity,
-		requestID,
-	)
+	var outcome *updatepb.Outcome
+	var err error
+	if start {
+		outcome, err = updateWorkflowWithStart(
+			ctx,
+			d.historyClient,
+			namespaceEntry,
+			d.controllerTaskQueueName,
+			iface.WorkerControllerInstanceWorkflowType,
+			workflowID,
+			startInput,
+			iface.UpdateWorkerControllerInstance,
+			updateReq,
+			identity,
+			requestID,
+		)
+	} else {
+		var updatePayload *commonpb.Payloads
+		if updatePayload, err = sdk.PreferProtoDataConverter.ToPayloads(updateReq); err != nil {
+			return nil, err
+		}
+		outcome, err = updateWorkflow(ctx, d.historyClient, namespaceEntry, workflowID, &updatepb.Request{
+			Input: &updatepb.Input{Name: iface.UpdateWorkerControllerInstance, Args: updatePayload},
+			Meta:  &updatepb.Meta{UpdateId: requestID, Identity: identity},
+		})
+	}
 	if err != nil {
 		return nil, err
 	}

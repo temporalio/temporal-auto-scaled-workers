@@ -21,16 +21,41 @@ import (
 type fakeBackend struct {
 	Client
 
-	exists    bool
-	err       error
-	listItems []*WorkerControllerInstanceSummary
-	listNext  []byte
-	calls     []string
+	exists bool
+	// existsSeq, when set, answers successive probes (the last repeats): a handover between probes.
+	existsSeq  []bool
+	err        error
+	runningErr error
+	deleteErrs []error
+	listItems  []*WorkerControllerInstanceSummary
+	listNext   []byte
+	calls      []string
 }
 
 func (f *fakeBackend) WorkerControllerInstanceExists(context.Context, *namespace.Namespace, *deploymentpb.WorkerDeploymentVersion) (bool, error) {
 	f.calls = append(f.calls, "exists")
+	if len(f.existsSeq) > 0 {
+		f.exists = f.existsSeq[0]
+		if len(f.existsSeq) > 1 {
+			f.existsSeq = f.existsSeq[1:]
+		}
+	}
 	return f.exists, nil
+}
+
+func (f *fakeBackend) updateRunningWorkerControllerInstance(context.Context, *namespace.Namespace, *deploymentpb.WorkerDeploymentVersion, []byte, string, map[string]iface.ScalingGroupSpecUpdate, []string) (*iface.UpdateWorkerControllerInstanceResponse, error) {
+	f.calls = append(f.calls, "update-running")
+	return &iface.UpdateWorkerControllerInstanceResponse{}, f.runningErr
+}
+
+func (f *fakeBackend) DeleteWorkerControllerInstance(context.Context, *namespace.Namespace, *deploymentpb.WorkerDeploymentVersion, string) error {
+	f.calls = append(f.calls, "delete")
+	if len(f.deleteErrs) == 0 {
+		return nil
+	}
+	err := f.deleteErrs[0]
+	f.deleteErrs = f.deleteErrs[1:]
+	return err
 }
 
 func (f *fakeBackend) DescribeWorkerControllerInstance(context.Context, *namespace.Namespace, *deploymentpb.WorkerDeploymentVersion) (*iface.QueryDescribeWorkerControllerInstanceResponse, []byte, error) {
@@ -114,7 +139,90 @@ func TestRouting_UpdatePlacement(t *testing.T) {
 			chasm := &fakeBackend{exists: tc.onCHASM, err: tc.chasmErr}
 			_, err := newTestRouter(workflow, chasm, tc.settings).UpdateWorkerControllerInstance(t.Context(), newTestNamespace(), newTestVersion(), nil, "id", nil, nil)
 			require.NoError(t, err)
-			require.Equal(t, tc.wantCHASM, !slices.Contains(workflow.calls, "update"))
+			require.Equal(t, tc.wantCHASM, !slices.Contains(workflow.calls, "update") && !slices.Contains(workflow.calls, "update-running"))
+		})
+	}
+}
+
+// A handover between the router's probes must not start a second workflow run.
+func TestRouting_UpdateDuringHandover(t *testing.T) {
+	notFound := serviceerror.NewNotFound("workflow execution already completed")
+	tests := []struct {
+		name          string
+		chasm         *fakeBackend
+		workflow      *fakeBackend
+		wantCHASM     []string
+		wantWorkflow  []string
+		wantErrNotNil bool
+	}{
+		{
+			// CHASM probe sees a pending target, the workflow probe sees the run closed: re-probe CHASM.
+			name:         "to_chasm_activates_between_probes",
+			chasm:        &fakeBackend{existsSeq: []bool{false, true}},
+			workflow:     &fakeBackend{},
+			wantCHASM:    []string{"exists", "exists", "update"},
+			wantWorkflow: []string{"exists"},
+		},
+		{
+			// The probed run closes before the update lands: start over, find it on CHASM.
+			name:         "to_chasm_activates_after_probes",
+			chasm:        &fakeBackend{existsSeq: []bool{false, true}},
+			workflow:     &fakeBackend{exists: true, runningErr: notFound},
+			wantCHASM:    []string{"exists", "exists", "update"},
+			wantWorkflow: []string{"exists", "update-running"},
+		},
+		{
+			name:          "keeps_moving",
+			chasm:         &fakeBackend{},
+			workflow:      &fakeBackend{exists: true, runningErr: notFound},
+			wantCHASM:     []string{"exists", "exists", "exists"},
+			wantWorkflow:  []string{"exists", "update-running", "exists", "update-running", "exists", "update-running"},
+			wantErrNotNil: true,
+		},
+		{
+			name:         "new_on_workflow",
+			chasm:        &fakeBackend{},
+			workflow:     &fakeBackend{},
+			wantCHASM:    []string{"exists", "exists"},
+			wantWorkflow: []string{"exists", "update"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := newTestRouter(tc.workflow, tc.chasm, nil).UpdateWorkerControllerInstance(t.Context(), newTestNamespace(), newTestVersion(), nil, "id", nil, nil)
+			require.Equal(t, tc.wantErrNotNil, err != nil, err)
+			require.Equal(t, tc.wantCHASM, tc.chasm.calls)
+			require.Equal(t, tc.wantWorkflow, tc.workflow.calls)
+		})
+	}
+}
+
+func TestRouting_DeleteRechecksCHASM(t *testing.T) {
+	notFound := serviceerror.NewNotFound("missing")
+	other := errors.New("boom")
+	tests := []struct {
+		name         string
+		chasmErrs    []error
+		workflowErrs []error
+		settings     dynamicconfig.StaticClient
+		wantCHASM    int
+		wantErr      error
+	}{
+		{name: "served_by_chasm", wantCHASM: 1},
+		// Pending target at the first probe, activated by the re-check.
+		{name: "handover_between_calls", chasmErrs: []error{notFound}, wantCHASM: 2},
+		{name: "absent_everywhere", chasmErrs: []error{notFound, notFound}, wantCHASM: 2},
+		{name: "recheck_error", chasmErrs: []error{notFound, other}, wantCHASM: 2, wantErr: other},
+		{name: "workflow_error", chasmErrs: []error{notFound}, workflowErrs: []error{other}, wantCHASM: 1, wantErr: other},
+		{name: "routing_disabled", settings: dynamicconfig.StaticClient{WorkerControllerCHASMRoutingEnabled.Key(): false}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workflow := &fakeBackend{deleteErrs: tc.workflowErrs}
+			chasm := &fakeBackend{deleteErrs: tc.chasmErrs}
+			err := newTestRouter(workflow, chasm, tc.settings).DeleteWorkerControllerInstance(t.Context(), newTestNamespace(), newTestVersion(), "id")
+			require.ErrorIs(t, err, tc.wantErr)
+			require.Len(t, chasm.calls, tc.wantCHASM)
 		})
 	}
 }

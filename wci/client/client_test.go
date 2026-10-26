@@ -89,6 +89,20 @@ func TestUpdateWorkerControllerInstance_DisabledNamespace(t *testing.T) {
 	require.Contains(t, err.Error(), "worker controller is disabled")
 }
 
+// The router's update for a probed run must not start one: plain update, NotFound passes through.
+func TestUpdateRunningWorkerControllerInstance_NeverStarts(t *testing.T) {
+	d := newTestClient(t, true)
+	history := d.historyClient.(*historyservicemock.MockHistoryServiceClient)
+	history.EXPECT().
+		UpdateWorkflowExecution(gomock.Any(), gomock.Any()).
+		Return(nil, serviceerror.NewNotFound("workflow execution already completed"))
+
+	_, err := d.updateRunningWorkerControllerInstance(t.Context(), newTestNamespace(), newTestVersion(), nil, "test-identity", nil, nil)
+
+	var notFound *serviceerror.NotFound
+	require.ErrorAs(t, err, &notFound)
+}
+
 // Test that a client can't issue a ValidateWorkerControllerInstanceSpec if WCI is disabled
 func TestValidateWorkerControllerInstanceSpec_DisabledNamespace(t *testing.T) {
 	d := newTestClient(t, false)
