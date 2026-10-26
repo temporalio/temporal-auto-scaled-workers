@@ -191,7 +191,8 @@ func (a *Activities) chasmMigrationGateOpen(deploymentName, buildID string, manu
 	if manual {
 		return true
 	}
-	if !client.WorkerControllerCHASMMigrationEnabled.Get(a.dc)(ns) {
+	// Guards high-traffic namespaces against cell-wide migration settings.
+	if client.WorkerControllerCHASMMigrationManualOnly.Get(a.dc)(ns) || !client.WorkerControllerCHASMMigrationEnabled.Get(a.dc)(ns) {
 		return false
 	}
 	// Rollout key: do not change while a rollout is in progress.

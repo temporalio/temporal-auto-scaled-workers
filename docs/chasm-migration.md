@@ -18,6 +18,7 @@ All namespace-scoped unless noted; the gates default off.
 | `workercontroller.chasm.routing_enabled` | Calls try CHASM first, then the workflow. Required by every gate below |
 | `workercontroller.chasm.creation_enabled` + `creation_rollout_percent` | New WCIs are created on CHASM. Percent is keyed on deployment name + build ID |
 | `workercontroller.chasm.migration_enabled` + `migration_rollout_percent` | Workflow WCIs move to CHASM at their next continue-as-new. Also needs `workercontroller.instanceWorkflowVersion` ≥ 5 |
+| `workercontroller.chasm.migration_manual_only` | Turns automatic migration off whatever `migration_enabled` / `migration_rollout_percent` say; `migrate-to-chasm` still works. Guards a namespace against cell-wide migration settings |
 | `workercontroller.chasm.migration_pending_ttl` (global, 10m) | How long a pending migration target waits for activation before aborting itself. Must exceed the source's activation retries |
 | `workercontroller.chasm.workflow_task_queue` (global) | Queue a WCI migrated back to the workflow starts on. Must match the WCI client's queue: cloud `temporal-sys-worker-controller-per-ns-tq`, OSS `temporal-sys-per-ns-tq` |
 
@@ -31,15 +32,28 @@ Per namespace, in order; watch the [metrics](#metrics) between steps.
    `backend="chasm"`.
 3. `instanceWorkflowVersion: 5`, wait until running WCIs have continued-as-new onto it.
 4. `migration_enabled: true`, `migration_rollout_percent` 1 → 10 → 100. Each WCI moves at its next
-   continue-as-new (any spec update or task-add signal forces one). Watch
+   continue-as-new (any spec update forces one; task-adds and polls don't). Watch
    `worker_controller_instance_chasm_migration_count{migration_outcome}`.
+
+### High-traffic namespaces
+
+Move WCIs one at a time instead of by percent:
+
+1. `routing_enabled: true` and `migration_manual_only: true` for the namespace (set manual-only
+   before any cell-wide `migration_enabled` / percent reaches it). `instanceWorkflowVersion: 5` as above.
+2. Per WCI: `tdbg -n <namespace> worker-controller migrate-to-chasm --deployment-name <name> --build-id <id>`.
+   It returns once the workflow accepts the request; the handover runs at the continue-as-new it
+   forces. It is rejected if routing is off or the run predates version 5, and fails `NotFound` if no
+   workflow runs the WCI (already on CHASM). A failed handover isn't retried; run it again.
+3. Check `worker_controller_instance_chasm_migration_count{migration_outcome}` and that the WCI
+   answers with `backend="chasm"` before moving the next one.
 
 ## Reversal
 
 Per WCI, CHASM → workflow:
 
-1. Close the migration gate for the WCI (`migration_enabled: false` or lower the percent),
-   otherwise the new workflow migrates back at its first continue-as-new.
+1. Close the migration gate for the WCI (`migration_enabled: false`, lower the percent, or
+   `migration_manual_only: true`), otherwise the new workflow migrates back at its first continue-as-new.
 2. Run `tdbg -n <namespace> worker-controller migrate-to-workflow --deployment-name <name> --build-id <id>`
    (AdminService `MigrateWorkerControllerInstance`). The CHASM execution stops accepting work,
    starts the workflow from its state, and closes as MIGRATED; the router falls through to the

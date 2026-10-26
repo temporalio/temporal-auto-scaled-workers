@@ -445,3 +445,40 @@ func TestPendingRunCompletesOnExpiryOrAbort(t *testing.T) {
 		env.AssertNotCalled(t, "PullStats", mock.Anything, mock.Anything)
 	})
 }
+
+func TestCHASMMigrationGateMatrix(t *testing.T) {
+	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
+	for _, routing := range []bool{false, true} {
+		for _, manualOnly := range []bool{false, true} {
+			for _, enabled := range []bool{false, true} {
+				for _, percent := range []int{0, 100} {
+					for _, manual := range []bool{false, true} {
+						dc := newMigrationDC(enabled, routing)
+						dc.OverrideValue(client.WorkerControllerCHASMMigrationManualOnly.Key(), manualOnly)
+						dc.OverrideValue(client.WorkerControllerCHASMMigrationRolloutPercent.Key(), percent)
+						a := NewActivities(ns, dynamicconfig.NewCollection(dc, log.NewNoopLogger()), nil, &fakeMigrationClient{})
+
+						want := routing && (manual || (!manualOnly && enabled && percent == 100))
+						require.Equal(t, want, a.chasmMigrationGateOpen("dep", "build", manual),
+							"routing=%v manualOnly=%v enabled=%v percent=%d manual=%v", routing, manualOnly, enabled, percent, manual)
+					}
+				}
+			}
+		}
+	}
+}
+
+// Manual-only stops the automatic handover but not an operator's request.
+func TestManualOnlyBlocksAutomaticMigration(t *testing.T) {
+	dc := newMigrationDC(true, true)
+	dc.OverrideValue(client.WorkerControllerCHASMMigrationManualOnly.Key(), true)
+	mc := &fakeMigrationClient{}
+	run := runMigrationWorkflow(t, MigrateToCHASMVersion, dc, mc)
+	require.True(t, isContinueAsNew(run.err), "continues as new: %v", run.err)
+	require.Empty(t, mc.prepares)
+
+	run, rejected := runManualMigration(t, MigrateToCHASMVersion, dc, mc)
+	require.NoError(t, rejected)
+	require.NoError(t, run.err, "hands over on request")
+	require.Len(t, mc.activates, 1)
+}

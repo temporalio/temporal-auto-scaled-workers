@@ -108,6 +108,11 @@ var (
 		false,
 		`WorkerControllerCHASMMigrationEnabled migrates running workflow-backed WCIs to CHASM.`,
 	)
+	WorkerControllerCHASMMigrationManualOnly = dynamicconfig.NewNamespaceBoolSetting(
+		"workercontroller.chasm.migration_manual_only",
+		false,
+		`WorkerControllerCHASMMigrationManualOnly turns automatic workflow → CHASM migration off whatever migration_enabled and migration_rollout_percent say; operator-requested migrations (tdbg worker-controller migrate-to-chasm) still run.`,
+	)
 	WorkerControllerCHASMMigrationPendingTTL = dynamicconfig.NewGlobalDurationSetting(
 		"workercontroller.chasm.migration_pending_ttl",
 		10*time.Minute,
