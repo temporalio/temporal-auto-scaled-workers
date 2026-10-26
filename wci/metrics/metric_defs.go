@@ -14,6 +14,9 @@ var (
 	WorkflowBusyCount = metrics.NewCounterDef(
 		"worker_controller_instance_workflow_busy_count",
 		metrics.WithDescription("The number of task match events dropped because the worker controller instance workflow was busy."))
+	TaskAddContextCanceledCount = metrics.NewCounterDef(
+		"worker_controller_instance_task_add_context_canceled_count",
+		metrics.WithDescription("The number of task match events dropped because the request context was canceled."))
 
 	BacklogCount = metrics.NewGaugeDef(
 		"worker_controller_instance_backlog_count",
