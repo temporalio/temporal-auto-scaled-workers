@@ -131,6 +131,11 @@ func (a *scalingAlgorithmNoSync) TaskQueueRegistrationActions(_ context.Context,
 	}, nil
 }
 
+// InactiveGroupActions has nothing to release: invoked workers exit on their own.
+func (a *scalingAlgorithmNoSync) InactiveGroupActions(context.Context, iface.ScalingAlgorithmConfig, iface.ScalingAlgorithmStatus) (*MetricsPollResponse, error) {
+	return &MetricsPollResponse{}, nil
+}
+
 func (a *scalingAlgorithmNoSync) ValidateConfig(ctx context.Context, config iface.ScalingAlgorithmConfig) error {
 	if config == nil {
 		return nil

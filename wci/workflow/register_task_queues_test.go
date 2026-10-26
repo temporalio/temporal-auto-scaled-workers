@@ -30,7 +30,7 @@ func TestRegisteredTaskQueueTypes(t *testing.T) {
 		fake := &fakeWorkflowServiceClient{describeFn: func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
 			return describeResponseWithTypes(enumspb.TASK_QUEUE_TYPE_WORKFLOW, enumspb.TASK_QUEUE_TYPE_ACTIVITY), nil
 		}}
-		got, err := NewActivities(nil, nil, fake).registeredTaskQueueTypes(t.Context(), "ns", "dep", "build")
+		got, err := NewActivities(nil, nil, fake, nil).registeredTaskQueueTypes(t.Context(), "ns", "dep", "build")
 		require.NoError(t, err)
 		assert.Len(t, got, 2)
 		assert.Contains(t, got, enumspb.TASK_QUEUE_TYPE_WORKFLOW)
@@ -42,7 +42,7 @@ func TestRegisteredTaskQueueTypes(t *testing.T) {
 		fake := &fakeWorkflowServiceClient{describeFn: func(*workflowservice.DescribeWorkerDeploymentVersionRequest) (*workflowservice.DescribeWorkerDeploymentVersionResponse, error) {
 			return nil, wantErr
 		}}
-		_, err := NewActivities(nil, nil, fake).registeredTaskQueueTypes(t.Context(), "ns", "dep", "build")
+		_, err := NewActivities(nil, nil, fake, nil).registeredTaskQueueTypes(t.Context(), "ns", "dep", "build")
 		assert.ErrorIs(t, err, wantErr)
 	})
 }

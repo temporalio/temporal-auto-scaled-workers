@@ -302,6 +302,13 @@ func TestNoSyncCompatibleLaunchStrategies(t *testing.T) {
 	assert.Equal(t, computeprovider.LaunchStrategyInvoke, strategies[0])
 }
 
+func TestNoSyncInactiveGroupActionsNoop(t *testing.T) {
+	resp, err := newNoSync().InactiveGroupActions(t.Context(), iface.ScalingAlgorithmConfig{}, iface.ScalingAlgorithmStatus{"custom": int64(1)})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Actions)
+	assert.Nil(t, resp.Status, "no status, so the caller drops the stale one")
+}
+
 func TestNoSyncProcessDeferredScalingDecisionNoop(t *testing.T) {
 	a := newNoSync()
 	ctx := t.Context()

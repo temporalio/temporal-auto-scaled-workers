@@ -1542,3 +1542,39 @@ func TestRateBasedAggregateMetrics(t *testing.T) {
 		assert.InDelta(t, float64(2), m.dispatchRate, 1e-9)
 	})
 }
+
+func TestRateBasedInactiveGroupActions(t *testing.T) {
+	a := newRateBased()
+	config := iface.ScalingAlgorithmConfig{configRateBasedMinCountKey: int64(1), configRateBasedInitialCountKey: int64(1)}
+	zeroCount := iface.ScalingAlgorithmStatus{stateRateBasedWorkerCount: int64(0)}
+
+	t.Run("scales remaining workers to 0 and keeps only the count", func(t *testing.T) {
+		resp, err := a.InactiveGroupActions(t.Context(), config, iface.ScalingAlgorithmStatus{
+			stateRateBasedWorkerCount:     int64(2),
+			stateRateBasedEWMAArrivalRate: 3.0,
+		})
+		require.NoError(t, err)
+		require.Len(t, resp.Actions, 1)
+		assert.Equal(t, ActionTypeUpdateWorkerSetSize, resp.Actions[0].Action)
+		require.NotNil(t, resp.Actions[0].Count)
+		assert.Equal(t, int32(0), *resp.Actions[0].Count)
+		assert.Equal(t, zeroCount, resp.Status)
+	})
+
+	for name, status := range map[string]iface.ScalingAlgorithmStatus{"no workers": zeroCount, "no status": nil} {
+		t.Run(name, func(t *testing.T) {
+			resp, err := a.InactiveGroupActions(t.Context(), config, status)
+			require.NoError(t, err)
+			assert.Empty(t, resp.Actions)
+			assert.Equal(t, zeroCount, resp.Status)
+		})
+	}
+
+	t.Run("serving again scales back up to min_count", func(t *testing.T) {
+		resp, err := a.ProcessMetricsPoll(t.Context(), config, zeroCount, ScalingMetricsSnapshot{})
+		require.NoError(t, err)
+		require.Len(t, resp.Actions, 1)
+		require.NotNil(t, resp.Actions[0].Count)
+		assert.Equal(t, int32(1), *resp.Actions[0].Count, "initial_count must not mask the zero count")
+	})
+}

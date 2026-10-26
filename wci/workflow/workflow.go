@@ -785,6 +785,12 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				continue
 			}
 
+			// Actions recorded before ScalingAction.EffectiveTaskTypes existed don't carry it; resolve their task types here, region-agnostically.
+			effectiveTaskTypes := action.EffectiveTaskTypes
+			if effectiveTaskTypes == nil {
+				effectiveTaskTypes = d.State.Spec.EffectiveTaskTypesForGroup(action.ScalingGroupKey, "")
+			}
+
 			p.recordEvent(wcimetrics.DeferredScalingDecisionCount.Name())
 
 			var resp HandleDeferredScalingDecisionActivityResponse
@@ -798,7 +804,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 					ScalingGroupKey: action.ScalingGroupKey,
 
 					ScalingGroupSpec:   spec,
-					EffectiveTaskTypes: d.State.Spec.EffectiveTaskTypesForGroup(action.ScalingGroupKey),
+					EffectiveTaskTypes: effectiveTaskTypes,
 					ScalingStatus:      d.State.ScalingStatus[action.ScalingGroupKey],
 				},
 			).Get(ctx, &resp); err != nil {

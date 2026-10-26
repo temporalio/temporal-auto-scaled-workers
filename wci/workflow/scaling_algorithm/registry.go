@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
@@ -22,6 +23,8 @@ type (
 		ScalingGroupKey string     `json:"scaling_group_key"`
 		Action          ActionType `json:"action"`
 		Count           *int32     `json:"count,omitempty"`
+		// Task types the group serves in the worker controller's regionId, set by HandleTaskAddSignal on deferred scaling decisions.
+		EffectiveTaskTypes []enumspb.TaskQueueType `json:"effective_task_types,omitempty"`
 	}
 
 	ScalingMetricsSnapshot struct {
@@ -108,6 +111,10 @@ type (
 		// invoke-only algorithms emit an InvokeWorker and leave Status untouched. The caller
 		// applies the actions and persists the Status.
 		TaskQueueRegistrationActions(ctx context.Context, config iface.ScalingAlgorithmConfig, status iface.ScalingAlgorithmStatus) (*TaskQueueRegistrationResponse, error)
+
+		// InactiveGroupActions returns the actions that scale down a group serving no task types where the worker
+		// controller runs, plus the status to persist. Invoke-only algorithms have nothing to release and return neither.
+		InactiveGroupActions(ctx context.Context, config iface.ScalingAlgorithmConfig, status iface.ScalingAlgorithmStatus) (*MetricsPollResponse, error)
 	}
 )
 
