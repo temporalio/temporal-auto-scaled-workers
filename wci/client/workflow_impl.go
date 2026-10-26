@@ -408,6 +408,35 @@ func (d *workflowClient) DeleteWorkerControllerInstance(
 	return nil
 }
 
+// RequestMigrationToCHASM asks a WCI workflow to hand over to CHASM at the continue-as-new it forces.
+// It returns once the request is accepted; NotFound means no workflow runs the WCI (e.g. already on CHASM).
+func RequestMigrationToCHASM(
+	ctx context.Context,
+	historyClient historyservice.HistoryServiceClient,
+	namespaceEntry *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+	identity string,
+) error {
+	args, err := sdk.PreferProtoDataConverter.ToPayloads(&iface.MigrateToCHASMRequest{Identity: identity})
+	if err != nil {
+		return err
+	}
+	outcome, err := updateWorkflow(ctx, historyClient, namespaceEntry, GenerateWorkerControllerInstanceWorkflowID(version), &updatepb.Request{
+		Input: &updatepb.Input{Name: iface.UpdateMigrateToCHASM, Args: args},
+		Meta:  &updatepb.Meta{UpdateId: uuid.NewString(), Identity: identity},
+	})
+	if err != nil {
+		return err
+	}
+	if failure := outcome.GetFailure(); failure != nil {
+		if err := migrationPendingError(failure); err != nil {
+			return err
+		}
+		return serviceerror.NewInternal(failure.GetMessage())
+	}
+	return nil
+}
+
 // migrationPendingError maps a frozen workflow's rejection onto the retryable sentinel.
 func migrationPendingError(failure *failurepb.Failure) error {
 	if failure.GetApplicationFailureInfo().GetType() != iface.ErrMigrationPending {

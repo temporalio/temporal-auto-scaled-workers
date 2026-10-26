@@ -7,10 +7,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	commonpb "go.temporal.io/api/common/v1"
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
+	updatepb "go.temporal.io/api/update/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/api/historyservicemock/v1"
@@ -101,6 +105,63 @@ func TestUpdateRunningWorkerControllerInstance_NeverStarts(t *testing.T) {
 
 	var notFound *serviceerror.NotFound
 	require.ErrorAs(t, err, &notFound)
+}
+
+func TestRequestMigrationToCHASM(t *testing.T) {
+	notFound := serviceerror.NewNotFound("workflow execution already completed")
+	tests := []struct {
+		name    string
+		res     *historyservice.UpdateWorkflowExecutionResponse
+		err     error
+		wantErr func(error) bool
+	}{
+		{name: "accepted", res: completedUpdate(nil)},
+		{name: "not_on_workflow", err: notFound, wantErr: func(err error) bool { return errors.Is(err, notFound) }},
+		{
+			name: "routing_off", res: completedUpdate(applicationFailure(iface.ErrFailedPrecondition)),
+			wantErr: func(err error) bool { var fp *serviceerror.FailedPrecondition; return errors.As(err, &fp) },
+		},
+		{
+			name: "migrating", res: completedUpdate(applicationFailure(iface.ErrMigrationPending)),
+			wantErr: func(err error) bool { return errors.Is(err, ErrMigrationPending) },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			history := historyservicemock.NewMockHistoryServiceClient(ctrl)
+			history.EXPECT().UpdateWorkflowExecution(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ any, req *historyservice.UpdateWorkflowExecutionRequest, _ ...any) (*historyservice.UpdateWorkflowExecutionResponse, error) {
+					require.Equal(t, iface.UpdateMigrateToCHASM, req.GetRequest().GetRequest().GetInput().GetName())
+					require.Equal(t, GenerateWorkerControllerInstanceWorkflowID(newTestVersion()), req.GetRequest().GetWorkflowExecution().GetWorkflowId())
+					return tc.res, tc.err
+				})
+
+			err := RequestMigrationToCHASM(t.Context(), history, newTestNamespace(), newTestVersion(), "operator")
+			if tc.wantErr == nil {
+				require.NoError(t, err)
+				return
+			}
+			require.True(t, tc.wantErr(err), "unexpected error: %v", err)
+		})
+	}
+}
+
+func completedUpdate(failure *failurepb.Failure) *historyservice.UpdateWorkflowExecutionResponse {
+	outcome := &updatepb.Outcome{Value: &updatepb.Outcome_Success{Success: &commonpb.Payloads{}}}
+	if failure != nil {
+		outcome = &updatepb.Outcome{Value: &updatepb.Outcome_Failure{Failure: failure}}
+	}
+	return &historyservice.UpdateWorkflowExecutionResponse{Response: &workflowservice.UpdateWorkflowExecutionResponse{
+		Stage:   enumspb.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_COMPLETED,
+		Outcome: outcome,
+	}}
+}
+
+func applicationFailure(failureType string) *failurepb.Failure {
+	return &failurepb.Failure{Message: failureType, FailureInfo: &failurepb.Failure_ApplicationFailureInfo{
+		ApplicationFailureInfo: &failurepb.ApplicationFailureInfo{Type: failureType},
+	}}
 }
 
 // Test that a client can't issue a ValidateWorkerControllerInstanceSpec if WCI is disabled
