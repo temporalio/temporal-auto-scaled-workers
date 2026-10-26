@@ -82,6 +82,8 @@ type (
 		State          *WorkerControllerInstanceLocalState `json:"state"`
 		// Set only by CHASM → workflow migration: the run stays inert until activated.
 		PendingMigration *PendingMigration `json:"pending_migration,omitempty"`
+		// The CHASM → workflow activation this chain took; carried across CaN so a retried activation stays accepted.
+		ActivatedMigrationToken string `json:"activated_migration_token,omitempty"`
 	}
 
 	PendingMigration struct {
