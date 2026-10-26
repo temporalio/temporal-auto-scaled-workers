@@ -447,8 +447,8 @@ go.temporal.io/api v1.63.8-0.20261014221631-25d6833c5701 h1:4FS8eouE2ml0soTg/pht
 go.temporal.io/api v1.63.8-0.20261014221631-25d6833c5701/go.mod h1:acM0I9WPuYg8W3Pd9jOZvEgi7mRUttUQ4+e7fowKVnM=
 go.temporal.io/sdk v1.49.0 h1:CtGI0BUe/SCo3eoqTwuWWtXKueii9GBVus7KrKKH1Vo=
 go.temporal.io/sdk v1.49.0/go.mod h1:xP0FulN5JJSfisESUP60LlWsrKz2tLSStGjVdk8r5cc=
-go.temporal.io/server v1.29.0-135.0.0.20261023162708-3bebbfeb5584 h1:U7VLJ/UqUFIYW/uTuduXvG3irpbqyaiH7Vtj5VOEPeU=
-go.temporal.io/server v1.29.0-135.0.0.20261023162708-3bebbfeb5584/go.mod h1:gJAwfnezNw7sbW76MQ43VIvwRJuv/ZA3FY0UcBp+cQw=
+go.temporal.io/server v1.29.0-135.0.0.20261026023829-bf024cd04dac h1:qeHwskRB1r9SegZ4J/yCAieHhW5zpF3Z3GoOI7+ghpQ=
+go.temporal.io/server v1.29.0-135.0.0.20261026023829-bf024cd04dac/go.mod h1:YZ+MDE9ZxOFOCMlhmlo0tnqpQ1YcGZEy44PfApIGGlw=
 go.uber.org/atomic v1.5.0/go.mod h1:sABNBOSYdrvTF6hTgEIbc7YasKWGhgEQZyfxyTvoXHQ=
 go.uber.org/atomic v1.7.0/go.mod h1:fEN4uk6kAWBTFdckzkM89CLk9XfWZrxpCo0nPH17wJc=
 go.uber.org/atomic v1.11.0 h1:ZvwS0R+56ePWxUNi+Atn9dWONBPp/AUETXlHW0DxSjE=
