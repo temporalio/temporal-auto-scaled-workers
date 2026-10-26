@@ -90,10 +90,11 @@ func TestProcessTaskAdd_ExistsErrorClassification(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		err       error
-		wantBusy  int
-		wantError int
+		name         string
+		err          error
+		wantBusy     int
+		wantCanceled int
+		wantError    int
 	}{
 		{
 			name:     "busy_workflow",
@@ -111,6 +112,21 @@ func TestProcessTaskAdd_ExistsErrorClassification(t *testing.T) {
 			name:     "busy_workflow_through_grpc_status",
 			err:      serviceerror.FromStatus(serviceerror.ToStatus(busy)),
 			wantBusy: 1,
+		},
+		{
+			name:         "context_canceled",
+			err:          context.Canceled,
+			wantCanceled: 1,
+		},
+		{
+			name:         "context_canceled_wrapped",
+			err:          fmt.Errorf("describe failed: %w", context.Canceled),
+			wantCanceled: 1,
+		},
+		{
+			name:      "deadline_exceeded_is_an_error",
+			err:       context.DeadlineExceeded,
+			wantError: 1,
 		},
 		{
 			name:      "resource_exhausted_other_cause",
@@ -142,6 +158,8 @@ func TestProcessTaskAdd_ExistsErrorClassification(t *testing.T) {
 			snapshot := capture.Snapshot()
 			require.Equal(t, tc.wantBusy, countMetric(snapshot, wcimetrics.WorkflowBusyCount.Name()),
 				"workflow-busy count")
+			require.Equal(t, tc.wantCanceled, countMetric(snapshot, wcimetrics.TaskAddContextCanceledCount.Name()),
+				"context-canceled count")
 			require.Equal(t, tc.wantError, countMetric(snapshot, wcimetrics.TaskMatchErrorCount.Name()),
 				"task-match error count")
 			require.Zero(t, client.signalCalls, "no signal should be sent when the existence check fails")

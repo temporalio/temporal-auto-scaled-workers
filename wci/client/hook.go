@@ -105,6 +105,12 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 			return
 		}
 
+		if errors.Is(err, context.Canceled) {
+			// Caller went away (e.g. the AddTask request was canceled) - emit a metric and move on
+			wcimetrics.TaskAddContextCanceledCount.With(th.metricsHandler).Record(1)
+			return
+		}
+
 		th.logger.Error("Failed to check for existence of worker controller instance workflow", tag.Error(err), tag.WorkflowID(workflowID))
 		wcimetrics.TaskMatchErrorCount.With(th.metricsHandler).Record(1)
 		return
