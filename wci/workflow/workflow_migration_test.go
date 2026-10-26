@@ -304,6 +304,43 @@ func TestPendingRunActivatesThenRunsNormally(t *testing.T) {
 	var next iface.WorkerControllerInstanceWorkflowArgs
 	require.NoError(t, sdk.PreferProtoDataConverter.FromPayloads(can.Input, &next))
 	require.Nil(t, next.PendingMigration, "the next run is a normal one")
+	require.Equal(t, testPendingToken, next.ActivatedMigrationToken, "carried so a retried activation stays accepted")
+}
+
+// CHASM's task can retry an activation after the activated run continued as new.
+func TestActivatedChainAcceptsRetriedActivation(t *testing.T) {
+	env, _, testWorkflow, _ := newMigrationEnv(t, MigrateToCHASMVersion, newMigrationDC(false, true), &fakeMigrationClient{})
+	var retried, other error
+	env.RegisterDelayedCallback(func() {
+		migrationUpdate(t, env, iface.UpdateActivateMigration, testPendingToken, &retried)
+		migrationUpdate(t, env, iface.UpdateActivateMigration, "chasm:other", &other)
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() { forceCaNUpdate(t, env) }, time.Second)
+
+	args := testMigrationArgs(t)
+	args.ActivatedMigrationToken = testPendingToken
+	env.ExecuteWorkflow(testWorkflow, args)
+
+	require.NoError(t, retried)
+	require.Error(t, other, "a different handover is still rejected")
+	var can *sdkworkflow.ContinueAsNewError
+	require.ErrorAs(t, env.GetWorkflowError(), &can)
+	var next iface.WorkerControllerInstanceWorkflowArgs
+	require.NoError(t, sdk.PreferProtoDataConverter.FromPayloads(can.Input, &next))
+	require.Equal(t, testPendingToken, next.ActivatedMigrationToken)
+}
+
+func TestUnactivatedChainRejectsActivation(t *testing.T) {
+	env, _, testWorkflow, _ := newMigrationEnv(t, MigrateToCHASMVersion, newMigrationDC(false, true), &fakeMigrationClient{})
+	var rejected error
+	env.RegisterDelayedCallback(func() {
+		migrationUpdate(t, env, iface.UpdateActivateMigration, testPendingToken, &rejected)
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() { forceCaNUpdate(t, env) }, time.Second)
+
+	env.ExecuteWorkflow(testWorkflow, testMigrationArgs(t))
+
+	require.Error(t, rejected, "no handler without an activated token")
 }
 
 func TestPendingRunRejectsWrongToken(t *testing.T) {

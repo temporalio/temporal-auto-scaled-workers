@@ -182,6 +182,8 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		if err != nil || !activated {
 			return err
 		}
+	} else if err := d.acceptRetriedActivation(ctx); err != nil {
+		return err
 	}
 
 	// Create a Context to use for periodic background tasks.
@@ -490,7 +492,24 @@ func (d *WorkflowRunner) awaitMigrationActivation(ctx workflow.Context) (bool, e
 		return false, nil
 	}
 	d.PendingMigration = nil
+	d.ActivatedMigrationToken = pending.Token
 	return true, nil
+}
+
+// acceptRetriedActivation answers an activation retried after this chain continued as new: CHASM's
+// task may not have seen the first answer, and a rejection would make it resume next to this run.
+func (d *WorkflowRunner) acceptRetriedActivation(ctx workflow.Context) error {
+	if d.ActivatedMigrationToken == "" {
+		return nil
+	}
+	return workflow.SetUpdateHandlerWithOptions(ctx, iface.UpdateActivateMigration, func(_ workflow.Context, _ *iface.MigrationTokenRequest) error {
+		return nil
+	}, workflow.UpdateHandlerOptions{Validator: func(req *iface.MigrationTokenRequest) error {
+		if req == nil || req.Token != d.ActivatedMigrationToken {
+			return temporal.NewApplicationError("migration token mismatch", iface.ErrFailedPrecondition)
+		}
+		return nil
+	}})
 }
 
 func (d *WorkflowRunner) runTimerSelectorLoop(ctx workflow.Context, timerSel workflow.Selector) {
