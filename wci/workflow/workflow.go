@@ -100,7 +100,10 @@ type (
 
 		deleteInstance bool
 		// migrating freezes the run while it hands over to CHASM: updates are rejected, nothing scales.
-		migrating                        bool
+		migrating bool
+		// manualMigration: an operator asked to hand over at this run's CaN. Run-scoped, so a declined
+		// or failed handover is not retried.
+		manualMigration                  bool
 		unsafeWorkerControllerEnabled    func() bool
 		unsafeMaxVersion                 func() int
 		unsafePeriodicValidationInterval func() time.Duration
@@ -240,6 +243,9 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		return err
 	}
 	if err = workflow.SetUpdateHandlerWithOptions(ctx, iface.ValidateWorkerControllerInstanceSpec, d.handleValidateSpec, workflow.UpdateHandlerOptions{Validator: d.validateValidateSpec}); err != nil {
+		return err
+	}
+	if err = workflow.SetUpdateHandlerWithOptions(ctx, iface.UpdateMigrateToCHASM, d.handleMigrateToCHASM, workflow.UpdateHandlerOptions{Validator: d.validateMigrateToCHASM}); err != nil {
 		return err
 	}
 
@@ -442,10 +448,36 @@ func (d *WorkflowRunner) abortCHASMMigration(laCtx workflow.Context, req *CHASMM
 func (d *WorkflowRunner) chasmMigrationGateOpen(ctx workflow.Context, id string) bool {
 	var open bool
 	err := workflow.MutableSideEffect(ctx, id,
-		func(_ workflow.Context) any { return d.a.chasmMigrationGateOpen(d.DeploymentName, d.BuildId) },
+		func(_ workflow.Context) any {
+			return d.a.chasmMigrationGateOpen(d.DeploymentName, d.BuildId, d.manualMigration)
+		},
 		func(a, b any) bool { return a == b }).
 		Get(&open)
 	return err == nil && open
+}
+
+func (d *WorkflowRunner) validateMigrateToCHASM(_ *iface.MigrateToCHASMRequest) error {
+	if err := d.ensureNotDeleted(); err != nil {
+		return err
+	}
+	if err := d.ensureNotMigrating(); err != nil {
+		return err
+	}
+	if !d.hasMinVersion(MigrateToCHASMVersion) {
+		return temporal.NewApplicationError("workflow version does not support migration to CHASM", iface.ErrFailedPrecondition)
+	}
+	// Advisory: the gate re-checks routing at prepare and commit.
+	if !d.a.chasmRoutingEnabled() {
+		return temporal.NewApplicationError("CHASM routing is disabled for this namespace", iface.ErrFailedPrecondition)
+	}
+	return nil
+}
+
+// handleMigrateToCHASM returns once accepted; the handover runs at the CaN it forces.
+func (d *WorkflowRunner) handleMigrateToCHASM(_ workflow.Context, _ *iface.MigrateToCHASMRequest) error {
+	d.manualMigration = true
+	d.forceCAN = true
+	return nil
 }
 
 // awaitMigrationActivation keeps a run started by CHASM → workflow migration inert until CHASM commits.

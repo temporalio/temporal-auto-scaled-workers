@@ -37,6 +37,8 @@ const (
 	// Sent by CHASM to a workflow it started pending (CHASM → workflow migration).
 	UpdateActivateMigration = "activate-migration"
 	UpdateAbortMigration    = "abort-migration"
+	// Operator-requested workflow → CHASM handover; bypasses the migration rollout gate.
+	UpdateMigrateToCHASM = "migrate-to-chasm"
 
 	// Signals
 	SignalTaskAdd = "task-add-signal"
@@ -93,6 +95,10 @@ type (
 
 	MigrationTokenRequest struct {
 		Token string `json:"token"`
+	}
+
+	MigrateToCHASMRequest struct {
+		Identity string `json:"identity,omitempty"`
 	}
 
 	WorkerControllerInstanceLocalState struct {

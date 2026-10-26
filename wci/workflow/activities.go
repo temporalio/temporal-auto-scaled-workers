@@ -182,17 +182,29 @@ func NewActivities(
 }
 
 // chasmMigrationGateOpen is read through a MutableSideEffect, so it may consult dynamic config.
-func (a *Activities) chasmMigrationGateOpen(deploymentName, buildID string) bool {
-	if a.migrationClient == nil || a.dc == nil || a.namespace == nil {
+// A manual migration skips the rollout gate but still needs routing.
+func (a *Activities) chasmMigrationGateOpen(deploymentName, buildID string, manual bool) bool {
+	if !a.chasmRoutingEnabled() {
 		return false
 	}
 	ns := a.namespace.Name().String()
-	// Without routing, clients could not reach the migrated WCI and an update would recreate it as a workflow.
-	if !client.WorkerControllerCHASMRoutingEnabled.Get(a.dc)(ns) || !client.WorkerControllerCHASMMigrationEnabled.Get(a.dc)(ns) {
+	if manual {
+		return true
+	}
+	if !client.WorkerControllerCHASMMigrationEnabled.Get(a.dc)(ns) {
 		return false
 	}
 	// Rollout key: do not change while a rollout is in progress.
 	return dynamicconfig.RolloutAccepts([]byte(deploymentName+"\x00"+buildID), client.WorkerControllerCHASMMigrationRolloutPercent.Get(a.dc)(ns))
+}
+
+// chasmRoutingEnabled: without routing, clients could not reach a migrated WCI and an update would
+// recreate it as a workflow.
+func (a *Activities) chasmRoutingEnabled() bool {
+	if a.migrationClient == nil || a.dc == nil || a.namespace == nil {
+		return false
+	}
+	return client.WorkerControllerCHASMRoutingEnabled.Get(a.dc)(a.namespace.Name().String())
 }
 
 // CHASMMigrationRequest carries one step of the two-phase handover to CHASM.

@@ -275,6 +275,74 @@ func TestFrozenRunRejectsMutations(t *testing.T) {
 
 const testPendingToken = "chasm:7"
 
+// runManualMigration sends migrate-to-chasm instead of an update; rejected is the validator's answer.
+func runManualMigration(t *testing.T, version WorkerControllerInstanceWorkflowVersion, dc *dynamicconfig.MemoryClient, mc *fakeMigrationClient) (migrationRun, error) {
+	t.Helper()
+	env, _, testWorkflow, handled := newMigrationEnv(t, version, dc, mc)
+	var rejected error
+	env.RegisterDelayedCallback(func() {
+		env.UpdateWorkflow(iface.UpdateMigrateToCHASM, "manual", &testsuite.TestUpdateCallback{
+			OnReject: func(err error) { rejected = err }, OnAccept: func() {}, OnComplete: func(any, error) {},
+		}, &iface.MigrateToCHASMRequest{Identity: "operator"})
+	}, time.Millisecond)
+	// Without an accepted update nothing forces a CaN; end the run at the timeout.
+	env.ExecuteWorkflow(testWorkflow, testMigrationArgs(t))
+	require.True(t, env.IsWorkflowCompleted())
+	return migrationRun{handled: *handled, err: env.GetWorkflowError(), dc: dc}, rejected
+}
+
+func TestManualMigrationBypassesRolloutGate(t *testing.T) {
+	dc := newMigrationDC(false, true)
+	dc.OverrideValue(client.WorkerControllerCHASMMigrationRolloutPercent.Key(), 0)
+	mc := &fakeMigrationClient{}
+	run, rejected := runManualMigration(t, MigrateToCHASMVersion, dc, mc)
+
+	require.NoError(t, rejected)
+	require.NoError(t, run.err, "hands over instead of continuing as new")
+	require.Len(t, mc.prepares, 1)
+	require.Len(t, mc.activates, 1)
+}
+
+func TestManualMigrationRejected(t *testing.T) {
+	tests := []struct {
+		name    string
+		version WorkerControllerInstanceWorkflowVersion
+		routing bool
+	}{
+		{name: "routing_off", version: MigrateToCHASMVersion},
+		{name: "pre_migration_version", version: CheckWorkerControllerEnabledVersion, routing: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := &fakeMigrationClient{}
+			_, rejected := runManualMigration(t, tc.version, newMigrationDC(false, tc.routing), mc)
+			require.Error(t, rejected)
+			require.Empty(t, mc.prepares)
+		})
+	}
+}
+
+// The request is run-scoped: a failed handover leaves a plain workflow that doesn't retry it.
+func TestManualMigrationNotCarriedAcrossCaN(t *testing.T) {
+	mc := &fakeMigrationClient{prepareErr: errors.New("history unavailable")}
+	run, rejected := runManualMigration(t, MigrateToCHASMVersion, newMigrationDC(false, true), mc)
+
+	require.NoError(t, rejected)
+	var can *sdkworkflow.ContinueAsNewError
+	require.ErrorAs(t, run.err, &can, "stays a workflow")
+	require.Len(t, mc.prepares, 1)
+	require.Equal(t, mc.prepares, mc.aborts)
+
+	// The next run reaches its own CaN boundary without trying again.
+	var args *iface.WorkerControllerInstanceWorkflowArgs
+	require.NoError(t, sdk.PreferProtoDataConverter.FromPayloads(can.Input, &args))
+	env, _, testWorkflow, _ := newMigrationEnv(t, MigrateToCHASMVersion, run.dc, mc)
+	env.RegisterDelayedCallback(func() { forceCaNUpdate(t, env) }, time.Millisecond)
+	env.ExecuteWorkflow(testWorkflow, args)
+	require.True(t, isContinueAsNew(env.GetWorkflowError()), "continues as new: %v", env.GetWorkflowError())
+	require.Len(t, mc.prepares, 1)
+}
+
 func pendingArgs(t *testing.T, expireIn time.Duration) *iface.WorkerControllerInstanceWorkflowArgs {
 	args := testMigrationArgs(t)
 	args.PendingMigration = &iface.PendingMigration{Token: testPendingToken, ExpireTime: timestamppb.New(time.Now().Add(expireIn))}
