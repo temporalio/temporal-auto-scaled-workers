@@ -130,6 +130,11 @@ func ThrottledLoggerRpsFnProvider(serviceConfig *worker.Config) resource.Throttl
 	return func() float64 { return float64(serviceConfig.ThrottledLogRPS()) }
 }
 
+type staticConfigDeps struct {
+	fx.In
+	StaticConfig *client.StaticConfig `optional:"true"`
+}
+
 func PerNamespaceWorkerManagerProvider(
 	logger log.Logger,
 	sdkClientFactory sdk.ClientFactory,
@@ -138,9 +143,10 @@ func PerNamespaceWorkerManagerProvider(
 	config *worker.Config,
 	clusterMetadata cluster.Metadata,
 	dynamicConfig *dynamicconfig.Collection,
+	staticConfig staticConfigDeps,
 ) *worker.PerNamespaceWorkerManager {
 	components := []workercommon.PerNSWorkerComponent{
-		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory),
+		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory, staticConfig.StaticConfig),
 	}
 
 	return worker.NewPerNamespaceWorkerManager(

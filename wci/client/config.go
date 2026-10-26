@@ -16,6 +16,10 @@ type (
 	GCPIAMServiceAccountRequest struct {
 		ServiceAccountEmail string
 	}
+
+	StaticConfig struct {
+		RegionID string
+	}
 )
 
 // Namespace-scoped settings.
