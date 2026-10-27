@@ -164,6 +164,7 @@ const (
 	SkippedReasonSessionNoInvokeGroup     SkippedReason = "session_no_invoke_group"
 	SkippedReasonSessionSyncOnly          SkippedReason = "session_sync_only"
 	SkippedReasonSessionWorkerSet         SkippedReason = "session_worker_set"
+	SkippedReasonSessionWorkflowGone      SkippedReason = "session_workflow_gone"
 	// SkippedReasonNone is the sentinel used when a metric's fixed tag schema requires the
 	// skip_reason tag on a non-skip path.
 	SkippedReasonNone SkippedReason = "none"
@@ -190,6 +191,7 @@ const (
 	ActivityTypePullStats                         ActivityType = "pull_stats"
 	ActivityTypeHandleDeferredScalingDecision     ActivityType = "handle_deferred_scaling_decision"
 	ActivityTypeInitSessionFromParent             ActivityType = "init_session_from_parent"
+	ActivityTypeCheckSessionExistence             ActivityType = "check_session_existence"
 )
 
 const (
@@ -203,6 +205,7 @@ const (
 	OperationTypeUpdateWorkerSetSize     = "update_worker_set_size"
 	OperationTypeDeferredScalingDecision = "deferred_scaling_decision"
 	OperationTypeSessionInit             = "session_init"
+	OperationTypeSessionExistenceCheck   = "session_existence_check"
 	ScaleUpTriggerTypeMetricsPoll        = "metrics_poll"
 	ScaleUpTriggerTypeTaskAdd            = "task_add"
 	PathTaskAdd                          = "task_add"

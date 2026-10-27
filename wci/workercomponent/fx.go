@@ -14,6 +14,9 @@ type (
 		fx.In
 		ClientFactory sdk.ClientFactory
 		StaticConfig  *client.StaticConfig `optional:"true"`
+		// WCIClient lets session WCIs read their parent version WCI. Optional so that hosts
+		// without the WCI client keep working; session init then fails non-retryably.
+		WCIClient client.Client `optional:"true"`
 	}
 
 	fxResult struct {
@@ -31,6 +34,6 @@ func NewResult(
 	params componentDeps,
 ) fxResult {
 	return fxResult{
-		Component: NewWCIPerNSWorkerComponent(dc, params.ClientFactory, params.StaticConfig),
+		Component: NewWCIPerNSWorkerComponent(dc, params.ClientFactory, params.StaticConfig, params.WCIClient),
 	}
 }

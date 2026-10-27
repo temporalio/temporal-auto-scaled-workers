@@ -47,6 +47,10 @@ type (
 		namespace             *namespace.Namespace
 		workflowserviceClient workflowservice.WorkflowServiceClient
 		staticConfig          *client.StaticConfig
+		// parentClient reads parent version WCIs for session WCIs; see SetParentInstanceClient.
+		parentClient ParentInstanceClient
+		// sessionWorkflowClient checks session workflows; see SetSessionWorkflowClient.
+		sessionWorkflowClient SessionWorkflowClient
 	}
 
 	// RequestContext aliases the compute-provider request context so activity
@@ -150,6 +154,7 @@ func metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetr
 		wcimetrics.WorkerDeploymentBuildIDTag: rc.DeploymentBuildID,
 		wcimetrics.ActivityTypeTag:            string(activityType),
 		wcimetrics.ComputeProviderTag:         computeProviderTagValue(provider),
+		wcimetrics.SessionTagName:             wcimetrics.SessionTagValue(rc.SessionID != ""),
 	})
 }
 
@@ -417,6 +422,12 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 	defer cancel()
 	if err := provider.InvokeWorker(timeoutCtx, req.RequestContext, config); err != nil {
 		recordError(computeProviderErrorType(err))
+		// For session WCIs, keep the provider's non-retryable flag so a session-specific
+		// failure (e.g. an invalid session ID) is not retried.
+		var appErr *temporal.ApplicationError
+		if req.SessionID != "" && stderrors.As(err, &appErr) && appErr.NonRetryable() {
+			return temporal.NewNonRetryableApplicationError(err.Error(), "InvokeWorkerFailed", err)
+		}
 		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
 

@@ -133,6 +133,9 @@ func ThrottledLoggerRpsFnProvider(serviceConfig *worker.Config) resource.Throttl
 type staticConfigDeps struct {
 	fx.In
 	StaticConfig *client.StaticConfig `optional:"true"`
+	// WCIClient lets session WCIs read their parent version WCI. Optional because this
+	// module does not include client.Module; session init then fails non-retryably.
+	WCIClient client.Client `optional:"true"`
 }
 
 func PerNamespaceWorkerManagerProvider(
@@ -146,7 +149,7 @@ func PerNamespaceWorkerManagerProvider(
 	staticConfig staticConfigDeps,
 ) *worker.PerNamespaceWorkerManager {
 	components := []workercommon.PerNSWorkerComponent{
-		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory, staticConfig.StaticConfig),
+		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory, staticConfig.StaticConfig, staticConfig.WCIClient),
 	}
 
 	return worker.NewPerNamespaceWorkerManager(

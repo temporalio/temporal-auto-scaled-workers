@@ -36,7 +36,7 @@ var (
 	)
 	WorkerControllerInstanceWorkflowVersion = dynamicconfig.NewNamespaceIntSetting(
 		"workercontroller.instanceWorkflowVersion",
-		4,
+		5,
 		`WorkerControllerInstanceWorkflowVersion controls what version of the logic should the manager workflows use.`,
 	)
 	WorkerControllerValidateWorkflowVersion = dynamicconfig.NewNamespaceIntSetting(
