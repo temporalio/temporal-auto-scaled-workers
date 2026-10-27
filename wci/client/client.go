@@ -92,6 +92,16 @@ type (
 			version *deploymentpb.WorkerDeploymentVersion,
 			request *iface.SignalTaskAddRequest,
 		) error
+
+		// SignalWithStartSessionWorkerControllerInstance signals a session WCI with a task-add
+		// signal, starting it if it is not running yet. The session WCI processes the signal
+		// after it initialized itself from the parent version WCI.
+		SignalWithStartSessionWorkerControllerInstance(
+			ctx context.Context,
+			namespaceEntry *namespace.Namespace,
+			session *iface.WorkerControllerInstanceSessionArgs,
+			request *iface.SignalTaskAddRequest,
+		) error
 	}
 
 	WorkerControllerInstanceSummary struct {
@@ -178,6 +188,17 @@ func (d *clientImpl) WorkerControllerInstanceExists(
 	return workflowIsRunning(ctx, d.historyClient, namespaceEntry, workflowID)
 }
 
+// WorkflowIsRunning reports whether the workflow with the given ID is running. A workflow
+// that is not found counts as not running. Session WCIs use it to check their session
+// workflow (see workflow.SessionWorkflowClient).
+func (d *clientImpl) WorkflowIsRunning(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	workflowID string,
+) (bool, error) {
+	return workflowIsRunning(ctx, d.historyClient, namespaceEntry, workflowID)
+}
+
 func (d *clientImpl) ListWorkerControllerInstances(
 	ctx context.Context,
 	namespaceEntry *namespace.Namespace,
@@ -207,6 +228,11 @@ func (d *clientImpl) ListWorkerControllerInstances(
 
 	workerControllerInstanceSummaries := make([]*WorkerControllerInstanceSummary, 0, len(persistenceResp.Executions))
 	for _, ex := range persistenceResp.Executions {
+		// Session WCIs use their own namespace division and are not matched by the query;
+		// skip them anyway in case one shows up.
+		if IsSessionWorkerControllerInstanceWorkflowID(ex.GetExecution().GetWorkflowId()) {
+			continue
+		}
 		var workerControllerInstanceInfo *iface.WorkerControllerInstanceMemo
 		if ex.GetMemo() != nil {
 			workerControllerInstanceInfo, err = iface.DecodeWorkerControllerInstanceMemo(ex.GetMemo())
@@ -462,6 +488,54 @@ func (d *clientImpl) SignalTaskAddEvent(
 	}
 
 	return nil
+}
+
+func (d *clientImpl) SignalWithStartSessionWorkerControllerInstance(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	session *iface.WorkerControllerInstanceSessionArgs,
+	request *iface.SignalTaskAddRequest,
+) (retErr error) {
+	if err := d.checkWorkerControllerEnabled(ctx, namespaceEntry); err != nil {
+		return err
+	}
+	if err := session.Validate(); err != nil {
+		return serviceerror.NewInvalidArgument(err.Error())
+	}
+	version := &deploymentpb.WorkerDeploymentVersion{DeploymentName: session.DeploymentName, BuildId: session.BuildID}
+
+	//revive:disable-next-line:defer
+	defer d.convertAndRecordError("SignalWithStartSessionWorkerControllerInstance", version, &retErr)()
+
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentNameFieldName, session.DeploymentName, d.maxIDLengthLimit()); err != nil {
+		return err
+	}
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, session.BuildID, d.maxIDLengthLimit()); err != nil {
+		return err
+	}
+	workflowID := GenerateSessionWorkerControllerInstanceWorkflowID(session.DeploymentName, session.BuildID, session.SessionID)
+	if len(workflowID) > d.maxIDLengthLimit() {
+		return serviceerror.NewInvalidArgumentf("session worker controller instance workflow ID exceeds length limit of %d", d.maxIDLengthLimit())
+	}
+
+	return signalWithStartWorkflow(
+		ctx,
+		d.historyClient,
+		namespaceEntry,
+		d.controllerTaskQueueName,
+		iface.WorkerControllerInstanceWorkflowType,
+		workflowID,
+		&iface.WorkerControllerInstanceWorkflowArgs{
+			NamespaceName:  namespaceEntry.Name().String(),
+			DeploymentName: session.DeploymentName,
+			BuildId:        session.BuildID,
+			Session:        session,
+		},
+		iface.WorkerControllerSessionInstanceNamespaceDivision,
+		iface.SignalTaskAdd,
+		request,
+		uuid.NewString(),
+	)
 }
 
 func (d *clientImpl) convertAndRecordError(operation string, version *deploymentpb.WorkerDeploymentVersion, retErr *error, args ...any) func() {
