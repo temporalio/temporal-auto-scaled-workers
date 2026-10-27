@@ -405,7 +405,7 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 		return nil, err
 	}
 
-	updatedSpec, err := iface.BuildUpdatedSpec(d.State.Spec, &iface.UpdateWorkerControllerInstanceRequest{
+	updatedSpec, scalingGroupsWithoutComputeProviderChanges, err := iface.BuildUpdatedSpec(d.State.Spec, &iface.UpdateWorkerControllerInstanceRequest{
 		Identity:            args.Identity,
 		UpsertScalingGroups: args.UpsertScalingGroups,
 		RemoveScalingGroups: args.RemoveScalingGroups,
@@ -427,8 +427,9 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.ValidateSpec,
 			&ValidateSpecRequest{
-				RequestContext: d.requestContext(),
-				Spec:           updatedSpec,
+				RequestContext:                        d.requestContext(),
+				Spec:                                  updatedSpec,
+				ScalingGroupsToSkipProviderValidation: scalingGroupsWithoutComputeProviderChanges,
 			},
 		).Get(ctx, nil); err != nil {
 			d.updateMetric(wcimetrics.UpdateTypeValidateSpec).recordActivityError(err)
@@ -488,7 +489,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		d.lock.Unlock()
 	}()
 
-	updatedSpec, err := iface.BuildUpdatedSpec(d.State.Spec, args)
+	updatedSpec, scalingGroupsWithoutComputeProviderChanges, err := iface.BuildUpdatedSpec(d.State.Spec, args)
 	if err != nil {
 		d.updateMetric(wcimetrics.UpdateTypeUpdateInstance).recordFailure(wcimetrics.ErrorTypeBuildUpdatedSpecFailure)
 		return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
@@ -518,8 +519,9 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
 			d.a.ValidateSpec,
 			&ValidateSpecRequest{
-				RequestContext: d.requestContext(),
-				Spec:           updatedSpec,
+				RequestContext:                        d.requestContext(),
+				Spec:                                  updatedSpec,
+				ScalingGroupsToSkipProviderValidation: scalingGroupsWithoutComputeProviderChanges,
 			},
 		).Get(ctx, nil); err != nil {
 			d.updateMetric(wcimetrics.UpdateTypeUpdateInstance).recordActivityError(err)

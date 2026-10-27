@@ -364,7 +364,7 @@ func TestBuildUpdatedSpecRegionIds(t *testing.T) {
 		"group": testGroup(east, wf),
 	}}
 
-	updated, err := BuildUpdatedSpec(current, &UpdateWorkerControllerInstanceRequest{
+	updated, _, err := BuildUpdatedSpec(current, &UpdateWorkerControllerInstanceRequest{
 		UpsertScalingGroups: map[string]ScalingGroupSpecUpdate{
 			"group": {Spec: testGroup(eastWest, act), UpdateMask: []string{"region_ids"}},
 		},
@@ -374,13 +374,45 @@ func TestBuildUpdatedSpecRegionIds(t *testing.T) {
 	assert.Equal(t, []enumspb.TaskQueueType{wf}, updated.ScalingGroupSpecs["group"].TaskTypes, "fields outside the mask must be untouched")
 	assert.Equal(t, []string{testRegionEast}, current.ScalingGroupSpecs["group"].RegionIds, "current spec must not be mutated")
 
-	updated, err = BuildUpdatedSpec(updated, &UpdateWorkerControllerInstanceRequest{
+	updated, _, err = BuildUpdatedSpec(updated, &UpdateWorkerControllerInstanceRequest{
 		UpsertScalingGroups: map[string]ScalingGroupSpecUpdate{
 			"group": {Spec: testGroup(nil, wf), UpdateMask: []string{"region_ids"}},
 		},
 	})
 	require.NoError(t, err)
 	assert.Empty(t, updated.ScalingGroupSpecs["group"].RegionIds, "masked empty region ids must unset them")
+}
+
+func TestBuildUpdatedSpecScalingGroupsWithoutComputeProviderChanges(t *testing.T) {
+	current := &WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]ScalingGroupSpec{}}
+	for _, key := range []string{"provider", "provider-type", "provider-details", "nexus-endpoint", "task-types", "regions", "scaler", "empty-mask", "removed"} {
+		current.ScalingGroupSpecs[key] = testGroup(nil, wf)
+	}
+	upsert := func(paths ...string) ScalingGroupSpecUpdate {
+		return ScalingGroupSpecUpdate{Spec: testGroup(nil, wf), UpdateMask: paths}
+	}
+
+	_, skip, err := BuildUpdatedSpec(current, &UpdateWorkerControllerInstanceRequest{
+		UpsertScalingGroups: map[string]ScalingGroupSpecUpdate{
+			"provider":                  upsert("provider"),
+			"provider-type":             upsert("provider.type"),
+			"provider-details":          upsert("task_queue_types", "provider.details"),
+			"nexus-endpoint":            upsert("provider.nexus_endpoint"),
+			"task-types":                upsert("task_queue_types"),
+			"regions":                   upsert("region_ids"),
+			"scaler":                    upsert("scaler"),
+			"empty-mask":                upsert(),
+			"new-without-mask":          upsert(),
+			"new-without-provider-path": upsert("task_queue_types"),
+		},
+		RemoveScalingGroups: []string{"removed"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"empty-mask", "nexus-endpoint", "regions", "scaler", "task-types"}, skip)
+
+	_, skip, err = BuildUpdatedSpec(current, &UpdateWorkerControllerInstanceRequest{})
+	require.NoError(t, err)
+	assert.Nil(t, skip, "a request without changes skips no group")
 }
 
 func TestCloneCopiesRegionIds(t *testing.T) {

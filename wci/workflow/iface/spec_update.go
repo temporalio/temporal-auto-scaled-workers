@@ -1,6 +1,9 @@
 package iface
 
 import (
+	"slices"
+	"strings"
+
 	"google.golang.org/protobuf/proto"
 
 	"go.temporal.io/api/common/v1"
@@ -71,8 +74,9 @@ func applyFieldMask(dst, src *ScalingGroupSpec, paths []string) error {
 }
 
 // BuildUpdatedSpec creates a new WorkerControllerInstanceSpec by applying the upsert and
-// remove operations from the update args to a copy of the current config.
-func BuildUpdatedSpec(current *WorkerControllerInstanceSpec, args *UpdateWorkerControllerInstanceRequest) (*WorkerControllerInstanceSpec, error) {
+// remove operations from the update args to a copy of the current config. It also returns the
+// groups whose compute provider the update leaves as is.
+func BuildUpdatedSpec(current *WorkerControllerInstanceSpec, args *UpdateWorkerControllerInstanceRequest) (*WorkerControllerInstanceSpec, []string, error) {
 	// Start with a copy of existing scaling groups.
 	newGroups := make(map[string]ScalingGroupSpec)
 	if current != nil {
@@ -82,6 +86,14 @@ func BuildUpdatedSpec(current *WorkerControllerInstanceSpec, args *UpdateWorkerC
 				newGroups[name] = *cloned
 			}
 		}
+	}
+
+	// A request without changes validates the current spec, so it skips no group.
+	var scalingGroupsWithoutComputeProviderChanges []string
+	if len(args.UpsertScalingGroups) > 0 || len(args.RemoveScalingGroups) > 0 {
+		scalingGroupsWithoutComputeProviderChanges = slices.DeleteFunc(workflow.DeterministicKeys(newGroups), func(name string) bool {
+			return slices.Contains(args.RemoveScalingGroups, name)
+		})
 	}
 
 	// Apply upserts.
@@ -99,9 +111,15 @@ func BuildUpdatedSpec(current *WorkerControllerInstanceSpec, args *UpdateWorkerC
 		} else {
 			// Apply only the fields specified in the mask to the cloned existing group.
 			if err := applyFieldMask(&existing, &update.Spec, update.UpdateMask); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			newGroups[name] = existing
+			if slices.ContainsFunc(update.UpdateMask, func(path string) bool {
+				// The nexus endpoint isn't part of provider validation.
+				return strings.HasPrefix(path, "provider") && path != "provider.nexus_endpoint"
+			}) {
+				scalingGroupsWithoutComputeProviderChanges = slices.DeleteFunc(scalingGroupsWithoutComputeProviderChanges, func(n string) bool { return n == name })
+			}
 		}
 	}
 
@@ -110,5 +128,5 @@ func BuildUpdatedSpec(current *WorkerControllerInstanceSpec, args *UpdateWorkerC
 		delete(newGroups, name)
 	}
 
-	return &WorkerControllerInstanceSpec{ScalingGroupSpecs: newGroups}, nil
+	return &WorkerControllerInstanceSpec{ScalingGroupSpecs: newGroups}, scalingGroupsWithoutComputeProviderChanges, nil
 }
