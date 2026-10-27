@@ -1,6 +1,9 @@
 package metrics
 
-import "go.temporal.io/server/common/metrics"
+import (
+	sdkclient "go.temporal.io/sdk/client"
+	"go.temporal.io/server/common/metrics"
+)
 
 var (
 	InstanceCreated = metrics.NewCounterDef(
@@ -80,6 +83,7 @@ const (
 	SkipReasonTagName          = "skip_reason"
 	ActivityErrorTypeTagName   = "activity_error_type"
 	PathTagName                = "path"
+	SessionTagName             = "session"
 )
 
 // ComputeProviderNone is the sentinel compute_provider tag value used when a
@@ -103,6 +107,8 @@ const (
 	ErrorTypeLockFailure                           ErrorType = "lock_failure"
 	ErrorTypeBuildUpdatedSpecFailure               ErrorType = "build_updated_spec_failure"
 	ErrorTypeInvalidSpec                           ErrorType = "invalid_spec"
+	ErrorTypeSessionParentQueryFailed              ErrorType = "session_parent_query_failed"
+	ErrorTypeSessionModeNotSupported               ErrorType = "session_mode_not_supported"
 	// ErrorTypeActivityError is the coarse bucket used at workflow-side activity-execution failure sites, paired with
 	// the activity_error_type tag for sub-classification.
 	ErrorTypeActivityError        ErrorType = "activity_error"
@@ -143,16 +149,21 @@ const (
 )
 
 const (
+	SkippedReasonNoMatchingScalingGroup SkippedReason = "no_matching_scaling_group"
 	SkippedReasonSpecMissing            SkippedReason = "spec_missing"
 	SkippedReasonWciDisabled            SkippedReason = "wci_disabled"
 	SkippedReasonInvalidRequest         SkippedReason = "invalid_request"
 	SkippedReasonAlgorithmUnavailable   SkippedReason = "algorithm_unavailable"
 	SkippedReasonAlgorithmFailed        SkippedReason = "algorithm_failed"
-	SkippedReasonNoMatchingScalingGroup SkippedReason = "no_matching_scaling_group"
 	SkippedReasonInvalidCount           SkippedReason = "invalid_count"
 	SkippedReasonNoSourceRequest        SkippedReason = "no_source_request"
 	SkippedReasonTaskTypeMismatch       SkippedReason = "task_type_mismatch"
 	SkippedReasonQueueFull              SkippedReason = "queue_full"
+	// Session WCI skip reasons.
+	SkippedReasonSessionParentUnavailable SkippedReason = "session_parent_unavailable"
+	SkippedReasonSessionNoInvokeGroup     SkippedReason = "session_no_invoke_group"
+	SkippedReasonSessionSyncOnly          SkippedReason = "session_sync_only"
+	SkippedReasonSessionWorkerSet         SkippedReason = "session_worker_set"
 	// SkippedReasonNone is the sentinel used when a metric's fixed tag schema requires the
 	// skip_reason tag on a non-skip path.
 	SkippedReasonNone SkippedReason = "none"
@@ -178,6 +189,7 @@ const (
 	ActivityTypeValidateSpec                      ActivityType = "validate_spec"
 	ActivityTypePullStats                         ActivityType = "pull_stats"
 	ActivityTypeHandleDeferredScalingDecision     ActivityType = "handle_deferred_scaling_decision"
+	ActivityTypeInitSessionFromParent             ActivityType = "init_session_from_parent"
 )
 
 const (
@@ -190,8 +202,29 @@ const (
 	OperationTypeInvokeWorker            = "invoke_worker"
 	OperationTypeUpdateWorkerSetSize     = "update_worker_set_size"
 	OperationTypeDeferredScalingDecision = "deferred_scaling_decision"
+	OperationTypeSessionInit             = "session_init"
 	ScaleUpTriggerTypeMetricsPoll        = "metrics_poll"
 	ScaleUpTriggerTypeTaskAdd            = "task_add"
 	PathTaskAdd                          = "task_add"
 	PathPullStats                        = "pull_stats"
 )
+
+// Values of the `session` tag.
+const (
+	SessionTagValueTrue  = "true"
+	SessionTagValueFalse = "false"
+)
+
+// SessionTagValue returns the `session` tag value for a session (true) or version (false) WCI.
+func SessionTagValue(isSession bool) string {
+	if isSession {
+		return SessionTagValueTrue
+	}
+	return SessionTagValueFalse
+}
+
+// WithSessionTag tags an SDK metrics handler (workflow or activity context) with whether
+// the metrics belong to a session WCI, so session and version WCIs can be told apart.
+func WithSessionTag(h sdkclient.MetricsHandler, isSession bool) sdkclient.MetricsHandler {
+	return h.WithTags(map[string]string{SessionTagName: SessionTagValue(isSession)})
+}

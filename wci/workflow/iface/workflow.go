@@ -22,6 +22,10 @@ const (
 
 	// Namespace division
 	WorkerControllerInstanceNamespaceDivision = "TemporalWorkerControllerInstance"
+	// WorkerControllerSessionInstanceNamespaceDivision marks session WCIs in visibility. It differs
+	// from WorkerControllerInstanceNamespaceDivision so that listing and counting version WCIs
+	// (and the maxInstances limit) never include session WCIs.
+	WorkerControllerSessionInstanceNamespaceDivision = "TemporalWorkerControllerSessionInstance"
 
 	// Queries
 	QueryDescribeWorkerControllerInstance       = "describe-wci"
@@ -42,6 +46,12 @@ const (
 	ErrInstanceDeleted    = "worker deployment deleted" // returned in the race condition that the deployment is deleted but the workflow is not yet closed.
 	ErrLongHistory        = "errLongHistory"            // update is not accepted until CaN happens. client should retry
 	ErrFailedPrecondition = "FailedPrecondition"
+	// ErrSessionModeNotSupported is returned when a session WCI runs with a workflow version
+	// that predates session mode.
+	ErrSessionModeNotSupported = "SessionModeNotSupported"
+	// ErrSessionInstanceReadOnly is returned for updates that a session WCI does not accept
+	// because its config comes from the parent version WCI.
+	ErrSessionInstanceReadOnly = "SessionInstanceReadOnly"
 
 	// ValidationResult values
 	ValidationResultSuccess ValidationResult = "success"
@@ -76,6 +86,21 @@ type (
 		DeploymentName string                              `json:"deployment_name,omitempty"`
 		BuildId        string                              `json:"build_id,omitempty"`
 		State          *WorkerControllerInstanceLocalState `json:"state"`
+
+		// Session is set only for session WCIs. A nil value means this is a version WCI.
+		// It is carried through continue-as-new together with State.
+		Session *WorkerControllerInstanceSessionArgs `json:"session,omitempty"`
+	}
+
+	// WorkerControllerInstanceSessionArgs identifies the session a session WCI scales and
+	// the worker deployment version (parent version WCI) it takes its compute config from.
+	WorkerControllerInstanceSessionArgs struct {
+		// SessionID is the session workflow ID and the AgentCore runtime session ID.
+		SessionID string `json:"session_id,omitempty"`
+		// SessionQueue is the session sticky task queue name.
+		SessionQueue   string `json:"session_queue,omitempty"`
+		DeploymentName string `json:"deployment_name,omitempty"`
+		BuildID        string `json:"build_id,omitempty"`
 	}
 
 	WorkerControllerInstanceLocalState struct {
@@ -96,6 +121,11 @@ type (
 
 		// ValidationStatus holds the result of the last validation.
 		ValidationStatus *ValidationStatus `json:"validation_state,omitempty"`
+
+		// NextExistenceCheckTime is the persisted deadline for the next session existence
+		// check; carried across continue-as-new so the check cadence survives CaN. Only
+		// used by session WCIs.
+		NextExistenceCheckTime *timestamppb.Timestamp `json:"next_existence_check_time,omitempty"`
 	}
 
 	QueryDescribeWorkerControllerInstanceResponse struct {
@@ -161,6 +191,8 @@ type (
 		DeploymentName string                 `json:"deployment_name,omitempty"`
 		BuildId        string                 `json:"build_id,omitempty"`
 		CreateTime     *timestamppb.Timestamp `json:"create_time,omitempty"`
+		// SessionID is only set for session WCIs.
+		SessionID string `json:"session_id,omitempty"`
 	}
 )
 
@@ -177,6 +209,32 @@ func NewValidationStatusFailed(t time.Time, msg string) *ValidationStatus {
 		Status:             ValidationResultFailed,
 		ErrMessage:         msg,
 	}
+}
+
+// IsSession reports whether the args describe a session WCI.
+func (a *WorkerControllerInstanceWorkflowArgs) IsSession() bool {
+	return a != nil && a.Session != nil
+}
+
+// Validate checks that all session fields are set.
+func (s *WorkerControllerInstanceSessionArgs) Validate() error {
+	if s == nil {
+		return errors.New("session args are required")
+	}
+	var errs []error
+	if s.SessionID == "" {
+		errs = append(errs, errors.New("session ID is required"))
+	}
+	if s.SessionQueue == "" {
+		errs = append(errs, errors.New("session queue is required"))
+	}
+	if s.DeploymentName == "" {
+		errs = append(errs, errors.New("deployment name is required"))
+	}
+	if s.BuildID == "" {
+		errs = append(errs, errors.New("build ID is required"))
+	}
+	return errors.Join(errs...)
 }
 
 func DecodeWorkerControllerInstanceMemo(memo *commonpb.Memo) (*WorkerControllerInstanceMemo, error) {

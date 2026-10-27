@@ -2,6 +2,7 @@ package client
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -90,4 +91,27 @@ func TestEnabledComputeProviders_NamespaceOverridesCellDefault(t *testing.T) {
 	require.Equal(t, []string{"gcp-cloud-run"}, get("cloud-run-ns"))
 	// A Lambda namespace with no entry inherits the cell-wide value.
 	require.Equal(t, []string{"aws-lambda"}, get("lambda-ns"))
+}
+
+func TestSessionExistenceCheckInterval_KeyAndDefault(t *testing.T) {
+	setting := WorkerControllerSessionExistenceCheckInterval
+	require.Equal(t, "workercontroller.session.existence_check_interval", setting.Key().String())
+	require.Equal(t, dynamicconfig.PrecedenceNamespace, setting.Precedence())
+
+	get := SessionExistenceCheckIntervalGetter(dynamicconfig.NewNoopCollection(), "any-ns")
+	require.Equal(t, 5*time.Minute, get())
+}
+
+func TestSessionExistenceCheckInterval_Override(t *testing.T) {
+	setting := WorkerControllerSessionExistenceCheckInterval
+	client := dynamicconfig.StaticClient{
+		setting.Key(): []dynamicconfig.ConstrainedValue{
+			{Constraints: dynamicconfig.Constraints{Namespace: "ns-fast"}, Value: "30s"},
+			{Value: 10 * time.Minute},
+		},
+	}
+	coll := dynamicconfig.NewCollection(client, log.NewNoopLogger())
+
+	require.Equal(t, 30*time.Second, SessionExistenceCheckIntervalGetter(coll, "ns-fast")())
+	require.Equal(t, 10*time.Minute, SessionExistenceCheckIntervalGetter(coll, "ns-other")())
 }
