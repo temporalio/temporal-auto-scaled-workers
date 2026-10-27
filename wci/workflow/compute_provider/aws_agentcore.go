@@ -17,6 +17,7 @@ import (
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/server/common/dynamicconfig"
 )
 
@@ -32,6 +33,15 @@ const (
 	configAWSAgentCoreRole           = "role"
 	configAWSAgentCoreRoleExternalID = "role_external_id"
 )
+
+// AgentCore's documented length limits for InvokeAgentRuntime's RuntimeSessionId.
+// The SDK does not validate them client-side.
+const (
+	agentCoreRuntimeSessionIDMinLen = 33
+	agentCoreRuntimeSessionIDMaxLen = 256
+)
+
+const errTypeInvalidAgentCoreSessionID = "InvalidAgentCoreSessionID"
 
 type AgentCoreParams struct {
 	Role       string
@@ -126,16 +136,9 @@ func (p *awsAgentCoreComputeProvider) invokeWorker(ctx context.Context, rc Reque
 		return err
 	}
 
-	// Provide worker deployment version details in the payload
-	payload, err := json.Marshal(struct {
-		DeploymentName string `json:"deploymentName"`
-		BuildID        string `json:"buildId"`
-	}{
-		DeploymentName: rc.DeploymentName,
-		BuildID:        rc.DeploymentBuildID,
-	})
+	payload, err := agentCoreInvokePayload(rc)
 	if err != nil {
-		return fmt.Errorf("failed to marshal AgentCore invoke payload: %w", err)
+		return err
 	}
 
 	// Account ID is required with runtime ID and endpoint name is passed as qualifier to invoke specific version
@@ -145,6 +148,11 @@ func (p *awsAgentCoreComputeProvider) invokeWorker(ctx context.Context, rc Reque
 		ContentType:     aws.String("application/json"),
 		Payload:         payload,
 		Qualifier:       aws.String(params.EndpointName),
+	}
+	// Session WCIs pin the invoke to the AgentCore session the worker belongs to.
+	// Non-session invokes leave it unset so the SDK generates one, as before.
+	if rc.SessionID != "" {
+		input.RuntimeSessionId = aws.String(rc.SessionID)
 	}
 
 	// Setup agentCore ctx with timeout to prevent extended blocking
@@ -186,6 +194,47 @@ func (p *awsAgentCoreComputeProvider) invokeWorker(ctx context.Context, rc Reque
 	}
 
 	return nil
+}
+
+// agentCoreInvokePayload builds the JSON invoke payload. Non-session invokes carry
+// only the worker deployment version; session invokes add the session ID and queue.
+func agentCoreInvokePayload(rc RequestContext) ([]byte, error) {
+	var v any
+	if rc.SessionID == "" {
+		v = struct {
+			DeploymentName string `json:"deploymentName"`
+			BuildID        string `json:"buildId"`
+		}{
+			DeploymentName: rc.DeploymentName,
+			BuildID:        rc.DeploymentBuildID,
+		}
+	} else {
+		// The session ID comes from an AgentCore session, so it always fits the
+		// RuntimeSessionId limits. If it doesn't, that's our bug: retrying won't help,
+		// and the errWCIOwned cause classifies it as FailureInternal.
+		if n := len(rc.SessionID); n < agentCoreRuntimeSessionIDMinLen || n > agentCoreRuntimeSessionIDMaxLen {
+			return nil, temporal.NewNonRetryableApplicationError(
+				fmt.Sprintf("session ID length %d is outside AgentCore RuntimeSessionId limits [%d, %d]",
+					n, agentCoreRuntimeSessionIDMinLen, agentCoreRuntimeSessionIDMaxLen),
+				errTypeInvalidAgentCoreSessionID, errWCIOwned)
+		}
+		v = struct {
+			DeploymentName string `json:"deploymentName"`
+			BuildID        string `json:"buildId"`
+			SessionID      string `json:"sessionId"`
+			SessionQueue   string `json:"sessionQueue"`
+		}{
+			DeploymentName: rc.DeploymentName,
+			BuildID:        rc.DeploymentBuildID,
+			SessionID:      rc.SessionID,
+			SessionQueue:   rc.SessionQueue,
+		}
+	}
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal AgentCore invoke payload: %w", err)
+	}
+	return payload, nil
 }
 
 func (p *awsAgentCoreComputeProvider) UpdateWorkerSetSize(_ context.Context, _ RequestContext, _ ComputeProviderConfig, _ int32) error {
