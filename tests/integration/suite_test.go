@@ -61,6 +61,13 @@ func TestWCISuite(t *testing.T) {
 	t.Run("SetRampingVersionInvalidPercentage", testWCISetRampingVersionInvalidPercentage)
 	t.Run("SetRampingVersionSameAsCurrent", testWCISetRampingVersionSameAsCurrent)
 	t.Run("SetRampingVersionToUnversioned", testWCISetRampingVersionToUnversioned)
+	t.Run("SessionConfigRefresh", testWCISessionConfigRefresh)
+	t.Run("SessionExplicitDelete", testWCISessionExplicitDelete)
+	t.Run("SessionSelfPruneOnParentDelete", testWCISessionSelfPruneOnParentDelete)
+	t.Run("SessionSelfPruneOnSessionClose", testWCISessionSelfPruneOnSessionClose)
+	t.Run("SessionStartViaSignalWithStart", testWCISessionStartViaSignalWithStart)
+	t.Run("SessionSyncOnlySignalsDoNotInvoke", testWCISessionSyncOnlySignalsDoNotInvoke)
+	t.Run("SessionVisibility", testWCISessionVisibility)
 	t.Run("UpdateAndRemoveVersionComputeConfig", testWCIUpdateAndRemoveVersionComputeConfig)
 	t.Run("UpdateVersionComputeConfigNoChange", testWCIUpdateVersionComputeConfigNoChange)
 

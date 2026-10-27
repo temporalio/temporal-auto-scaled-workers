@@ -21,6 +21,10 @@ const (
 	testVersionDrainageVisibilityGracePeriod = 1 * time.Second
 )
 
+// testSessionExistenceCheckInterval shortens the session WCI existence check so self-prune
+// and config refresh are observable within a scenario.
+const testSessionExistenceCheckInterval = 2 * time.Second
+
 // createWCITestEnv returns a TestEnv backed by the suite-scoped cluster registered via
 // testcore.UseSuiteScopedCluster on the calling top-level test (see TestWCISuite). The worker
 // service is already enabled on suite-scoped clusters, so this lets every WCI scenario share one
@@ -41,5 +45,9 @@ func createWCITestEnv(t *testing.T) *testcore.TestEnv {
 		// decisions (e.g. rate-based's +1 per backlog signal) deterministic in
 		// tests instead of depending on the 500ms batch window.
 		testcore.WithDynamicConfig(client.WorkerControllerMinSignalIntervalNoSyncMatchMilliseconds, 1),
+		// Run session WCI existence checks every couple of seconds so self-prune and
+		// config refresh are observable. Session scenarios also lower the workflow's
+		// interval floor (see newSessionFixture).
+		testcore.WithDynamicConfig(client.WorkerControllerSessionExistenceCheckInterval, testSessionExistenceCheckInterval),
 	)
 }
