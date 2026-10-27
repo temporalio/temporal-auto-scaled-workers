@@ -33,6 +33,10 @@ func NewSubprocessComputeProvider(_ context.Context, _ *dynamicconfig.Collection
 	return &subprocessComputeProvider{}, nil
 }
 
+func (p subprocessComputeProvider) SupportStatus() SupportStatus {
+	return SupportStatusPreview
+}
+
 func (p *subprocessComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyInvoke
 }

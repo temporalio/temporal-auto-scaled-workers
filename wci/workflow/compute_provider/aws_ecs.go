@@ -45,6 +45,10 @@ func NewAWSECSComputeProvider(_ context.Context, dc *dynamicconfig.Collection) (
 	}, nil
 }
 
+func (p awsECSComputeProvider) SupportStatus() SupportStatus {
+	return SupportStatusPreview
+}
+
 func (p *awsECSComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyWorkerSet
 }

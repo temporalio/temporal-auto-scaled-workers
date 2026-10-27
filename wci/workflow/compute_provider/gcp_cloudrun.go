@@ -59,6 +59,10 @@ func NewGCPCloudRunComputeProvider(_ context.Context, dc *dynamicconfig.Collecti
 	}, nil
 }
 
+func (p gcpCloudRunComputeProvider) SupportStatus() SupportStatus {
+	return SupportStatusPreview
+}
+
 func (p *gcpCloudRunComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyWorkerSet
 }

@@ -31,6 +31,10 @@ func NewTestInvokeComputeProvider(
 	return &testInvokeComputeProvider{}, nil
 }
 
+func (p testInvokeComputeProvider) SupportStatus() SupportStatus {
+	return SupportStatusPreview
+}
+
 func (p *testInvokeComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyInvoke
 }

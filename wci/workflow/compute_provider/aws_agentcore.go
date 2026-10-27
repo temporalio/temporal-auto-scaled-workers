@@ -75,6 +75,10 @@ func NewAWSAgentCoreComputeProvider(_ context.Context, dc *dynamicconfig.Collect
 	}, nil
 }
 
+func (p awsAgentCoreComputeProvider) SupportStatus() SupportStatus {
+	return SupportStatusPreview
+}
+
 func (p *awsAgentCoreComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyInvoke
 }

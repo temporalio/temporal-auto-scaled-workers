@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	// The full generated clientset substantially increases compiled binary size:
 	// "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/dynamic"
@@ -37,6 +38,10 @@ func init() {
 
 func NewK8sComputeProvider(_ context.Context, _ *dynamicconfig.Collection) (ComputeProvider, error) {
 	return &k8sComputeProvider{}, nil
+}
+
+func (p k8sComputeProvider) SupportStatus() SupportStatus {
+	return SupportStatusPreview
 }
 
 func (p *k8sComputeProvider) LaunchStrategy() LaunchStrategy {

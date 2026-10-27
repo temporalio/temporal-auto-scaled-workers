@@ -48,6 +48,10 @@ func NewAWSLambdaComputeProvider(_ context.Context, dc *dynamicconfig.Collection
 	}, nil
 }
 
+func (p awsLambdaComputeProvider) SupportStatus() SupportStatus {
+	return SupportStatusPreview
+}
+
 func (p *awsLambdaComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyInvoke
 }

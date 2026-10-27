@@ -25,6 +25,10 @@ func NewTestWorkerSetComputeProvider(_ context.Context, _ *dynamicconfig.Collect
 	return &testWorkerSetComputeProvider{}, nil
 }
 
+func (p testWorkerSetComputeProvider) SupportStatus() SupportStatus {
+	return SupportStatusPreview
+}
+
 func (p *testWorkerSetComputeProvider) LaunchStrategy() LaunchStrategy {
 	return LaunchStrategyWorkerSet
 }
