@@ -176,7 +176,7 @@ func (c *WorkerControllerInstanceSpec) Validate() error {
 	}
 	// Task types and catch-alls must be unique per region; groups without a region count as one region.
 	seen := make(map[regionTaskType]struct{})
-	seenTaskTypeCatchAll := make(map[string]struct{})
+	seenTaskTypeCatchAll := make(map[string]string)
 	for k, v := range c.ScalingGroupSpecs {
 		if len(k) == 0 {
 			return serviceerror.NewInvalidArgument("scaling groups without an ID are not supported")
@@ -192,13 +192,13 @@ func (c *WorkerControllerInstanceSpec) Validate() error {
 		}
 		if len(v.TaskTypes) == 0 {
 			for _, regionID := range regions {
-				if _, ok := seenTaskTypeCatchAll[regionID]; ok {
+				if other, ok := seenTaskTypeCatchAll[regionID]; ok {
 					if regionID == "" {
-						return serviceerror.NewInvalidArgumentf("entry %s: only one scaling group can have no task types defined", k)
+						return serviceerror.NewInvalidArgumentf("entry %s: conflicts with scaling group %s, which already serves all task queue types", k, other)
 					}
-					return serviceerror.NewInvalidArgumentf("entry %s: only one scaling group in region %s can have no task types defined", k, regionID)
+					return serviceerror.NewInvalidArgumentf("entry %s: conflicts with scaling group %s, which already serves all task queue types in region %s", k, other, regionID)
 				}
-				seenTaskTypeCatchAll[regionID] = struct{}{}
+				seenTaskTypeCatchAll[regionID] = k
 			}
 		}
 		for _, t := range v.TaskTypes {
