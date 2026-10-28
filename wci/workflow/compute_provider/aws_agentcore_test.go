@@ -127,13 +127,19 @@ func TestAWSAgentCoreInvokeWorker_Success(t *testing.T) {
 	assert.Equal(t, testAgentCoreAccountID, aws.ToString(gotAccountID))
 	assert.Equal(t, testAgentCoreEndpointName, aws.ToString(gotQualifier))
 
-	var payload struct {
-		DeploymentName string `json:"deploymentName"`
-		BuildID        string `json:"buildId"`
-	}
+	var payload map[string]any
 	require.NoError(t, json.Unmarshal(gotPayload, &payload))
-	assert.Equal(t, "dep", payload.DeploymentName)
-	assert.Equal(t, "build-1", payload.BuildID)
+	assert.Empty(t, payload)
+}
+
+// assertNoDeploymentVersionKeys checks the payload no longer carries the
+// worker deployment version, which was removed from the AgentCore invoke payload.
+func assertNoDeploymentVersionKeys(t *testing.T, payload []byte) {
+	t.Helper()
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(payload, &m))
+	assert.NotContains(t, m, "deploymentName")
+	assert.NotContains(t, m, "buildId")
 }
 
 // captureAgentCoreInvoke stubs the data client and returns a pointer that receives
@@ -153,7 +159,7 @@ func testAgentCoreSessionID(n int) string {
 	return strings.Repeat("s", n)
 }
 
-func TestAWSAgentCoreInvokeWorker_NonSession_PayloadAndInputUnchanged(t *testing.T) {
+func TestAWSAgentCoreInvokeWorker_NonSession_EmptyPayload(t *testing.T) {
 	got := captureAgentCoreInvoke(t)
 	rc := RequestContext{NamespaceName: "ns", DeploymentName: "dep", DeploymentBuildID: "build-1"}
 
@@ -161,9 +167,11 @@ func TestAWSAgentCoreInvokeWorker_NonSession_PayloadAndInputUnchanged(t *testing
 		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 	}))
 	require.NotNil(t, *got)
-	// Golden: non-session invokes must stay byte-for-byte what they were before
-	// session support, and leave RuntimeSessionId for the SDK to generate.
-	assert.Equal(t, `{"deploymentName":"dep","buildId":"build-1"}`, string((*got).Payload))
+	// Golden: non-session invokes send an empty object (a payload is required)
+	// and leave RuntimeSessionId for the SDK to generate.
+	assert.Equal(t, `{}`, string((*got).Payload))
+	assert.Equal(t, "application/json", aws.ToString((*got).ContentType))
+	assertNoDeploymentVersionKeys(t, (*got).Payload)
 	assert.Nil(t, (*got).RuntimeSessionId)
 }
 
@@ -174,9 +182,9 @@ func TestAWSAgentCoreInvokeWorker_Session_PayloadAndRuntimeSessionID(t *testing.
 		queue       string
 		wantPayload string
 	}{
-		{"with queue", "session-q", `{"deploymentName":"dep","buildId":"build-1","sessionId":"` + sessionID + `","sessionQueue":"session-q"}`},
+		{"with queue", "session-q", `{"sessionId":"` + sessionID + `","sessionQueue":"session-q"}`},
 		// An empty queue is still sent explicitly so the worker sees a session-shaped payload.
-		{"empty queue", "", `{"deploymentName":"dep","buildId":"build-1","sessionId":"` + sessionID + `","sessionQueue":""}`},
+		{"empty queue", "", `{"sessionId":"` + sessionID + `","sessionQueue":""}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -194,6 +202,7 @@ func TestAWSAgentCoreInvokeWorker_Session_PayloadAndRuntimeSessionID(t *testing.
 			}))
 			require.NotNil(t, *got)
 			assert.Equal(t, tc.wantPayload, string((*got).Payload))
+			assertNoDeploymentVersionKeys(t, (*got).Payload)
 			// The session ID is used as-is: no hashing or padding.
 			assert.Equal(t, sessionID, aws.ToString((*got).RuntimeSessionId))
 		})

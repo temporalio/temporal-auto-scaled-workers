@@ -196,18 +196,13 @@ func (p *awsAgentCoreComputeProvider) invokeWorker(ctx context.Context, rc Reque
 	return nil
 }
 
-// agentCoreInvokePayload builds the JSON invoke payload. Non-session invokes carry
-// only the worker deployment version; session invokes add the session ID and queue.
+// agentCoreInvokePayload builds the JSON invoke payload. Non-session invokes send
+// an empty object (InvokeAgentRuntime requires a payload); session invokes carry
+// only the session ID and queue.
 func agentCoreInvokePayload(rc RequestContext) ([]byte, error) {
 	var v any
 	if rc.SessionID == "" {
-		v = struct {
-			DeploymentName string `json:"deploymentName"`
-			BuildID        string `json:"buildId"`
-		}{
-			DeploymentName: rc.DeploymentName,
-			BuildID:        rc.DeploymentBuildID,
-		}
+		v = struct{}{}
 	} else {
 		// The session ID comes from an AgentCore session, so it always fits the
 		// RuntimeSessionId limits. If it doesn't, that's our bug: retrying won't help,
@@ -219,15 +214,11 @@ func agentCoreInvokePayload(rc RequestContext) ([]byte, error) {
 				errTypeInvalidAgentCoreSessionID, errWCIOwned)
 		}
 		v = struct {
-			DeploymentName string `json:"deploymentName"`
-			BuildID        string `json:"buildId"`
-			SessionID      string `json:"sessionId"`
-			SessionQueue   string `json:"sessionQueue"`
+			SessionID    string `json:"sessionId"`
+			SessionQueue string `json:"sessionQueue"`
 		}{
-			DeploymentName: rc.DeploymentName,
-			BuildID:        rc.DeploymentBuildID,
-			SessionID:      rc.SessionID,
-			SessionQueue:   rc.SessionQueue,
+			SessionID:    rc.SessionID,
+			SessionQueue: rc.SessionQueue,
 		}
 	}
 	payload, err := json.Marshal(v)
