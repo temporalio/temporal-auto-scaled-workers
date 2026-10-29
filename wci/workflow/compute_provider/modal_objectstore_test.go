@@ -408,7 +408,6 @@ func TestModalStoreConfigValidate(t *testing.T) {
 		{name: "no_region", mutate: func(c *ModalStoreConfig) { c.Region = "" }, wantErr: "no region"},
 		{name: "no_bucket", mutate: func(c *ModalStoreConfig) { c.Bucket = "" }, wantErr: "no data plane config bucket"},
 		{name: "no_client_id", mutate: func(c *ModalStoreConfig) { c.OAuthClientID = "" }, wantErr: "no Modal OAuth client ID"},
-		{name: "aws_without_a_reader_role", mutate: func(c *ModalStoreConfig) { c.AssumeRoleARN = "" }, wantErr: "reader role ARN"},
 		{
 			// The control plane holds no sealing key for Azure and skips those regions, so a cell
 			// there has nothing to read and should say so rather than fail on a missing object.
@@ -435,6 +434,14 @@ func TestModalStoreConfigValidate(t *testing.T) {
 	t.Run("gcp_needs_no_role", func(t *testing.T) {
 		cfg := complete()
 		cfg.CloudProvider = modalCloudGCP
+		cfg.AssumeRoleARN = ""
+		assert.NoError(t, cfg.Validate())
+	})
+
+	// A deployment running in the bucket's own account reaches it as itself. Requiring a role
+	// would make that deployment name one it has no need to assume, and may not be allowed to.
+	t.Run("aws_without_a_role_uses_its_own_identity", func(t *testing.T) {
+		cfg := complete()
 		cfg.AssumeRoleARN = ""
 		assert.NoError(t, cfg.Validate())
 	})

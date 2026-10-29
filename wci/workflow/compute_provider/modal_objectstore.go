@@ -11,6 +11,9 @@ import (
 	"time"
 
 	gcs "cloud.google.com/go/storage"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"go.uber.org/zap"
 
 	objectstore "github.com/temporalio/object-storage-cache/clients"
@@ -45,10 +48,14 @@ type ModalStoreConfig struct {
 	Region string
 	// Bucket is the regional data plane config bucket, e.g. "data-plane-config-test-us-west-2".
 	Bucket string
-	// AssumeRoleARN is the role the pod assumes to read Bucket and to unwrap the data key the
-	// object is sealed with, which on AWS is the bucket's own reader role. Reading a sealed object
-	// and opening it are halves of one permission, so they are one principal to grant. Unused on
-	// GCP, where both are granted to the pod's service account directly.
+	// AssumeRoleARN is the role to assume to read Bucket and to unwrap the data key the object is
+	// sealed with, which on AWS is the bucket's own reader role. Both steps use it, because
+	// fetching a sealed object and opening it are halves of one permission and belong to one
+	// principal.
+	//
+	// Optional: a deployment whose own identity can already do both -- anything running in the
+	// bucket's own account -- leaves it empty and uses that identity directly. A cell in another
+	// account needs it. Unused on GCP, where both are granted to the service account directly.
 	AssumeRoleARN string
 	// ObjectPrefix is where in the bucket the control plane projected the material. Empty uses the
 	// prefix the control plane defaults to.
@@ -79,11 +86,7 @@ func (c ModalStoreConfig) WithDefaults() ModalStoreConfig {
 // cell fails when the provider is built rather than on a customer's first scale-up.
 func (c ModalStoreConfig) Validate() error {
 	switch c.CloudProvider {
-	case modalCloudAWS:
-		if c.AssumeRoleARN == "" {
-			return errors.New("no data plane config bucket reader role ARN")
-		}
-	case modalCloudGCP:
+	case modalCloudAWS, modalCloudGCP:
 	case "":
 		return errors.New("no cloud provider")
 	default:
@@ -152,9 +155,9 @@ func newObjectStoreModalSecretSource(ctx context.Context, cfg ModalStoreConfig, 
 
 	switch cfg.CloudProvider {
 	case modalCloudAWS:
-		clients := objectstoreaws.NewS3ClientCache(ctx)
-		if clients == nil {
-			return nil, errors.New("failed to create the S3 client cache")
+		clients, err := newModalS3Clients(ctx, cfg)
+		if err != nil {
+			return nil, err
 		}
 		s.objects = &s3ModalObjectReader{cfg: cfg, clients: clients, log: log}
 
@@ -324,6 +327,38 @@ func (r *s3ModalObjectReader) Read(ctx context.Context, objectKey string) ([]byt
 }
 
 func (r *s3ModalObjectReader) Close() error { return nil }
+
+// newModalS3Clients picks how the bucket is reached: through AssumeRoleARN when one is configured,
+// otherwise as this process's own identity.
+//
+// The object store's own client cache always assumes a role and has no way not to, so the
+// role-less case needs its own implementation of the same one-method interface rather than a
+// different argument to that cache.
+func newModalS3Clients(ctx context.Context, cfg ModalStoreConfig) (objectstoreaws.S3Clients, error) {
+	if cfg.AssumeRoleARN != "" {
+		clients := objectstoreaws.NewS3ClientCache(ctx)
+		if clients == nil {
+			return nil, errors.New("failed to create the S3 client cache")
+		}
+		return clients, nil
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.Region))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS configuration for S3 in %s: %w", cfg.Region, err)
+	}
+	return directS3Clients{cfg: awsCfg}, nil
+}
+
+// directS3Clients hands out a plain regional S3 client, ignoring the role argument because there
+// is none to assume.
+type directS3Clients struct {
+	cfg aws.Config
+}
+
+func (c directS3Clients) GetS3Client(_ context.Context, region, _ string) (objectstoreaws.S3, error) {
+	return s3.NewFromConfig(c.cfg, func(o *s3.Options) { o.Region = region }), nil
+}
 
 // gcsModalObjectReader reads from the region's GCS bucket as the pod's own service account.
 //

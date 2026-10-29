@@ -81,7 +81,11 @@ func main() {
 		// key is only usable in the half of the fleet it belongs to.
 		switch cloud {
 		case "aws":
-			cfg.AssumeRoleARN = fmt.Sprintf(*roleFormat, region)
+			// An empty -role-format reaches the bucket as your own identity, which is what an
+			// account whose reader role you cannot assume (or cannot grant kms:Decrypt) needs.
+			if *roleFormat != "" {
+				cfg.AssumeRoleARN = fmt.Sprintf(*roleFormat, region)
+			}
 			cfg.SealingKeyID = *awsKeyID
 		case "gcp":
 			cfg.SealingKeyID = *gcpKeyID
