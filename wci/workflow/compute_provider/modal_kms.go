@@ -43,15 +43,7 @@ func newAWSKMSUnwrapper(ctx context.Context, region string) (*awsKMSUnwrapper, e
 }
 
 func (u *awsKMSUnwrapper) Unwrap(ctx context.Context, keyID string, sealedDEK []byte) ([]byte, error) {
-	// KMS keys are regional and the SDK sends Decrypt to the client's region, not to the one named
-	// in the key ARN. The control plane holds one sealing key per *cloud*, so a cell reading an
-	// object sealed to a key in another region has to call that region or get NotFoundException.
-	// Deriving the region from the ARN makes both arrangements work without configuration: a
-	// single key serving every region, and a per-region key, which is the same call locally.
-	region := awsRegionFromKeyARN(keyID)
-	if region == "" {
-		region = u.region
-	}
+	region, keyID := u.decryptTarget(keyID)
 
 	out, err := u.client.Decrypt(ctx, &kms.DecryptInput{
 		KeyId:               aws.String(keyID),
@@ -64,15 +56,38 @@ func (u *awsKMSUnwrapper) Unwrap(ctx context.Context, keyID string, sealedDEK []
 	return out.Plaintext, nil
 }
 
-// awsRegionFromKeyARN pulls the region out of "arn:aws:kms:<region>:<account>:key/<id>". It
-// returns "" for a bare key id or alias, which names no region and so leaves the caller's default
-// in place.
-func awsRegionFromKeyARN(keyID string) string {
+// decryptTarget picks which region's KMS to call, and under which key ARN.
+//
+// KMS keys are regional and the SDK sends Decrypt to the client's region, not to the one in the
+// key ARN, while the control plane holds one sealing key per *cloud*. So a cell is routinely
+// handed an object naming a key in some other region, and the two arrangements that can serve it
+// need opposite treatment:
+//
+//   - A multi-Region key. Replicas share their key material and their key id, so the ciphertext
+//     opens against the local replica and the ARNs differ only in the region. Rewriting the region
+//     keeps the call local, which is the entire reason for using one -- left alone it would be a
+//     cross-region call to the primary, putting every cell's first scale-up behind one region's
+//     KMS availability.
+//   - A single-Region key. It exists in exactly one region, so the call has to go there.
+//
+// The two are told apart by the "mrk-" prefix AWS gives multi-Region key ids, which it documents
+// for exactly this purpose. A bare key id or alias names no region and leaves the cell's own in
+// place.
+//
+// A multi-Region key with no replica in this region fails here rather than silently falling back
+// to the primary, because a missing replica is a region that was never finished being set up and
+// a working fallback is how that stays unnoticed.
+func (u *awsKMSUnwrapper) decryptTarget(keyID string) (region, localKeyID string) {
 	parts := strings.Split(keyID, ":")
 	if len(parts) < 6 || parts[0] != "arn" || parts[2] != "kms" {
-		return ""
+		return u.region, keyID
 	}
-	return parts[3]
+	if !strings.HasPrefix(parts[5], "key/mrk-") {
+		return parts[3], keyID
+	}
+
+	parts[3] = u.region
+	return u.region, strings.Join(parts, ":")
 }
 
 func (u *awsKMSUnwrapper) Close() error { return nil }
