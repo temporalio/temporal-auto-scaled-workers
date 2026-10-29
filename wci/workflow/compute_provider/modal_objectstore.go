@@ -45,8 +45,10 @@ type ModalStoreConfig struct {
 	Region string
 	// Bucket is the regional data plane config bucket, e.g. "data-plane-config-test-us-west-2".
 	Bucket string
-	// AssumeRoleARN is the role the pod assumes to read Bucket, which on AWS is the bucket's own
-	// reader role. Unused on GCP, where access is granted to the pod's service account directly.
+	// AssumeRoleARN is the role the pod assumes to read Bucket and to unwrap the data key the
+	// object is sealed with, which on AWS is the bucket's own reader role. Reading a sealed object
+	// and opening it are halves of one permission, so they are one principal to grant. Unused on
+	// GCP, where both are granted to the pod's service account directly.
 	AssumeRoleARN string
 	// ObjectPrefix is where in the bucket the control plane projected the material. Empty uses the
 	// prefix the control plane defaults to.
@@ -156,7 +158,7 @@ func newObjectStoreModalSecretSource(ctx context.Context, cfg ModalStoreConfig, 
 		}
 		s.objects = &s3ModalObjectReader{cfg: cfg, clients: clients, log: log}
 
-		unwrapper, err := newAWSKMSUnwrapper(ctx, cfg.Region)
+		unwrapper, err := newAWSKMSUnwrapper(ctx, cfg.Region, cfg.AssumeRoleARN)
 		if err != nil {
 			return nil, err
 		}

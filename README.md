@@ -136,7 +136,7 @@ Which bucket a cell reads is **deployment configuration, not dynamic config** â€
 | `CloudProvider` | `aws` or `gcp` |
 | `Region` | `us-west-2` |
 | `Bucket` | `data-plane-config-test-us-west-2` |
-| `AssumeRoleARN` | `arn:aws:iam::730335288748:role/data-plane-config-test-us-west-2-reader` (AWS only) |
+| `AssumeRoleARN` | `arn:aws:iam::730335288748:role/data-plane-config-test-us-west-2-reader` (AWS only; used for the bucket read **and** the KMS unwrap) |
 | `ObjectPrefix` | `serverless-modal-grants` (the default) |
 | `OAuthClientID` | `oc-xxxxxxxx` |
 | `SealingKeyID` | the KMS key ARN, or the GCP cryptoKey without its version |
@@ -149,6 +149,12 @@ To check a region is wired up without deploying anything, `cmd/modal-secret-prob
 go run ./cmd/modal-secret-probe \
   -targets aws/us-east-1,aws/us-west-2,gcp/us-central1,gcp/us-west1 \
   -account <account id> -workspace <workspace id> -client-id oc-xxxxxxxx
+```
+
+It needs the caller to be able to assume each region's bucket reader role, and that role to hold `kms:Decrypt` on the sealing key â€” the same access the WCI pod needs, which is the point of probing with it. For a multi-Region key one statement covers every replica, because replicas share the key id:
+
+```
+"kms:Decrypt" on arn:aws:kms:*:<account>:key/mrk-<id>
 ```
 
 Only the runtime tuning knobs in the table above stay in dynamic config.

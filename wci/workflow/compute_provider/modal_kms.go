@@ -9,8 +9,10 @@ import (
 	"cloud.google.com/go/kms/apiv1/kmspb"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	kmstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 // modalKeyUnwrapper turns an envelope's sealed data key back into the data key, by asking the
@@ -34,11 +36,26 @@ type awsKMSUnwrapper struct {
 	region string
 }
 
-func newAWSKMSUnwrapper(ctx context.Context, region string) (*awsKMSUnwrapper, error) {
+// newAWSKMSUnwrapper builds the unwrapper, decrypting as assumeRoleARN when one is given.
+//
+// That is the same role the bucket read assumes, and giving the two steps one identity is the
+// point: reading a sealed object and opening it are halves of one permission, so they should be
+// one principal to grant rather than a role for the fetch and the pod's own identity for the
+// decrypt. The data plane config module already grants its reader role kms:Decrypt for the
+// bucket's own SSE key, so the sealing key's grant goes in the same place.
+func newAWSKMSUnwrapper(ctx context.Context, region, assumeRoleARN string) (*awsKMSUnwrapper, error) {
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS configuration for KMS in %s: %w", region, err)
 	}
+
+	if assumeRoleARN != "" {
+		// Cached, so an unwrap after the first does not re-assume. STS is reached as the ambient
+		// identity in the cell's own region; only the KMS call is made as the role.
+		cfg.Credentials = aws.NewCredentialsCache(
+			stscreds.NewAssumeRoleProvider(sts.NewFromConfig(cfg), assumeRoleARN))
+	}
+
 	return &awsKMSUnwrapper{client: kms.NewFromConfig(cfg), region: region}, nil
 }
 
