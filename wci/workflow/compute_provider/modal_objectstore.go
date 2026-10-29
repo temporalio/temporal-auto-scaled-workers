@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -445,4 +446,39 @@ func GetModalStoreConfig() ModalStoreConfig {
 	modalStoreConfigMu.RLock()
 	defer modalStoreConfigMu.RUnlock()
 	return modalStoreConfig
+}
+
+// Environment variables the store configuration can be read from. They are the names
+// saas-temporal's --modal-* flags already bind to, so a deployment with a flag surface and one
+// without configure the same integration by the same names.
+const (
+	envModalCloudProvider = "TEMPORAL_MODAL_CLOUD_PROVIDER"
+	envModalRegion        = "TEMPORAL_MODAL_REGION"
+	envModalBucket        = "TEMPORAL_MODAL_CONFIG_BUCKET"
+	envModalBucketRole    = "TEMPORAL_MODAL_CONFIG_BUCKET_ROLE_ARN"
+	envModalObjectPrefix  = "TEMPORAL_MODAL_OBJECT_PREFIX"
+	envModalOAuthClientID = "TEMPORAL_MODAL_OAUTH_CLIENT_ID"
+	envModalSealingKeyID  = "TEMPORAL_MODAL_SEALING_KEY_ID"
+)
+
+// ModalStoreConfigFromEnv reads the store configuration from the environment, for a host with no
+// flags of its own to carry it -- the OSS server embedding this module, or a container stack. A
+// deployment that does have flags replaces this with fx.Decorate; leaving the cloud provider unset
+// yields the zero value, which keeps the Modal API key default.
+func ModalStoreConfigFromEnv() ModalStoreConfig {
+	cfg := ModalStoreConfig{
+		CloudProvider: os.Getenv(envModalCloudProvider),
+		Region:        os.Getenv(envModalRegion),
+		Bucket:        os.Getenv(envModalBucket),
+		AssumeRoleARN: os.Getenv(envModalBucketRole),
+		ObjectPrefix:  os.Getenv(envModalObjectPrefix),
+		OAuthClientID: os.Getenv(envModalOAuthClientID),
+		SealingKeyID:  os.Getenv(envModalSealingKeyID),
+	}
+	// Defaults are deliberately not filled in for a configuration that names no cloud: the zero
+	// value is how the provider stays switched off, and a half-populated one would not be.
+	if cfg.CloudProvider == "" {
+		return ModalStoreConfig{}
+	}
+	return cfg.WithDefaults()
 }
