@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/sdk/temporal"
@@ -68,6 +69,11 @@ func runInvokeWorker(t *testing.T, sessionID string) error {
 
 func runInvokeWorkerWithSpec(t *testing.T, sessionID string, spec *iface.ComputeProviderSpec) error {
 	t.Helper()
+	return runInvokeWorkerWithSpecAndMetrics(t, sessionID, spec, nil)
+}
+
+func runInvokeWorkerWithSpecAndMetrics(t *testing.T, sessionID string, spec *iface.ComputeProviderSpec, h *capturingMetricsHandler) error {
+	t.Helper()
 	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
 	dc := dynamicconfig.NewCollection(dynamicconfig.StaticClient(map[dynamicconfig.Key]any{
 		client.WorkerControllerEnabledComputeProviders.Key(): []string{
@@ -78,6 +84,9 @@ func runInvokeWorkerWithSpec(t *testing.T, sessionID string, spec *iface.Compute
 	activities := NewActivities(ns, dc, nil, nil)
 
 	var suite testsuite.WorkflowTestSuite
+	if h != nil {
+		suite.SetMetricsHandler(h)
+	}
 	env := suite.NewTestActivityEnvironment()
 	env.RegisterActivity(activities.InvokeWorker)
 	_, err := env.ExecuteActivity(activities.InvokeWorker, &InvokeWorkerActivityRequest{
@@ -135,6 +144,38 @@ func TestInvokeWorker_ProviderErrorRetryability(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.providerErr.Error())
 		})
 	}
+}
+
+// An out-of-bounds AgentCore session ID comes from the worker (user code), so the
+// provider classifies it as a rejection: it must stay non-retryable and be tagged
+// as a customer rejection, not a WCI-internal failure.
+func TestInvokeWorker_SessionIDRejectionMetric(t *testing.T) {
+	fakeInvokeProviderErr = computeprovider.NewProviderError(computeprovider.FailureRejected,
+		temporal.NewNonRetryableApplicationError("session ID length 5 is outside AgentCore RuntimeSessionId limits [33, 256]",
+			"InvalidAgentCoreSessionID", nil))
+	t.Cleanup(func() { fakeInvokeProviderErr = nil })
+
+	config, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{})
+	require.NoError(t, err)
+	h := newCapturingMetricsHandler()
+	err = runInvokeWorkerWithSpecAndMetrics(t, testSessionID,
+		&iface.ComputeProviderSpec{ProviderType: testFakeInvokeComputeProviderType, Config: config}, h)
+
+	requireApplicationErrorType(t, err, "InvokeWorkerFailed")
+	var appErr *temporal.ApplicationError
+	require.ErrorAs(t, err, &appErr)
+	assert.True(t, appErr.NonRetryable())
+
+	activityTags := func(errorType wcimetrics.ErrorType) map[string]string {
+		return map[string]string{
+			wcimetrics.ActivityTypeTag:  string(wcimetrics.ActivityTypeInvokeWorker),
+			wcimetrics.SessionTagName:   wcimetrics.SessionTagValue(true),
+			wcimetrics.ErrorTypeTagName: string(errorType),
+		}
+	}
+	name := wcimetrics.Activities.Name()
+	assert.Positive(t, h.counterTotal(name, activityTags(wcimetrics.ErrorTypeComputeProviderRejected)))
+	assert.Zero(t, h.counterTotal(name, activityTags(wcimetrics.ErrorTypeComputeProviderInternal)))
 }
 
 func TestInvokeWorker_Success(t *testing.T) {
