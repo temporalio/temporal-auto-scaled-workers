@@ -1,7 +1,6 @@
 package computeprovider
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -51,7 +50,7 @@ func TestModalSecretSourceFallsBackToTheEnvironment(t *testing.T) {
 		src := getModalSecretSource()
 
 		require.IsType(t, FailingModalSecretSource{}, src)
-		_, err := src.Credentials(context.Background(), "acct", "ws")
+		_, err := src.Credentials(t.Context(), "acct", "ws")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "bucket")
 	})
