@@ -23,6 +23,8 @@ import (
 const (
 	testSessionID    = "session-0123456789abcdef0123456789abcdef"
 	testSessionQueue = "session-queue"
+	// testSessionWorkflowID differs from testSessionID: the session's workflow can have any ID.
+	testSessionWorkflowID = "session-workflow-id"
 	// sessionInitDuration is how long the mocked init activity takes, so that signals sent
 	// in the meantime show that they are only processed after init.
 	sessionInitDuration = time.Minute
@@ -35,10 +37,9 @@ func newTestSessionArgs() *iface.WorkerControllerInstanceWorkflowArgs {
 		DeploymentName: "test-deployment",
 		BuildId:        "test-build",
 		Session: &iface.WorkerControllerInstanceSessionArgs{
-			SessionID:      testSessionID,
-			SessionQueue:   testSessionQueue,
-			DeploymentName: "test-deployment",
-			BuildID:        "test-build",
+			SessionID:         testSessionID,
+			SessionWorkflowID: testSessionWorkflowID,
+			SessionQueue:      testSessionQueue,
 		},
 	}
 }
@@ -138,6 +139,7 @@ func newSessionTestEnv(t *testing.T, workflowVersion WorkerControllerInstanceWor
 		Return(func(_ context.Context, req *CheckSessionExistenceRequest) (*CheckSessionExistenceResponse, error) {
 			h.existenceChecks = append(h.existenceChecks, h.env.Now().Sub(start))
 			assert.Equal(t, testSessionID, req.SessionID)
+			assert.Equal(t, testSessionWorkflowID, req.SessionWorkflowID)
 			if h.existenceErr != nil {
 				return nil, h.existenceErr
 			}

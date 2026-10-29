@@ -9,6 +9,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	commonpb "go.temporal.io/api/common/v1"
+	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
@@ -23,17 +24,21 @@ import (
 
 func newTestSessionArgs() *iface.WorkerControllerInstanceSessionArgs {
 	return &iface.WorkerControllerInstanceSessionArgs{
-		SessionID:      "session-0123456789abcdef0123456789abcdef",
-		SessionQueue:   "session-queue",
-		DeploymentName: "test-deployment",
-		BuildID:        "test-build",
+		SessionID:         "session-0123456789abcdef0123456789abcdef",
+		SessionWorkflowID: "session-workflow-id",
+		SessionQueue:      "session-queue",
 	}
+}
+
+func newTestSessionVersion() *deploymentpb.WorkerDeploymentVersion {
+	return &deploymentpb.WorkerDeploymentVersion{DeploymentName: "test-deployment", BuildId: "test-build"}
 }
 
 func TestSignalWithStartSessionWorkerControllerInstance(t *testing.T) {
 	c := newTestClient(t, true)
 	historyClient := c.historyClient.(*historyservicemock.MockHistoryServiceClient)
 	session := newTestSessionArgs()
+	version := newTestSessionVersion()
 	signal := &iface.SignalTaskAddRequest{TaskQueueName: session.SessionQueue, TaskQueueType: enumspb.TASK_QUEUE_TYPE_WORKFLOW, NoSyncMatchSignalsSinceLast: 1}
 
 	historyClient.EXPECT().SignalWithStartWorkflowExecution(gomock.Any(), gomock.Any()).
@@ -41,7 +46,7 @@ func TestSignalWithStartSessionWorkerControllerInstance(t *testing.T) {
 			require.Equal(t, "test-namespace-id", req.GetNamespaceId())
 			r := req.GetSignalWithStartRequest()
 			require.Equal(t, testNamespaceName, r.GetNamespace())
-			require.Equal(t, GenerateSessionWorkerControllerInstanceWorkflowID(session.DeploymentName, session.BuildID, session.SessionID), r.GetWorkflowId())
+			require.Equal(t, GenerateSessionWorkerControllerInstanceWorkflowID(version.DeploymentName, version.BuildId, session.SessionID), r.GetWorkflowId())
 			require.Equal(t, iface.WorkerControllerInstanceWorkflowType, r.GetWorkflowType().GetName())
 			require.Equal(t, WorkerControllerPerNSWorkerTaskQueue, r.GetTaskQueue().GetName())
 			require.Equal(t, iface.SignalTaskAdd, r.GetSignalName())
@@ -57,8 +62,8 @@ func TestSignalWithStartSessionWorkerControllerInstance(t *testing.T) {
 			require.NoError(t, sdk.PreferProtoDataConverter.FromPayloads(r.GetInput(), &args))
 			require.Equal(t, session, args.Session)
 			require.Equal(t, testNamespaceName, args.NamespaceName)
-			require.Equal(t, session.DeploymentName, args.DeploymentName)
-			require.Equal(t, session.BuildID, args.BuildId)
+			require.Equal(t, version.DeploymentName, args.DeploymentName)
+			require.Equal(t, version.BuildId, args.BuildId)
 
 			var gotSignal iface.SignalTaskAddRequest
 			require.NoError(t, sdk.PreferProtoDataConverter.FromPayloads(r.GetSignalInput(), &gotSignal))
@@ -66,7 +71,7 @@ func TestSignalWithStartSessionWorkerControllerInstance(t *testing.T) {
 			return &historyservice.SignalWithStartWorkflowExecutionResponse{}, nil
 		})
 
-	require.NoError(t, c.SignalWithStartSessionWorkerControllerInstance(context.Background(), newTestNamespace(), session, signal))
+	require.NoError(t, c.SignalWithStartSessionWorkerControllerInstance(context.Background(), newTestNamespace(), version, session, signal))
 }
 
 func TestSignalWithStartSessionWorkerControllerInstance_InvalidSession(t *testing.T) {
@@ -74,7 +79,15 @@ func TestSignalWithStartSessionWorkerControllerInstance_InvalidSession(t *testin
 	session := newTestSessionArgs()
 	session.SessionID = ""
 
-	err := c.SignalWithStartSessionWorkerControllerInstance(context.Background(), newTestNamespace(), session, &iface.SignalTaskAddRequest{})
+	err := c.SignalWithStartSessionWorkerControllerInstance(context.Background(), newTestNamespace(), newTestSessionVersion(), session, &iface.SignalTaskAddRequest{})
+	var invalidArg *serviceerror.InvalidArgument
+	require.ErrorAs(t, err, &invalidArg)
+}
+
+func TestSignalWithStartSessionWorkerControllerInstance_NilVersion(t *testing.T) {
+	// The history mock has no expectations, so any History call fails the test.
+	c := newTestClient(t, true)
+	err := c.SignalWithStartSessionWorkerControllerInstance(context.Background(), newTestNamespace(), nil, newTestSessionArgs(), &iface.SignalTaskAddRequest{})
 	var invalidArg *serviceerror.InvalidArgument
 	require.ErrorAs(t, err, &invalidArg)
 }
@@ -89,7 +102,7 @@ func TestSignalWithStartSessionWorkerControllerInstance_UsesUpdatedTaskQueue(t *
 			return &historyservice.SignalWithStartWorkflowExecutionResponse{}, nil
 		})
 
-	require.NoError(t, c.SignalWithStartSessionWorkerControllerInstance(context.Background(), newTestNamespace(), newTestSessionArgs(), &iface.SignalTaskAddRequest{}))
+	require.NoError(t, c.SignalWithStartSessionWorkerControllerInstance(context.Background(), newTestNamespace(), newTestSessionVersion(), newTestSessionArgs(), &iface.SignalTaskAddRequest{}))
 }
 
 // List and the maxInstances count both use WorkerControllerInstanceVisibilityBaseListQuery,
@@ -148,26 +161,26 @@ func TestSignalWithStartSessionWorkerControllerInstance_LengthValidation(t *test
 	const limit = 1000
 	tests := []struct {
 		name    string
-		mutate  func(*iface.WorkerControllerInstanceSessionArgs)
+		mutate  func(*deploymentpb.WorkerDeploymentVersion)
 		wantMsg string
 	}{
 		{
 			name:    "deployment name too long",
-			mutate:  func(s *iface.WorkerControllerInstanceSessionArgs) { s.DeploymentName = strings.Repeat("d", limit/2+1) },
+			mutate:  func(v *deploymentpb.WorkerDeploymentVersion) { v.DeploymentName = strings.Repeat("d", limit/2+1) },
 			wantMsg: "size of WorkerDeploymentName larger than the maximum allowed",
 		},
 		{
 			name:    "build ID too long",
-			mutate:  func(s *iface.WorkerControllerInstanceSessionArgs) { s.BuildID = strings.Repeat("b", limit/2+1) },
+			mutate:  func(v *deploymentpb.WorkerDeploymentVersion) { v.BuildId = strings.Repeat("b", limit/2+1) },
 			wantMsg: "larger than the maximum allowed",
 		},
 		{
 			// Each component fits, but the generated workflow ID (prefix + raw deployment name and
 			// build ID + hash) does not.
 			name: "workflow ID too long",
-			mutate: func(s *iface.WorkerControllerInstanceSessionArgs) {
-				s.DeploymentName = strings.Repeat("d", limit/2-20)
-				s.BuildID = strings.Repeat("b", limit/2-20)
+			mutate: func(v *deploymentpb.WorkerDeploymentVersion) {
+				v.DeploymentName = strings.Repeat("d", limit/2-20)
+				v.BuildId = strings.Repeat("b", limit/2-20)
 			},
 			wantMsg: "workflow ID exceeds length limit",
 		},
@@ -176,10 +189,10 @@ func TestSignalWithStartSessionWorkerControllerInstance_LengthValidation(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			// The history mock has no expectations, so any History call fails the test.
 			c := newTestClient(t, true)
-			session := newTestSessionArgs()
-			tc.mutate(session)
+			version := newTestSessionVersion()
+			tc.mutate(version)
 
-			err := c.SignalWithStartSessionWorkerControllerInstance(context.Background(), newTestNamespace(), session, &iface.SignalTaskAddRequest{})
+			err := c.SignalWithStartSessionWorkerControllerInstance(context.Background(), newTestNamespace(), version, newTestSessionArgs(), &iface.SignalTaskAddRequest{})
 			var invalidArg *serviceerror.InvalidArgument
 			require.ErrorAs(t, err, &invalidArg)
 			require.Contains(t, err.Error(), tc.wantMsg)
@@ -192,6 +205,7 @@ func TestListWorkerControllerInstances_SkipsSessionInstances(t *testing.T) {
 	visibilityManager := manager.NewMockVisibilityManager(gomock.NewController(t))
 	c.visibilityManager = visibilityManager
 	session := newTestSessionArgs()
+	version := newTestSessionVersion()
 
 	visibilityManager.EXPECT().ListWorkflowExecutions(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, req *manager.ListWorkflowExecutionsRequestV2) (*manager.ListWorkflowExecutionsResponse, error) {
@@ -199,7 +213,7 @@ func TestListWorkerControllerInstances_SkipsSessionInstances(t *testing.T) {
 			return &manager.ListWorkflowExecutionsResponse{
 				Executions: []*workflowpb.WorkflowExecutionInfo{
 					{Execution: &commonpb.WorkflowExecution{WorkflowId: GenerateWorkerControllerInstanceWorkflowID(newTestVersion())}},
-					{Execution: &commonpb.WorkflowExecution{WorkflowId: GenerateSessionWorkerControllerInstanceWorkflowID(session.DeploymentName, session.BuildID, session.SessionID)}},
+					{Execution: &commonpb.WorkflowExecution{WorkflowId: GenerateSessionWorkerControllerInstanceWorkflowID(version.DeploymentName, version.BuildId, session.SessionID)}},
 				},
 				NextPageToken: []byte("next"),
 			}, nil

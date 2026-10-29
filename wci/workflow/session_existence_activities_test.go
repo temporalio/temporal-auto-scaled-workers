@@ -58,6 +58,7 @@ func runCheckSessionExistence(t *testing.T, session *fakeSessionWorkflowClient, 
 			SessionID:         testSessionID,
 			SessionQueue:      testSessionQueue,
 		},
+		SessionWorkflowID: testSessionWorkflowID,
 	})
 	if err != nil {
 		return nil, err
@@ -78,7 +79,7 @@ func TestCheckSessionExistence_AliveReturnsInvokeOnlyParentSpec(t *testing.T) {
 	require.NotNil(t, resp.ParentSpec)
 	assert.Equal(t, []string{"invoke"}, keys(resp.ParentSpec.ScalingGroupSpecs))
 	assert.Equal(t, []string{"not-enabled", "worker-set"}, resp.DroppedGroups)
-	assert.Equal(t, []string{testSessionID}, session.workflowIDs, "the session workflow ID is the session ID")
+	assert.Equal(t, []string{testSessionWorkflowID}, session.workflowIDs, "the existence check queries the session workflow ID, not the session ID")
 	require.Len(t, parent.versions, 2)
 	for _, v := range parent.versions {
 		assert.Equal(t, "test-deployment", v.DeploymentName)
@@ -146,7 +147,9 @@ func TestCheckSessionExistence_InvalidRequestIsNonRetryable(t *testing.T) {
 	activities := NewActivities(nil, nil, nil, nil)
 	SetParentInstanceClient(activities, &fakeParentInstanceClient{})
 	SetSessionWorkflowClient(activities, &fakeSessionWorkflowClient{})
-	for _, req := range []*CheckSessionExistenceRequest{nil, {}} {
+	// A session ID alone is not enough: the check needs the session workflow ID.
+	sessionIDOnly := &CheckSessionExistenceRequest{RequestContext: RequestContext{SessionID: testSessionID}}
+	for _, req := range []*CheckSessionExistenceRequest{nil, {}, sessionIDOnly} {
 		_, err := activities.CheckSessionExistence(context.Background(), req)
 		requireApplicationErrorType(t, err, "InvalidArgument")
 	}

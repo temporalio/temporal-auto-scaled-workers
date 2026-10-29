@@ -93,12 +93,14 @@ type (
 			request *iface.SignalTaskAddRequest,
 		) error
 
-		// SignalWithStartSessionWorkerControllerInstance signals a session WCI with a task-add
-		// signal, starting it if it is not running yet. The session WCI processes the signal
-		// after it initialized itself from the parent version WCI.
+		// SignalWithStartSessionWorkerControllerInstance signals the session WCI for the given
+		// deployment version and session with a task-add signal, starting it if it is not
+		// running yet. The version identifies the parent version WCI. The session WCI processes
+		// the signal after it initialized itself from the parent version WCI.
 		SignalWithStartSessionWorkerControllerInstance(
 			ctx context.Context,
 			namespaceEntry *namespace.Namespace,
+			version *deploymentpb.WorkerDeploymentVersion,
 			session *iface.WorkerControllerInstanceSessionArgs,
 			request *iface.SignalTaskAddRequest,
 		) error
@@ -493,6 +495,7 @@ func (d *clientImpl) SignalTaskAddEvent(
 func (d *clientImpl) SignalWithStartSessionWorkerControllerInstance(
 	ctx context.Context,
 	namespaceEntry *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
 	session *iface.WorkerControllerInstanceSessionArgs,
 	request *iface.SignalTaskAddRequest,
 ) (retErr error) {
@@ -502,18 +505,20 @@ func (d *clientImpl) SignalWithStartSessionWorkerControllerInstance(
 	if err := session.Validate(); err != nil {
 		return serviceerror.NewInvalidArgument(err.Error())
 	}
-	version := &deploymentpb.WorkerDeploymentVersion{DeploymentName: session.DeploymentName, BuildId: session.BuildID}
+	if version == nil {
+		return serviceerror.NewInvalidArgument("deployment version is required")
+	}
 
 	//revive:disable-next-line:defer
 	defer d.convertAndRecordError("SignalWithStartSessionWorkerControllerInstance", version, &retErr)()
 
-	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentNameFieldName, session.DeploymentName, d.maxIDLengthLimit()); err != nil {
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentNameFieldName, version.DeploymentName, d.maxIDLengthLimit()); err != nil {
 		return err
 	}
-	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, session.BuildID, d.maxIDLengthLimit()); err != nil {
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, version.BuildId, d.maxIDLengthLimit()); err != nil {
 		return err
 	}
-	workflowID := GenerateSessionWorkerControllerInstanceWorkflowID(session.DeploymentName, session.BuildID, session.SessionID)
+	workflowID := GenerateSessionWorkerControllerInstanceWorkflowID(version.DeploymentName, version.BuildId, session.SessionID)
 	if len(workflowID) > d.maxIDLengthLimit() {
 		return serviceerror.NewInvalidArgumentf("session worker controller instance workflow ID exceeds length limit of %d", d.maxIDLengthLimit())
 	}
@@ -527,8 +532,8 @@ func (d *clientImpl) SignalWithStartSessionWorkerControllerInstance(
 		workflowID,
 		&iface.WorkerControllerInstanceWorkflowArgs{
 			NamespaceName:  namespaceEntry.Name().String(),
-			DeploymentName: session.DeploymentName,
-			BuildId:        session.BuildID,
+			DeploymentName: version.DeploymentName,
+			BuildId:        version.BuildId,
 			Session:        session,
 		},
 		iface.WorkerControllerSessionInstanceNamespaceDivision,

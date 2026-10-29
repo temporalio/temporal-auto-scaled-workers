@@ -92,15 +92,17 @@ type (
 		Session *WorkerControllerInstanceSessionArgs `json:"session,omitempty"`
 	}
 
-	// WorkerControllerInstanceSessionArgs identifies the session a session WCI scales and
-	// the worker deployment version (parent version WCI) it takes its compute config from.
+	// WorkerControllerInstanceSessionArgs identifies the session a session WCI scales. The
+	// worker deployment version (parent version WCI) it takes its compute config from is
+	// WorkerControllerInstanceWorkflowArgs.DeploymentName / BuildId.
 	WorkerControllerInstanceSessionArgs struct {
-		// SessionID is the session workflow ID and the AgentCore runtime session ID.
+		// SessionID is the AgentCore runtime session ID. It is not the session workflow's ID.
 		SessionID string `json:"session_id,omitempty"`
+		// SessionWorkflowID is the workflow ID of the session's workflow, checked by the
+		// periodic existence check.
+		SessionWorkflowID string `json:"session_workflow_id,omitempty"`
 		// SessionQueue is the session sticky task queue name.
-		SessionQueue   string `json:"session_queue,omitempty"`
-		DeploymentName string `json:"deployment_name,omitempty"`
-		BuildID        string `json:"build_id,omitempty"`
+		SessionQueue string `json:"session_queue,omitempty"`
 	}
 
 	WorkerControllerInstanceLocalState struct {
@@ -191,8 +193,9 @@ type (
 		DeploymentName string                 `json:"deployment_name,omitempty"`
 		BuildId        string                 `json:"build_id,omitempty"`
 		CreateTime     *timestamppb.Timestamp `json:"create_time,omitempty"`
-		// SessionID is only set for session WCIs.
-		SessionID string `json:"session_id,omitempty"`
+		// SessionID and SessionWorkflowID are only set for session WCIs.
+		SessionID         string `json:"session_id,omitempty"`
+		SessionWorkflowID string `json:"session_workflow_id,omitempty"`
 	}
 )
 
@@ -225,14 +228,11 @@ func (s *WorkerControllerInstanceSessionArgs) Validate() error {
 	if s.SessionID == "" {
 		errs = append(errs, errors.New("session ID is required"))
 	}
+	if s.SessionWorkflowID == "" {
+		errs = append(errs, errors.New("session workflow ID is required"))
+	}
 	if s.SessionQueue == "" {
 		errs = append(errs, errors.New("session queue is required"))
-	}
-	if s.DeploymentName == "" {
-		errs = append(errs, errors.New("deployment name is required"))
-	}
-	if s.BuildID == "" {
-		errs = append(errs, errors.New("build ID is required"))
 	}
 	return errors.Join(errs...)
 }

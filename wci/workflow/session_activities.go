@@ -42,11 +42,14 @@ type (
 
 	CheckSessionExistenceRequest struct {
 		RequestContext
+		// SessionWorkflowID is the workflow ID of the session's workflow. It is not the
+		// session ID.
+		SessionWorkflowID string `json:"session_workflow_id,omitempty"`
 	}
 
 	// CheckSessionExistenceResponse is the result of a periodic session existence check.
 	CheckSessionExistenceResponse struct {
-		// SessionAlive is true if the session workflow (ID = session ID) is running.
+		// SessionAlive is true if the session workflow (ID = SessionWorkflowID) is running.
 		SessionAlive bool `json:"session_alive"`
 		// ParentAlive is true if the parent version WCI is running and not deleted. It is
 		// only checked when the session is alive.
@@ -90,7 +93,7 @@ func SetSessionWorkflowClient(a *Activities, c SessionWorkflowClient) {
 // deleted workflow is reported through the response rather than as an error; transient
 // History errors are returned so the activity retry policy retries them.
 func (a *Activities) CheckSessionExistence(ctx context.Context, req *CheckSessionExistenceRequest) (*CheckSessionExistenceResponse, error) {
-	if req == nil || req.SessionID == "" {
+	if req == nil || req.SessionWorkflowID == "" {
 		return nil, temporal.NewNonRetryableApplicationError("Invalid activity request", "InvalidArgument", nil)
 	}
 	if a.parentClient == nil || a.sessionWorkflowClient == nil {
@@ -101,13 +104,13 @@ func (a *Activities) CheckSessionExistence(ctx context.Context, req *CheckSessio
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeCheckSessionExistence, noComputeProvider)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
-	sessionAlive, err := a.sessionWorkflowClient.WorkflowIsRunning(ctx, a.namespace, req.SessionID)
+	sessionAlive, err := a.sessionWorkflowClient.WorkflowIsRunning(ctx, a.namespace, req.SessionWorkflowID)
 	if err != nil {
 		recordError(wcimetrics.ErrorTypeSessionParentQueryFailed)
 		return nil, err
 	}
 	if !sessionAlive {
-		logger.Info("Session workflow is not running", "session_id", req.SessionID)
+		logger.Info("Session workflow is not running", "session_workflow_id", req.SessionWorkflowID)
 		recordSkipped(wcimetrics.SkippedReasonSessionWorkflowGone)
 		return &CheckSessionExistenceResponse{}, nil
 	}

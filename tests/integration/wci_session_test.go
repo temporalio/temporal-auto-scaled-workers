@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
@@ -61,6 +62,15 @@ func testWCISessionStartViaSignalWithStart(t *testing.T) {
 	requireSpecsEqual(t, parent.Spec, state.Spec)
 	require.NotNil(t, state.NextExistenceCheckTime, "session WCI should persist its next existence check time")
 	require.Nil(t, state.NextPollTime, "session WCI should not arm the metrics poll")
+
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		resp, err := f.cli.DescribeWorkflowExecution(f.ctx, f.sessionWCIID(session), "")
+		require.NoError(c, err)
+		memo, err := iface.DecodeWorkerControllerInstanceMemo(resp.GetWorkflowExecutionInfo().GetMemo())
+		require.NoError(c, err)
+		require.Equal(c, session.SessionID, memo.SessionID)
+		require.Equal(c, session.SessionWorkflowID, memo.SessionWorkflowID)
+	}, 30*time.Second, 500*time.Millisecond, "session WCI memo should carry the session ID and session workflow ID")
 }
 
 // Sync-only signals never invoke, and a session WCI never pulls stats, validates, registers
@@ -116,7 +126,7 @@ func testWCISessionSelfPruneOnSessionClose(t *testing.T) {
 	session := f.startSession(t, noSyncTaskAdd(f.sessionQueue))
 	f.waitForSessionInvoke(t, 30*time.Second, "session invoke")
 
-	require.NoError(t, f.cli.TerminateWorkflow(f.ctx, session.SessionID, "", "session closed"))
+	require.NoError(t, f.cli.TerminateWorkflow(f.ctx, session.SessionWorkflowID, "", "session closed"))
 	f.waitForCompleted(t, f.sessionWCIID(session))
 }
 
@@ -269,20 +279,21 @@ func newSessionFixture(t *testing.T) *sessionFixture {
 // Both are terminated on cleanup if still running.
 func (f *sessionFixture) startSession(t *testing.T, req *iface.SignalTaskAddRequest) *iface.WorkerControllerInstanceSessionArgs {
 	t.Helper()
+	// The session workflow ID differs from the session ID: the session's workflow can have
+	// any ID, and the existence check must look it up by its workflow ID.
 	session := &iface.WorkerControllerInstanceSessionArgs{
-		SessionID:      "session-" + uuid.NewString(),
-		SessionQueue:   f.sessionQueue,
-		DeploymentName: f.version.DeploymentName,
-		BuildID:        f.version.BuildId,
+		SessionID:         "session-" + uuid.NewString(),
+		SessionWorkflowID: "session-wf-" + uuid.NewString(),
+		SessionQueue:      f.sessionQueue,
 	}
 
 	// No worker polls this queue, so the session workflow stays running until terminated.
 	_, err := f.cli.ExecuteWorkflow(f.ctx, sdkclient.StartWorkflowOptions{
-		ID:        session.SessionID,
+		ID:        session.SessionWorkflowID,
 		TaskQueue: "session-wf-tq-" + uuid.NewString(),
 	}, "session-placeholder-workflow")
 	require.NoError(t, err)
-	t.Cleanup(func() { f.terminateIfRunning(t, session.SessionID) })
+	t.Cleanup(func() { f.terminateIfRunning(t, session.SessionWorkflowID) })
 
 	f.signalWithStart(t, session, req)
 	t.Cleanup(func() { f.terminateIfRunning(t, f.sessionWCIID(session)) })
@@ -295,8 +306,8 @@ func (f *sessionFixture) signalWithStart(t *testing.T, session *iface.WorkerCont
 	t.Helper()
 	startPayload, err := sdk.PreferProtoDataConverter.ToPayloads(&iface.WorkerControllerInstanceWorkflowArgs{
 		NamespaceName:  f.namespace,
-		DeploymentName: session.DeploymentName,
-		BuildId:        session.BuildID,
+		DeploymentName: f.version.DeploymentName,
+		BuildId:        f.version.BuildId,
 		Session:        session,
 	})
 	require.NoError(t, err)
@@ -327,7 +338,7 @@ func (f *sessionFixture) signalWithStart(t *testing.T, session *iface.WorkerCont
 }
 
 func (f *sessionFixture) sessionWCIID(session *iface.WorkerControllerInstanceSessionArgs) string {
-	return wciclient.GenerateSessionWorkerControllerInstanceWorkflowID(session.DeploymentName, session.BuildID, session.SessionID)
+	return wciclient.GenerateSessionWorkerControllerInstanceWorkflowID(f.version.DeploymentName, f.version.BuildId, session.SessionID)
 }
 
 func (f *sessionFixture) waitForSessionInvoke(t *testing.T, timeout time.Duration, desc string) computeprovider.RequestContext {

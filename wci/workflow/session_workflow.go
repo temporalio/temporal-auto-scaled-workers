@@ -124,6 +124,13 @@ func (d *WorkflowRunner) sessionID() string {
 	return ""
 }
 
+func (d *WorkflowRunner) sessionWorkflowID() string {
+	if d.IsSession() {
+		return d.Session.SessionWorkflowID
+	}
+	return ""
+}
+
 // sessionExistenceCheckInterval returns the configured interval, clamped to the minimum.
 func (d *WorkflowRunner) sessionExistenceCheckInterval() time.Duration {
 	interval := DefaultSessionExistenceCheckInterval
@@ -176,7 +183,7 @@ func (d *WorkflowRunner) checkSessionExistence(ctx workflow.Context) (done bool)
 			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, MaximumAttempts: 5},
 		}),
 		d.a.CheckSessionExistence,
-		&CheckSessionExistenceRequest{RequestContext: d.requestContext()},
+		&CheckSessionExistenceRequest{RequestContext: d.requestContext(), SessionWorkflowID: d.Session.SessionWorkflowID},
 	).Get(ctx, &resp); err != nil {
 		// Try again on the next interval.
 		d.logger.Error("Session existence check failed", "error", err)

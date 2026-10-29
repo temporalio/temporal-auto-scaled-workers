@@ -12,10 +12,9 @@ import (
 
 func validSessionArgs() *WorkerControllerInstanceSessionArgs {
 	return &WorkerControllerInstanceSessionArgs{
-		SessionID:      "session-0123456789abcdef0123456789abcdef",
-		SessionQueue:   "session-queue",
-		DeploymentName: "my-deployment",
-		BuildID:        "build-1",
+		SessionID:         "session-0123456789abcdef0123456789abcdef",
+		SessionWorkflowID: "session-workflow-id",
+		SessionQueue:      "session-queue",
 	}
 }
 
@@ -32,7 +31,7 @@ func TestSessionArgs_Validate(t *testing.T) {
 		{
 			name: "valid with colons",
 			mutate: func(s *WorkerControllerInstanceSessionArgs) *WorkerControllerInstanceSessionArgs {
-				s.SessionID, s.SessionQueue, s.DeploymentName, s.BuildID = "a:b", "q:1", "d:x", "b:y"
+				s.SessionID, s.SessionWorkflowID, s.SessionQueue = "a:b", "w:1", "q:1"
 				return s
 			},
 		},
@@ -58,27 +57,19 @@ func TestSessionArgs_Validate(t *testing.T) {
 			wantErr: []string{"session queue is required"},
 		},
 		{
-			name: "missing deployment name",
+			name: "missing session workflow ID",
 			mutate: func(s *WorkerControllerInstanceSessionArgs) *WorkerControllerInstanceSessionArgs {
-				s.DeploymentName = ""
+				s.SessionWorkflowID = ""
 				return s
 			},
-			wantErr: []string{"deployment name is required"},
-		},
-		{
-			name: "missing build ID",
-			mutate: func(s *WorkerControllerInstanceSessionArgs) *WorkerControllerInstanceSessionArgs {
-				s.BuildID = ""
-				return s
-			},
-			wantErr: []string{"build ID is required"},
+			wantErr: []string{"session workflow ID is required"},
 		},
 		{
 			name: "all empty reports every field",
 			mutate: func(*WorkerControllerInstanceSessionArgs) *WorkerControllerInstanceSessionArgs {
 				return &WorkerControllerInstanceSessionArgs{}
 			},
-			wantErr: []string{"session ID is required", "session queue is required", "deployment name is required", "build ID is required"},
+			wantErr: []string{"session ID is required", "session workflow ID is required", "session queue is required"},
 		},
 	}
 	for _, tc := range tests {

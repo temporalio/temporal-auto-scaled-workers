@@ -150,7 +150,7 @@ func Workflow(
 
 	logger := sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName, "wf-deployment-name", args.DeploymentName, "wf-build-id", args.BuildId)
 	if args.IsSession() {
-		logger = sdklog.With(logger, "wf-session-id", args.Session.SessionID, "wf-session-queue", args.Session.SessionQueue)
+		logger = sdklog.With(logger, "wf-session-id", args.Session.SessionID, "wf-session-workflow-id", args.Session.SessionWorkflowID, "wf-session-queue", args.Session.SessionQueue)
 	}
 
 	workflowRunner := &WorkflowRunner{
@@ -1095,10 +1095,11 @@ func (d *WorkflowRunner) ensureNotDeleted() error {
 func (d *WorkflowRunner) updateMemo(ctx workflow.Context) error {
 	return workflow.UpsertMemo(ctx, map[string]any{
 		iface.WorkerControllerInstanceMemoField: &iface.WorkerControllerInstanceMemo{
-			DeploymentName: d.DeploymentName,
-			BuildId:        d.BuildId,
-			CreateTime:     d.State.CreateTime,
-			SessionID:      d.sessionID(),
+			DeploymentName:    d.DeploymentName,
+			BuildId:           d.BuildId,
+			CreateTime:        d.State.CreateTime,
+			SessionID:         d.sessionID(),
+			SessionWorkflowID: d.sessionWorkflowID(),
 		},
 	})
 }
