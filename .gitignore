@@ -35,3 +35,7 @@ go.work.sum
 
 # Executables produced by temporal repo
 /temporal-auto-scaled-workers
+
+# Binaries left at the repo root by `go build ./cmd/...`, which writes one per command and
+# gives it no extension, so the patterns above do not catch them.
+/modal-secret-probe

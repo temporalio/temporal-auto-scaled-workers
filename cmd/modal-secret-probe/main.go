@@ -41,7 +41,8 @@ func main() {
 		bucketFormat = flag.String("bucket-format", "data-plane-config-test-%s", "regional bucket name, %s is the region")
 		roleFormat   = flag.String("role-format", "arn:aws:iam::730335288748:role/data-plane-config-test-%s-reader", "AWS role to assume to read the bucket, %s is the region")
 		prefix       = flag.String("prefix", "", "object prefix in the bucket; empty uses the control plane's default")
-		keyID        = flag.String("key-id", "", "KMS key the objects must name; empty accepts whatever they name")
+		awsKeyID     = flag.String("aws-key-id", "", "KMS key ARN AWS objects must name; empty accepts whatever they name")
+		gcpKeyID     = flag.String("gcp-key-id", "", "Cloud KMS cryptoKey GCP objects must name, without its version; empty accepts whatever they name")
 		verbose      = flag.Bool("verbose", false, "log the object store client's own output")
 	)
 	flag.Parse()
@@ -75,10 +76,15 @@ func main() {
 			Bucket:        fmt.Sprintf(*bucketFormat, region),
 			ObjectPrefix:  *prefix,
 			OAuthClientID: *clientID,
-			SealingKeyID:  *keyID,
 		}
-		if cloud == "aws" {
+		// One key per cloud, because a worker controller unwraps through its own cloud's KMS and a
+		// key is only usable in the half of the fleet it belongs to.
+		switch cloud {
+		case "aws":
 			cfg.AssumeRoleARN = fmt.Sprintf(*roleFormat, region)
+			cfg.SealingKeyID = *awsKeyID
+		case "gcp":
+			cfg.SealingKeyID = *gcpKeyID
 		}
 
 		if err := probe(ctx, cfg, *accountID, *workspaceID, log); err != nil {
