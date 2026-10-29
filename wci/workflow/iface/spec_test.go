@@ -250,7 +250,7 @@ func TestValidateRegionScopedGroups(t *testing.T) {
 				"a": testGroup(east),
 				"b": testGroup(east),
 			},
-			wantErr: "only one scaling group in region " + testRegionEast + " can have no task types defined",
+			wantErr: "which already serves all task queue types in region " + testRegionEast,
 		},
 		{
 			name: "two catch-alls in a later listed region",
@@ -258,7 +258,7 @@ func TestValidateRegionScopedGroups(t *testing.T) {
 				"a": testGroup(eastWest),
 				"b": testGroup(gcpWest),
 			},
-			wantErr: "only one scaling group in region " + testRegionWest + " can have no task types defined",
+			wantErr: "which already serves all task queue types in region " + testRegionWest,
 		},
 		{
 			name: "two region-less catch-alls",
@@ -266,7 +266,7 @@ func TestValidateRegionScopedGroups(t *testing.T) {
 				"a": testGroup(nil),
 				"b": testGroup(nil),
 			},
-			wantErr: "only one scaling group can have no task types defined",
+			wantErr: "which already serves all task queue types",
 		},
 		{
 			name:    "region listed twice",
