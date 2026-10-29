@@ -12,7 +12,7 @@ import (
 
 var sessionHashRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
-func TestSessionWorkflowID_Golden(t *testing.T) {
+func TestSessionWCIWorkflowID_Golden(t *testing.T) {
 	// Pins the hash scheme (SHA-256/128 over uvarint-length-prefixed components) so it can't
 	// drift silently.
 	require.Equal(t,
@@ -20,19 +20,19 @@ func TestSessionWorkflowID_Golden(t *testing.T) {
 		GenerateSessionWorkerControllerInstanceWorkflowID("my-deployment", "build-1", "session-123"))
 }
 
-func TestSessionWorkflowID_Deterministic(t *testing.T) {
+func TestSessionWCIWorkflowID_Deterministic(t *testing.T) {
 	a := GenerateSessionWorkerControllerInstanceWorkflowID("dep", "build", "session")
 	b := GenerateSessionWorkerControllerInstanceWorkflowID("dep", "build", "session")
 	require.Equal(t, a, b)
 }
 
-func TestSessionWorkflowID_DifferentSessions(t *testing.T) {
+func TestSessionWCIWorkflowID_DifferentSessions(t *testing.T) {
 	a := GenerateSessionWorkerControllerInstanceWorkflowID("dep", "build", "session-1")
 	b := GenerateSessionWorkerControllerInstanceWorkflowID("dep", "build", "session-2")
 	require.NotEqual(t, a, b)
 }
 
-func TestSessionWorkflowID_ColonShiftDoesNotCollide(t *testing.T) {
+func TestSessionWCIWorkflowID_ColonShiftDoesNotCollide(t *testing.T) {
 	pairs := [][2][3]string{
 		{{"a:b", "c", "s"}, {"a", "b:c", "s"}},
 		{{"d", "b", "x:y"}, {"d", "b:x", "y"}},
@@ -46,7 +46,7 @@ func TestSessionWorkflowID_ColonShiftDoesNotCollide(t *testing.T) {
 	}
 }
 
-func TestSessionWorkflowID_HashPart(t *testing.T) {
+func TestSessionWCIWorkflowID_HashPart(t *testing.T) {
 	sessionIDs := map[string]string{
 		"colon":   "wf:run:1",
 		"percent": "100%3A%25",
@@ -66,7 +66,7 @@ func TestSessionWorkflowID_HashPart(t *testing.T) {
 	}
 }
 
-func TestSessionWorkflowID_DistinctFromVersionID(t *testing.T) {
+func TestSessionWCIWorkflowID_DistinctFromVersionID(t *testing.T) {
 	versions := []*deploymentpb.WorkerDeploymentVersion{
 		{DeploymentName: "my-deployment", BuildId: "build-1"},
 		{DeploymentName: "d:e", BuildId: "b:c"},
