@@ -29,6 +29,9 @@ type modalKeyUnwrapper interface {
 // letting KMS pick would accept an object sealed some other way.
 type awsKMSUnwrapper struct {
 	client *kms.Client
+	// region is where the call goes when the key id is not a full ARN and so names no region of
+	// its own. It is the cell's own region.
+	region string
 }
 
 func newAWSKMSUnwrapper(ctx context.Context, region string) (*awsKMSUnwrapper, error) {
@@ -36,19 +39,40 @@ func newAWSKMSUnwrapper(ctx context.Context, region string) (*awsKMSUnwrapper, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS configuration for KMS in %s: %w", region, err)
 	}
-	return &awsKMSUnwrapper{client: kms.NewFromConfig(cfg)}, nil
+	return &awsKMSUnwrapper{client: kms.NewFromConfig(cfg), region: region}, nil
 }
 
 func (u *awsKMSUnwrapper) Unwrap(ctx context.Context, keyID string, sealedDEK []byte) ([]byte, error) {
+	// KMS keys are regional and the SDK sends Decrypt to the client's region, not to the one named
+	// in the key ARN. The control plane holds one sealing key per *cloud*, so a cell reading an
+	// object sealed to a key in another region has to call that region or get NotFoundException.
+	// Deriving the region from the ARN makes both arrangements work without configuration: a
+	// single key serving every region, and a per-region key, which is the same call locally.
+	region := awsRegionFromKeyARN(keyID)
+	if region == "" {
+		region = u.region
+	}
+
 	out, err := u.client.Decrypt(ctx, &kms.DecryptInput{
 		KeyId:               aws.String(keyID),
 		CiphertextBlob:      sealedDEK,
 		EncryptionAlgorithm: kmstypes.EncryptionAlgorithmSpecRsaesOaepSha256,
-	})
+	}, func(o *kms.Options) { o.Region = region })
 	if err != nil {
-		return nil, fmt.Errorf("AWS KMS refused to unwrap the data key under %s: %w", keyID, err)
+		return nil, fmt.Errorf("AWS KMS in %s refused to unwrap the data key under %s: %w", region, keyID, err)
 	}
 	return out.Plaintext, nil
+}
+
+// awsRegionFromKeyARN pulls the region out of "arn:aws:kms:<region>:<account>:key/<id>". It
+// returns "" for a bare key id or alias, which names no region and so leaves the caller's default
+// in place.
+func awsRegionFromKeyARN(keyID string) string {
+	parts := strings.Split(keyID, ":")
+	if len(parts) < 6 || parts[0] != "arn" || parts[2] != "kms" {
+		return ""
+	}
+	return parts[3]
 }
 
 func (u *awsKMSUnwrapper) Close() error { return nil }
