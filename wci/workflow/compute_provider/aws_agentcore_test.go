@@ -245,10 +245,12 @@ func TestAWSAgentCoreInvokeWorker_SessionIDLengthBounds(t *testing.T) {
 			assert.True(t, appErr.NonRetryable())
 			assert.Equal(t, errTypeInvalidAgentCoreSessionID, appErr.Type())
 
-			// An out-of-bounds ID is our bug, not the customer's config.
+			// The session ID comes from the worker (user code), so an out-of-bounds
+			// ID is a customer rejection, not a WCI-owned failure.
+			assert.NotErrorIs(t, err, errWCIOwned)
 			var pErr *ProviderError
 			require.ErrorAs(t, err, &pErr)
-			assert.Equal(t, FailureInternal, pErr.Class)
+			assert.Equal(t, FailureRejected, pErr.Class)
 		})
 	}
 }

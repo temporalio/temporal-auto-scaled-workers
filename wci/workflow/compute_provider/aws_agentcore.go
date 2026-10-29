@@ -204,14 +204,15 @@ func agentCoreInvokePayload(rc RequestContext) ([]byte, error) {
 	if rc.SessionID == "" {
 		v = struct{}{}
 	} else {
-		// The session ID comes from an AgentCore session, so it always fits the
-		// RuntimeSessionId limits. If it doesn't, that's our bug: retrying won't help,
-		// and the errWCIOwned cause classifies it as FailureInternal.
+		// The session ID comes from the worker, which runs user code, so it may be
+		// invalid through no fault of the WCI. It is non-retryable because the same
+		// ID will keep failing, and deliberately not marked errWCIOwned, so it
+		// classifies as a customer rejection rather than FailureInternal.
 		if n := len(rc.SessionID); n < agentCoreRuntimeSessionIDMinLen || n > agentCoreRuntimeSessionIDMaxLen {
 			return nil, temporal.NewNonRetryableApplicationError(
 				fmt.Sprintf("session ID length %d is outside AgentCore RuntimeSessionId limits [%d, %d]",
 					n, agentCoreRuntimeSessionIDMinLen, agentCoreRuntimeSessionIDMaxLen),
-				errTypeInvalidAgentCoreSessionID, errWCIOwned)
+				errTypeInvalidAgentCoreSessionID, nil)
 		}
 		v = struct {
 			SessionID    string `json:"sessionId"`
