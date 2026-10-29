@@ -14,11 +14,11 @@ import (
 	gcs "cloud.google.com/go/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"go.uber.org/zap"
-
-	objectstore "github.com/temporalio/object-storage-cache/clients"
-	objectstoreaws "github.com/temporalio/object-storage-cache/clients/aws"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"google.golang.org/api/googleapi"
 )
 
 // The worker controller reads Modal OAuth material out of its own region's data plane config
@@ -142,11 +142,11 @@ type objectStoreModalSecretSource struct {
 // NewObjectStoreModalSecretSource builds the bucket-backed secret source. Exported so a deployment
 // can construct one directly; the provider otherwise builds it from the config installed with
 // SetModalStoreConfig.
-func NewObjectStoreModalSecretSource(ctx context.Context, cfg ModalStoreConfig, log *zap.Logger) (ModalSecretSource, error) {
-	return newObjectStoreModalSecretSource(ctx, cfg, log)
+func NewObjectStoreModalSecretSource(ctx context.Context, cfg ModalStoreConfig) (ModalSecretSource, error) {
+	return newObjectStoreModalSecretSource(ctx, cfg)
 }
 
-func newObjectStoreModalSecretSource(ctx context.Context, cfg ModalStoreConfig, log *zap.Logger) (*objectStoreModalSecretSource, error) {
+func newObjectStoreModalSecretSource(ctx context.Context, cfg ModalStoreConfig) (*objectStoreModalSecretSource, error) {
 	cfg = cfg.WithDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("the Modal compute provider is not configured: %w", err)
@@ -156,11 +156,11 @@ func newObjectStoreModalSecretSource(ctx context.Context, cfg ModalStoreConfig, 
 
 	switch cfg.CloudProvider {
 	case modalCloudAWS:
-		clients, err := newModalS3Clients(ctx, cfg)
+		objects, err := newS3ModalObjectReader(ctx, cfg)
 		if err != nil {
 			return nil, err
 		}
-		s.objects = &s3ModalObjectReader{cfg: cfg, clients: clients, log: log}
+		s.objects = objects
 
 		unwrapper, err := newAWSKMSUnwrapper(ctx, cfg.Region, cfg.AssumeRoleARN)
 		if err != nil {
@@ -168,7 +168,11 @@ func newObjectStoreModalSecretSource(ctx context.Context, cfg ModalStoreConfig, 
 		}
 		s.unwrapper = unwrapper
 	case modalCloudGCP:
-		s.objects = &gcsModalObjectReader{cfg: cfg, log: log}
+		objects, err := newGCSModalObjectReader(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		s.objects = objects
 
 		unwrapper, err := newGCPKMSUnwrapper(ctx)
 		if err != nil {
@@ -301,115 +305,88 @@ func (s *objectStoreModalSecretSource) Close() error {
 	return errors.Join(errs...)
 }
 
-// s3ModalObjectReader reads from the region's S3 bucket, assuming the bucket's reader role.
-//
-// The object store client is built per read and registers exactly the one object being fetched,
-// because a grant's key carries the account and workspace and so is not known until the call. That
-// is cheap: what costs something to build is the S3 client and its assume-role credentials, and
-// the cache below holds those for the life of the process.
+// s3ModalObjectReader reads from the region's S3 bucket, as AssumeRoleARN when one is configured
+// and as this process's own identity otherwise.
 type s3ModalObjectReader struct {
-	cfg     ModalStoreConfig
-	clients objectstoreaws.S3Clients
-	log     *zap.Logger
+	bucket string
+	client *s3.Client
 }
 
-func (r *s3ModalObjectReader) Read(ctx context.Context, objectKey string) ([]byte, error) {
-	definition := objectstore.NewObjectDefinition(objectKey,
-		objectstore.WithS3Source(r.cfg.Bucket, objectKey, r.cfg.Region, r.cfg.AssumeRoleARN))
-
-	client := objectstore.NewObjectStoreClient(
-		[]objectstore.ObjectDefinition{definition}, r.log, objectstore.WithS3Clients(r.clients))
-	if client == nil {
-		return nil, fmt.Errorf("failed to create an object store client for %s", r.cfg.Bucket)
-	}
-	defer func() { _ = client.Close() }()
-
-	return readModalObject(ctx, client, definition.Key, r.cfg.Bucket)
-}
-
-func (r *s3ModalObjectReader) Close() error { return nil }
-
-// newModalS3Clients picks how the bucket is reached: through AssumeRoleARN when one is configured,
-// otherwise as this process's own identity.
-//
-// The object store's own client cache always assumes a role and has no way not to, so the
-// role-less case needs its own implementation of the same one-method interface rather than a
-// different argument to that cache.
-func newModalS3Clients(ctx context.Context, cfg ModalStoreConfig) (objectstoreaws.S3Clients, error) {
-	if cfg.AssumeRoleARN != "" {
-		clients := objectstoreaws.NewS3ClientCache(ctx)
-		if clients == nil {
-			return nil, errors.New("failed to create the S3 client cache")
-		}
-		return clients, nil
-	}
-
+func newS3ModalObjectReader(ctx context.Context, cfg ModalStoreConfig) (*s3ModalObjectReader, error) {
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.Region))
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS configuration for S3 in %s: %w", cfg.Region, err)
 	}
-	return directS3Clients{cfg: awsCfg}, nil
+	if cfg.AssumeRoleARN != "" {
+		// Cached, so a read after the first does not re-assume.
+		awsCfg.Credentials = aws.NewCredentialsCache(
+			stscreds.NewAssumeRoleProvider(sts.NewFromConfig(awsCfg), cfg.AssumeRoleARN))
+	}
+	return &s3ModalObjectReader{bucket: cfg.Bucket, client: s3.NewFromConfig(awsCfg)}, nil
 }
 
-// directS3Clients hands out a plain regional S3 client, ignoring the role argument because there
-// is none to assume.
-type directS3Clients struct {
-	cfg aws.Config
+func (r *s3ModalObjectReader) Read(ctx context.Context, objectKey string) ([]byte, error) {
+	out, err := r.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(r.bucket),
+		Key:    aws.String(objectKey),
+	})
+	if err != nil {
+		// A missing object is the ordinary shape of "this account has not connected that
+		// workspace", so it reads as that rather than as a failure to reach S3.
+		var missing *s3types.NoSuchKey
+		if errors.As(err, &missing) {
+			return nil, fmt.Errorf("no sealed Modal object at %s in %s", objectKey, r.bucket)
+		}
+		return nil, fmt.Errorf("failed to read %s from %s: %w", objectKey, r.bucket, err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	return readCappedModalObject(out.Body, objectKey, r.bucket)
 }
 
-func (c directS3Clients) GetS3Client(_ context.Context, region, _ string) (objectstoreaws.S3, error) {
-	return s3.NewFromConfig(c.cfg, func(o *s3.Options) { o.Region = region }), nil
-}
+func (r *s3ModalObjectReader) Close() error { return nil }
 
 // gcsModalObjectReader reads from the region's GCS bucket as the pod's own service account.
-//
-// The GCS client is built per read rather than held, because closing the object store client
-// closes the GCS client underneath it: a shared one would be unusable after the first read.
 type gcsModalObjectReader struct {
-	cfg ModalStoreConfig
-	log *zap.Logger
+	bucket string
+	client *gcs.Client
 }
 
-func (r *gcsModalObjectReader) Read(ctx context.Context, objectKey string) ([]byte, error) {
-	gcsClient, err := gcs.NewClient(ctx)
+func newGCSModalObjectReader(ctx context.Context, cfg ModalStoreConfig) (*gcsModalObjectReader, error) {
+	client, err := gcs.NewClient(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create the GCS client: %w", err)
 	}
-
-	definition := objectstore.NewObjectDefinition(objectKey,
-		objectstore.WithGCSSource(r.cfg.Bucket, objectKey))
-
-	client := objectstore.NewObjectStoreClient(
-		[]objectstore.ObjectDefinition{definition}, r.log, objectstore.WithGCSClient(gcsClient))
-	if client == nil {
-		_ = gcsClient.Close()
-		return nil, fmt.Errorf("failed to create an object store client for %s", r.cfg.Bucket)
-	}
-	defer func() { _ = client.Close() }()
-
-	return readModalObject(ctx, client, definition.Key, r.cfg.Bucket)
+	return &gcsModalObjectReader{bucket: cfg.Bucket, client: client}, nil
 }
 
-func (r *gcsModalObjectReader) Close() error { return nil }
-
-func readModalObject(ctx context.Context, client *objectstore.ObjectStoreClient, key, bucket string) ([]byte, error) {
-	object, err := client.GetObject(ctx, objectstore.GetObjectInput{Key: key})
+func (r *gcsModalObjectReader) Read(ctx context.Context, objectKey string) ([]byte, error) {
+	reader, err := r.client.Bucket(r.bucket).Object(objectKey).NewReader(ctx)
 	if err != nil {
-		if errors.Is(err, objectstore.ErrNotExist) {
-			return nil, fmt.Errorf("no sealed Modal object at %s in %s", key, bucket)
+		var apiErr *googleapi.Error
+		if errors.Is(err, gcs.ErrObjectNotExist) || (errors.As(err, &apiErr) && apiErr.Code == 404) {
+			return nil, fmt.Errorf("no sealed Modal object at %s in %s", objectKey, r.bucket)
 		}
-		return nil, fmt.Errorf("failed to read %s from %s: %w", key, bucket, err)
+		return nil, fmt.Errorf("failed to read %s from %s: %w", objectKey, r.bucket, err)
 	}
-	defer func() { _ = object.Data.Close() }()
+	defer func() { _ = reader.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(object.Data, maxModalObjectBytes+1))
+	return readCappedModalObject(reader, objectKey, r.bucket)
+}
+
+func (r *gcsModalObjectReader) Close() error { return r.client.Close() }
+
+// readCappedModalObject buffers an object's bytes, refusing one larger than a sealed envelope could
+// plausibly be rather than reading it all first.
+func readCappedModalObject(body io.Reader, objectKey, bucket string) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxModalObjectBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read %s from %s: %w", key, bucket, err)
+		return nil, fmt.Errorf("failed to read %s from %s: %w", objectKey, bucket, err)
 	}
-	if len(body) > maxModalObjectBytes {
-		return nil, fmt.Errorf("the object at %s in %s is larger than %d bytes", key, bucket, maxModalObjectBytes)
+	if len(data) > maxModalObjectBytes {
+		return nil, fmt.Errorf("the object at %s in %s is larger than %d bytes", objectKey, bucket, maxModalObjectBytes)
 	}
-	return body, nil
+	return data, nil
 }
 
 // validateModalIDSegment rejects anything that could climb out of the account's own prefix. The

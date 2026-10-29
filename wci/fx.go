@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"go.uber.org/fx"
-	"go.uber.org/zap"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workercomponent"
@@ -97,22 +96,6 @@ var Module = fx.Options(
 	fx.Invoke(ServiceLifetimeHooks),
 )
 
-// modalSecretSourceParams is a parameter struct so the zap logger can be optional; a plain
-// argument list cannot express that.
-type modalSecretSourceParams struct {
-	fx.In
-
-	Lifecycle fx.Lifecycle
-	Config    computeprovider.ModalStoreConfig
-	Logger    log.Logger
-	// ZapLogger is what the object store client logs through. The server's own log.Logger does not
-	// expose the zap logger underneath it, so a deployment that wants those logs supplies one.
-	// Optional, because a host that supplies none -- the OSS server embedding this module, for
-	// one -- must still start, and because a required dependency here would collide with any
-	// provider the host later adds for its own reasons.
-	ZapLogger *zap.Logger `optional:"true"`
-}
-
 // installModalSecretSource switches the Modal compute provider from one process-wide API key to
 // per-account grants, when the deployment configured somewhere to read them from.
 //
@@ -120,35 +103,30 @@ type modalSecretSourceParams struct {
 // configuration is wrong finds out in its startup logs instead of on a customer's first scale-up.
 // The failure is logged rather than returned: failing startup would take worker-controller down
 // for every other compute provider over this one's configuration.
-func installModalSecretSource(p modalSecretSourceParams) {
-	computeprovider.SetModalStoreConfig(p.Config)
+func installModalSecretSource(lc fx.Lifecycle, cfg computeprovider.ModalStoreConfig, logger log.Logger) {
+	computeprovider.SetModalStoreConfig(cfg)
 
-	if p.Config.CloudProvider == "" {
-		p.Logger.Info("Modal compute provider using the API key the SDK finds for itself; set a cloud provider to resolve credentials per account")
+	if cfg.CloudProvider == "" {
+		logger.Info("Modal compute provider using the API key the SDK finds for itself; set a cloud provider to resolve credentials per account")
 		return
 	}
 
-	zapLogger := p.ZapLogger
-	if zapLogger == nil {
-		zapLogger = zap.NewNop()
-	}
-
-	source, err := computeprovider.NewObjectStoreModalSecretSource(context.Background(), p.Config, zapLogger)
+	source, err := computeprovider.NewObjectStoreModalSecretSource(context.Background(), cfg)
 	if err != nil {
 		// Not left as the API key default: that would serve every account from one key.
-		p.Logger.Error("Modal compute provider disabled: cannot build its secret source", tag.Error(err))
+		logger.Error("Modal compute provider disabled: cannot build its secret source", tag.Error(err))
 		computeprovider.SetModalSecretSource(computeprovider.FailingModalSecretSource{Reason: err})
 		return
 	}
 
 	computeprovider.SetModalSecretSource(source)
 	if closer, ok := source.(io.Closer); ok {
-		p.Lifecycle.Append(fx.StopHook(closer.Close))
+		lc.Append(fx.StopHook(closer.Close))
 	}
-	p.Logger.Info("Modal compute provider resolving credentials per account from the data plane config store",
-		tag.NewStringTag("cloud-provider", p.Config.CloudProvider),
-		tag.NewStringTag("region", p.Config.Region),
-		tag.NewStringTag("bucket", p.Config.Bucket),
+	logger.Info("Modal compute provider resolving credentials per account from the data plane config store",
+		tag.NewStringTag("cloud-provider", cfg.CloudProvider),
+		tag.NewStringTag("region", cfg.Region),
+		tag.NewStringTag("bucket", cfg.Bucket),
 	)
 }
 

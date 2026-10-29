@@ -27,8 +27,6 @@ import (
 	"strings"
 	"time"
 
-	"go.uber.org/zap"
-
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
 )
 
@@ -43,7 +41,6 @@ func main() {
 		prefix       = flag.String("prefix", "", "object prefix in the bucket; empty uses the control plane's default")
 		awsKeyID     = flag.String("aws-key-id", "", "KMS key ARN AWS objects must name; empty accepts whatever they name")
 		gcpKeyID     = flag.String("gcp-key-id", "", "Cloud KMS cryptoKey GCP objects must name, without its version; empty accepts whatever they name")
-		verbose      = flag.Bool("verbose", false, "log the object store client's own output")
 	)
 	flag.Parse()
 
@@ -51,11 +48,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "-targets, -account, -workspace and -client-id are all required")
 		flag.Usage()
 		os.Exit(2)
-	}
-
-	log := zap.NewNop()
-	if *verbose {
-		log, _ = zap.NewDevelopment()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -91,7 +83,7 @@ func main() {
 			cfg.SealingKeyID = *gcpKeyID
 		}
 
-		if err := probe(ctx, cfg, *accountID, *workspaceID, log); err != nil {
+		if err := probe(ctx, cfg, *accountID, *workspaceID); err != nil {
 			fmt.Printf("FAIL  %-28s %v\n", target, err)
 			failed++
 			continue
@@ -105,8 +97,8 @@ func main() {
 	fmt.Println("\nall targets read and decrypted")
 }
 
-func probe(ctx context.Context, cfg computeprovider.ModalStoreConfig, accountID, workspaceID string, log *zap.Logger) error {
-	source, err := computeprovider.NewObjectStoreModalSecretSource(ctx, cfg, log)
+func probe(ctx context.Context, cfg computeprovider.ModalStoreConfig, accountID, workspaceID string) error {
+	source, err := computeprovider.NewObjectStoreModalSecretSource(ctx, cfg)
 	if err != nil {
 		return err
 	}
