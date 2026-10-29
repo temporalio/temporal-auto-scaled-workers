@@ -265,12 +265,16 @@ func modalCredentialDigest(c *ModalCredentials) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// modalSecretSource is where Modal credentials come from. The default leaves them to the Modal SDK
-// -- one API key for the process.
+// modalSecretSource is where Modal credentials come from. Nil means nothing has installed one yet,
+// and the first lookup resolves one from the environment.
 var (
 	modalSecretSourceMu sync.RWMutex
-	modalSecretSource   ModalSecretSource = APIKeyModalSecretSource{}
+	modalSecretSource   ModalSecretSource
 )
+
+// modalSourceBuildTimeout bounds building a source on the first lookup, so a host that reaches an
+// unavailable bucket or KMS fails that invocation rather than blocking on it.
+const modalSourceBuildTimeout = 30 * time.Second
 
 // APIKeyModalSecretSource leaves credentials to the Modal SDK, which reads an API key from
 // MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml. It ignores the account and workspace: one key
@@ -298,15 +302,57 @@ func SetModalSecretSource(src ModalSecretSource) {
 	}
 }
 
+// getModalSecretSource returns the installed source, resolving one from the environment the first
+// time nothing has installed one.
+//
+// The environment fallback is what lets a host that embeds only this package -- the OSS Temporal
+// server does, linking the compute provider without the fx module that would otherwise configure
+// it -- resolve per-account grants at all. Without it such a host silently gets the API key
+// default, which is the same answer a misconfiguration gives and so hides one.
+//
+// A host that calls SetModalSecretSource never reaches this.
 func getModalSecretSource() ModalSecretSource {
 	modalSecretSourceMu.RLock()
-	defer modalSecretSourceMu.RUnlock()
+	src := modalSecretSource
+	modalSecretSourceMu.RUnlock()
+	if src != nil {
+		return src
+	}
+
+	modalSecretSourceMu.Lock()
+	defer modalSecretSourceMu.Unlock()
+	if modalSecretSource == nil {
+		modalSecretSource = modalSecretSourceFromEnv()
+	}
 	return modalSecretSource
 }
 
-// clearModalSecretSource restores the API key default. Only tests need this.
+// modalSecretSourceFromEnv builds a source from the environment, or the API key default when the
+// environment names no cloud to read grants from.
+//
+// A source that cannot be built becomes a failing one rather than falling back to the API key: a
+// host that asked for per-account grants and got one key for every account would be a worse
+// outcome than an error naming what is wrong.
+func modalSecretSourceFromEnv() ModalSecretSource {
+	cfg := ModalStoreConfigFromEnv()
+	if cfg.CloudProvider == "" {
+		return APIKeyModalSecretSource{}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), modalSourceBuildTimeout)
+	defer cancel()
+
+	src, err := NewObjectStoreModalSecretSource(ctx, cfg)
+	if err != nil {
+		return FailingModalSecretSource{Reason: err}
+	}
+	return src
+}
+
+// clearModalSecretSource drops the installed source, so the next lookup resolves afresh. Only
+// tests need this.
 func clearModalSecretSource() {
 	modalSecretSourceMu.Lock()
 	defer modalSecretSourceMu.Unlock()
-	modalSecretSource = APIKeyModalSecretSource{}
+	modalSecretSource = nil
 }

@@ -3,6 +3,7 @@ package computeprovider
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"sync"
 )
@@ -46,9 +47,14 @@ const unscopedModalAccount = "default"
 // second group.
 var namespaceSuffixRE = regexp.MustCompile(`^([a-z][a-z0-9-]*[^-])[.]([a-z0-9][a-z0-9-]*[^-])$`)
 
+// envModalAccount names the single account a host serves when its namespaces do not themselves
+// carry one. It is read here rather than through fx because a host may embed this package without
+// the fx module -- the OSS Temporal server does.
+const envModalAccount = "TEMPORAL_MODAL_ACCOUNT"
+
 var (
 	modalAccountResolverMu sync.RWMutex
-	modalAccountResolver   ModalAccountResolver = UnscopedModalAccountResolver{}
+	modalAccountResolver   ModalAccountResolver = UnscopedModalAccountResolver{Account: os.Getenv(envModalAccount)}
 )
 
 // SetModalAccountResolver installs the process-wide account resolver used by the
@@ -81,4 +87,11 @@ func (NamespaceSuffixModalAccountResolver) ResolveAccountID(_ context.Context, n
 		return "", fmt.Errorf("cannot derive an account from namespace %q", namespaceName)
 	}
 	return parts[2], nil
+}
+
+// DefaultModalAccountResolver is the resolver a host gets when it installs none: every namespace
+// resolves to the one account TEMPORAL_MODAL_ACCOUNT names, or to a constant cache key when it
+// names none. A host whose namespaces carry their own account installs a resolver that reads it.
+func DefaultModalAccountResolver() ModalAccountResolver {
+	return UnscopedModalAccountResolver{Account: os.Getenv(envModalAccount)}
 }

@@ -4,7 +4,6 @@ package wci
 import (
 	"context"
 	"io"
-	"os"
 
 	"go.uber.org/fx"
 
@@ -66,7 +65,7 @@ var Module = fx.Options(
 	// stack -- names the single account it serves here. saas-temporal decorates this with a
 	// resolver that derives the account from the namespace instead.
 	fx.Provide(func() computeprovider.ModalAccountResolver {
-		return computeprovider.UnscopedModalAccountResolver{Account: os.Getenv("TEMPORAL_MODAL_ACCOUNT")}
+		return computeprovider.DefaultModalAccountResolver()
 	}),
 	// Where sealed Modal material lives. A deployment with a flag surface decorates this;
 	// one without configures it through the environment, by the names those flags bind to.
