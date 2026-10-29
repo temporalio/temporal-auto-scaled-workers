@@ -104,6 +104,15 @@ type (
 			session *iface.WorkerControllerInstanceSessionArgs,
 			request *iface.SignalTaskAddRequest,
 		) error
+
+		// WorkflowIsRunning reports whether the workflow with the given ID is running in the
+		// namespace. A workflow that is not found counts as not running. Session WCIs use it
+		// to check their session workflow.
+		WorkflowIsRunning(
+			ctx context.Context,
+			namespaceEntry *namespace.Namespace,
+			workflowID string,
+		) (bool, error)
 	}
 
 	WorkerControllerInstanceSummary struct {
@@ -192,7 +201,7 @@ func (d *clientImpl) WorkerControllerInstanceExists(
 
 // WorkflowIsRunning reports whether the workflow with the given ID is running. A workflow
 // that is not found counts as not running. Session WCIs use it to check their session
-// workflow (see workflow.SessionWorkflowClient).
+// workflow.
 func (d *clientImpl) WorkflowIsRunning(
 	ctx context.Context,
 	namespaceEntry *namespace.Namespace,
