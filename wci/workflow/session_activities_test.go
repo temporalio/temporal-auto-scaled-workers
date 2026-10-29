@@ -13,6 +13,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -31,16 +32,6 @@ type fakeWCIClient struct {
 	desc        *iface.QueryDescribeWorkerControllerInstanceResponse
 	describeErr error
 	versions    []*deploymentpb.WorkerDeploymentVersion
-
-	// Session workflow.
-	sessionRunning bool
-	sessionErr     error
-	workflowIDs    []string
-}
-
-func (f *fakeWCIClient) WorkflowIsRunning(_ context.Context, _ *namespace.Namespace, workflowID string) (bool, error) {
-	f.workflowIDs = append(f.workflowIDs, workflowID)
-	return f.sessionRunning, f.sessionErr
 }
 
 func (f *fakeWCIClient) WorkerControllerInstanceExists(_ context.Context, _ *namespace.Namespace, v *deploymentpb.WorkerDeploymentVersion) (bool, error) {
@@ -74,6 +65,13 @@ func newParentSpec() *iface.WorkerControllerInstanceSpec {
 
 func runInitSessionFromParent(t *testing.T, parent *fakeWCIClient) (*InitSessionFromParentResponse, error) {
 	t.Helper()
+	return runSessionParentActivity(t, parent, false)
+}
+
+// runSessionParentActivity runs InitSessionFromParent, or RefreshSessionSpec if refresh is
+// set. Both share the parent read, so they must behave the same.
+func runSessionParentActivity(t *testing.T, parent *fakeWCIClient, refresh bool) (*InitSessionFromParentResponse, error) {
+	t.Helper()
 	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
 	dc := dynamicconfig.NewCollection(dynamicconfig.StaticClient(map[dynamicconfig.Key]any{
 		client.WorkerControllerEnabledComputeProviders.Key(): []string{
@@ -90,16 +88,22 @@ func runInitSessionFromParent(t *testing.T, parent *fakeWCIClient) (*InitSession
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()
-	env.RegisterActivity(activities.InitSessionFromParent)
-	val, err := env.ExecuteActivity(activities.InitSessionFromParent, &InitSessionFromParentRequest{
-		RequestContext: RequestContext{
-			NamespaceName:     "test-namespace",
-			DeploymentName:    "test-deployment",
-			DeploymentBuildID: "test-build",
-			SessionID:         testSessionID,
-			SessionQueue:      testSessionQueue,
-		},
-	})
+	rc := RequestContext{
+		NamespaceName:     "test-namespace",
+		DeploymentName:    "test-deployment",
+		DeploymentBuildID: "test-build",
+		SessionID:         testSessionID,
+		SessionQueue:      testSessionQueue,
+	}
+	var val converter.EncodedValue
+	var err error
+	if refresh {
+		env.RegisterActivity(activities.RefreshSessionSpec)
+		val, err = env.ExecuteActivity(activities.RefreshSessionSpec, &RefreshSessionSpecRequest{RequestContext: rc})
+	} else {
+		env.RegisterActivity(activities.InitSessionFromParent)
+		val, err = env.ExecuteActivity(activities.InitSessionFromParent, &InitSessionFromParentRequest{RequestContext: rc})
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -12,9 +12,8 @@ import (
 
 func validSessionArgs() *WorkerControllerInstanceSessionArgs {
 	return &WorkerControllerInstanceSessionArgs{
-		SessionID:         "session-0123456789abcdef0123456789abcdef",
-		SessionWorkflowID: "session-workflow-id",
-		SessionQueue:      "session-queue",
+		SessionID:    "session-0123456789abcdef0123456789abcdef",
+		SessionQueue: "session-queue",
 	}
 }
 
@@ -31,7 +30,7 @@ func TestSessionArgs_Validate(t *testing.T) {
 		{
 			name: "valid with colons",
 			mutate: func(s *WorkerControllerInstanceSessionArgs) *WorkerControllerInstanceSessionArgs {
-				s.SessionID, s.SessionWorkflowID, s.SessionQueue = "a:b", "w:1", "q:1"
+				s.SessionID, s.SessionQueue = "a:b", "q:1"
 				return s
 			},
 		},
@@ -57,19 +56,11 @@ func TestSessionArgs_Validate(t *testing.T) {
 			wantErr: []string{"session queue is required"},
 		},
 		{
-			name: "missing session workflow ID",
-			mutate: func(s *WorkerControllerInstanceSessionArgs) *WorkerControllerInstanceSessionArgs {
-				s.SessionWorkflowID = ""
-				return s
-			},
-			wantErr: []string{"session workflow ID is required"},
-		},
-		{
 			name: "all empty reports every field",
 			mutate: func(*WorkerControllerInstanceSessionArgs) *WorkerControllerInstanceSessionArgs {
 				return &WorkerControllerInstanceSessionArgs{}
 			},
-			wantErr: []string{"session ID is required", "session workflow ID is required", "session queue is required"},
+			wantErr: []string{"session ID is required", "session queue is required"},
 		},
 	}
 	for _, tc := range tests {
@@ -102,8 +93,8 @@ func TestWorkflowArgs_SessionRoundTrip(t *testing.T) {
 		DeploymentName: "my-deployment",
 		BuildId:        "build-1",
 		State: &WorkerControllerInstanceLocalState{
-			ScalingStatus:          map[string]ScalingAlgorithmStatus{},
-			NextExistenceCheckTime: next,
+			ScalingStatus:        map[string]ScalingAlgorithmStatus{},
+			LastNoSyncSignalTime: next,
 		},
 		Session: validSessionArgs(),
 	}
@@ -116,7 +107,7 @@ func TestWorkflowArgs_SessionRoundTrip(t *testing.T) {
 	require.Equal(t, in.Session, out.Session)
 	require.True(t, out.IsSession())
 	require.NotNil(t, out.State)
-	require.True(t, next.AsTime().Equal(out.State.NextExistenceCheckTime.AsTime()))
+	require.True(t, next.AsTime().Equal(out.State.LastNoSyncSignalTime.AsTime()))
 }
 
 func TestWorkflowArgs_VersionArgsOmitSessionFields(t *testing.T) {
@@ -128,7 +119,7 @@ func TestWorkflowArgs_VersionArgsOmitSessionFields(t *testing.T) {
 	payload, err := sdk.PreferProtoDataConverter.ToPayload(in)
 	require.NoError(t, err)
 	require.NotContains(t, string(payload.GetData()), `"session"`)
-	require.NotContains(t, string(payload.GetData()), "next_existence_check_time")
+	require.NotContains(t, string(payload.GetData()), "last_no_sync_signal_time")
 }
 
 // Args and state serialized before session mode existed must still decode as a version WCI.
@@ -152,6 +143,6 @@ func TestWorkflowArgs_LegacyPayloadDecodes(t *testing.T) {
 	require.False(t, out.IsSession())
 	require.Nil(t, out.Session)
 	require.NotNil(t, out.State)
-	require.Nil(t, out.State.NextExistenceCheckTime)
+	require.Nil(t, out.State.LastNoSyncSignalTime)
 	require.Equal(t, int64(100), out.State.NextPollTime.AsTime().Unix())
 }

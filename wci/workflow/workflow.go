@@ -100,8 +100,11 @@ type (
 		unsafeWorkerControllerEnabled    func() bool
 		unsafeMaxVersion                 func() int
 		unsafePeriodicValidationInterval func() time.Duration
-		// unsafeSessionExistenceCheckInterval is only used by session WCIs; see WithSessionExistenceCheckInterval.
-		unsafeSessionExistenceCheckInterval func() time.Duration
+		// unsafeSessionIdleTimeout is only used by session WCIs; see WithSessionIdleTimeout.
+		unsafeSessionIdleTimeout func() time.Duration
+		// sessionSpecFresh is set when initSessionFromParent read the parent in this run, so
+		// the next processed no-sync signal skips the parent spec refresh.
+		sessionSpecFresh bool
 
 		cancelTimerTasks workflow.CancelFunc
 
@@ -150,7 +153,7 @@ func Workflow(
 
 	logger := sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName, "wf-deployment-name", args.DeploymentName, "wf-build-id", args.BuildId)
 	if args.IsSession() {
-		logger = sdklog.With(logger, "wf-session-id", args.Session.SessionID, "wf-session-workflow-id", args.Session.SessionWorkflowID, "wf-session-queue", args.Session.SessionQueue)
+		logger = sdklog.With(logger, "wf-session-id", args.Session.SessionID, "wf-session-queue", args.Session.SessionQueue)
 	}
 
 	workflowRunner := &WorkflowRunner{
@@ -321,10 +324,9 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		}
 	}
 
-	// Session WCIs check on every interval, idle or not, that the session workflow and the
-	// parent version WCI still exist, and pick up the parent's config.
+	// Session WCIs complete once no no-sync task-add signal has arrived for the idle timeout.
 	if d.IsSession() {
-		d.armSessionExistenceCheck(ctx, timerCtx, timerSel)
+		d.armSessionIdleTimer(ctx, timerCtx, timerSel)
 	}
 
 	// The parent version WCI owns periodic validation, so session WCIs skip it.
@@ -765,6 +767,10 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 		if taskAddReq, ok = d.sessionTaskAddRequest(req); !ok {
 			return
 		}
+		d.recordSessionActivity(ctx)
+		if d.refreshSessionSpec(ctx) {
+			return
+		}
 	}
 
 	var resp HandleTaskAddSignalActivityResponse
@@ -1095,11 +1101,10 @@ func (d *WorkflowRunner) ensureNotDeleted() error {
 func (d *WorkflowRunner) updateMemo(ctx workflow.Context) error {
 	return workflow.UpsertMemo(ctx, map[string]any{
 		iface.WorkerControllerInstanceMemoField: &iface.WorkerControllerInstanceMemo{
-			DeploymentName:    d.DeploymentName,
-			BuildId:           d.BuildId,
-			CreateTime:        d.State.CreateTime,
-			SessionID:         d.sessionID(),
-			SessionWorkflowID: d.sessionWorkflowID(),
+			DeploymentName: d.DeploymentName,
+			BuildId:        d.BuildId,
+			CreateTime:     d.State.CreateTime,
+			SessionID:      d.sessionID(),
 		},
 	})
 }

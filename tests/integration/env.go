@@ -21,9 +21,14 @@ const (
 	testVersionDrainageVisibilityGracePeriod = 1 * time.Second
 )
 
-// testSessionExistenceCheckInterval shortens the session WCI existence check so self-prune
-// and config refresh are observable within a scenario.
-const testSessionExistenceCheckInterval = 2 * time.Second
+// testSessionIdleTimeout is the session WCI idle timeout for the suite. It outlasts every
+// session scenario, so session WCIs only complete through idleness where a scenario lowers it
+// (see testSessionShortIdleTimeout).
+const testSessionIdleTimeout = 2 * time.Minute
+
+// testSessionShortIdleTimeout is the idle timeout the idle-completion scenario sets on its
+// namespace.
+const testSessionShortIdleTimeout = 3 * time.Second
 
 // createWCITestEnv returns a TestEnv backed by the suite-scoped cluster registered via
 // testcore.UseSuiteScopedCluster on the calling top-level test (see TestWCISuite). The worker
@@ -45,9 +50,8 @@ func createWCITestEnv(t *testing.T) *testcore.TestEnv {
 		// decisions (e.g. rate-based's +1 per backlog signal) deterministic in
 		// tests instead of depending on the 500ms batch window.
 		testcore.WithDynamicConfig(client.WorkerControllerMinSignalIntervalNoSyncMatchMilliseconds, 1),
-		// Run session WCI existence checks every couple of seconds so self-prune and
-		// config refresh are observable. Session scenarios also lower the workflow's
-		// interval floor (see newSessionFixture).
-		testcore.WithDynamicConfig(client.WorkerControllerSessionExistenceCheckInterval, testSessionExistenceCheckInterval),
+		// Session WCIs complete after this idle timeout (a duration setting). Session
+		// scenarios also lower the workflow's idle timeout floor (see newSessionFixture).
+		testcore.WithDynamicConfig(client.WorkerControllerSessionIdleTimeout, testSessionIdleTimeout),
 	)
 }

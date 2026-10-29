@@ -93,17 +93,17 @@ func TestEnabledComputeProviders_NamespaceOverridesCellDefault(t *testing.T) {
 	require.Equal(t, []string{"aws-lambda"}, get("lambda-ns"))
 }
 
-func TestSessionExistenceCheckInterval_KeyAndDefault(t *testing.T) {
-	setting := WorkerControllerSessionExistenceCheckInterval
-	require.Equal(t, "workercontroller.session.existence_check_interval", setting.Key().String())
+func TestSessionIdleTimeout_KeyAndDefault(t *testing.T) {
+	setting := WorkerControllerSessionIdleTimeout
+	require.Equal(t, "workercontroller.session.idle_timeout", setting.Key().String())
 	require.Equal(t, dynamicconfig.PrecedenceNamespace, setting.Precedence())
 
-	get := SessionExistenceCheckIntervalGetter(dynamicconfig.NewNoopCollection(), "any-ns")
-	require.Equal(t, 5*time.Minute, get())
+	get := SessionIdleTimeoutGetter(dynamicconfig.NewNoopCollection(), "any-ns")
+	require.Equal(t, 24*time.Hour, get())
 }
 
-func TestSessionExistenceCheckInterval_Override(t *testing.T) {
-	setting := WorkerControllerSessionExistenceCheckInterval
+func TestSessionIdleTimeout_Override(t *testing.T) {
+	setting := WorkerControllerSessionIdleTimeout
 	client := dynamicconfig.StaticClient{
 		setting.Key(): []dynamicconfig.ConstrainedValue{
 			{Constraints: dynamicconfig.Constraints{Namespace: "ns-fast"}, Value: "30s"},
@@ -112,6 +112,6 @@ func TestSessionExistenceCheckInterval_Override(t *testing.T) {
 	}
 	coll := dynamicconfig.NewCollection(client, log.NewNoopLogger())
 
-	require.Equal(t, 30*time.Second, SessionExistenceCheckIntervalGetter(coll, "ns-fast")())
-	require.Equal(t, 10*time.Minute, SessionExistenceCheckIntervalGetter(coll, "ns-other")())
+	require.Equal(t, 30*time.Second, SessionIdleTimeoutGetter(coll, "ns-fast")())
+	require.Equal(t, 10*time.Minute, SessionIdleTimeoutGetter(coll, "ns-other")())
 }

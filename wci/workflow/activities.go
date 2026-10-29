@@ -47,8 +47,8 @@ type (
 		namespace             *namespace.Namespace
 		workflowserviceClient workflowservice.WorkflowServiceClient
 		staticConfig          *client.StaticConfig
-		// wciClient reads parent version WCIs and checks session workflows for session
-		// WCIs. It is optional; the session activities fail non-retryably when it is nil.
+		// wciClient reads parent version WCIs for session WCIs. It is optional; the session
+		// activities fail non-retryably when it is nil.
 		wciClient client.Client
 	}
 

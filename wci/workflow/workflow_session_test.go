@@ -23,8 +23,6 @@ import (
 const (
 	testSessionID    = "session-0123456789abcdef0123456789abcdef"
 	testSessionQueue = "session-queue"
-	// testSessionWorkflowID differs from testSessionID: the session's workflow can have any ID.
-	testSessionWorkflowID = "session-workflow-id"
 	// sessionInitDuration is how long the mocked init activity takes, so that signals sent
 	// in the meantime show that they are only processed after init.
 	sessionInitDuration = time.Minute
@@ -37,9 +35,8 @@ func newTestSessionArgs() *iface.WorkerControllerInstanceWorkflowArgs {
 		DeploymentName: "test-deployment",
 		BuildId:        "test-build",
 		Session: &iface.WorkerControllerInstanceSessionArgs{
-			SessionID:         testSessionID,
-			SessionWorkflowID: testSessionWorkflowID,
-			SessionQueue:      testSessionQueue,
+			SessionID:    testSessionID,
+			SessionQueue: testSessionQueue,
 		},
 	}
 }
@@ -71,25 +68,26 @@ type sessionTestEnv struct {
 	invokeReqs    []InvokeWorkerActivityRequest
 	externalCalls int
 
-	// existenceInterval is the configured existence check interval; existenceResp is what
-	// the mocked check returns (nil: session and parent alive with newTestInvokeSpec) and
-	// existenceChecks records when each check ran, relative to the workflow start.
-	existenceInterval time.Duration
-	existenceResp     func() *CheckSessionExistenceResponse
-	existenceErr      error
-	existenceChecks   []time.Duration
+	// idleTimeout is the configured session idle timeout. refreshResp is what the mocked
+	// parent spec refresh returns (nil: newTestInvokeSpec, i.e. unchanged) and refreshes
+	// records when each refresh attempt ran, relative to start.
+	idleTimeout time.Duration
+	refreshResp func() *RefreshSessionSpecResponse
+	refreshErr  error
+	refreshes   []time.Duration
+	start       time.Time
 }
 
 func newSessionTestEnv(t *testing.T, workflowVersion WorkerControllerInstanceWorkflowVersion, enabled bool) *sessionTestEnv {
 	t.Helper()
 
 	h := &sessionTestEnv{
-		t:                 t,
-		activities:        NewActivities(nil, nil, nil, nil, nil),
-		args:              newTestSessionArgs(),
-		metrics:           newCapturingMetricsHandler(),
-		existenceInterval: DefaultSessionExistenceCheckInterval,
-		initResp:          &InitSessionFromParentResponse{Spec: newTestInvokeSpec()},
+		t:           t,
+		activities:  NewActivities(nil, nil, nil, nil, nil),
+		args:        newTestSessionArgs(),
+		metrics:     newCapturingMetricsHandler(),
+		idleTimeout: DefaultSessionIdleTimeout,
+		initResp:    &InitSessionFromParentResponse{Spec: newTestInvokeSpec()},
 		taskAddResp: &HandleTaskAddSignalActivityResponse{
 			Actions: []scalingalgorithm.ScalingAction{{ScalingGroupKey: "workflow", Action: scalingalgorithm.ActionTypeInvokeWorker}},
 		},
@@ -102,7 +100,7 @@ func newSessionTestEnv(t *testing.T, workflowVersion WorkerControllerInstanceWor
 			func() int { return 100 },
 			func() time.Duration { return periodicValidationInterval },
 			args, h.activities,
-			WithSessionExistenceCheckInterval(func() time.Duration { return h.existenceInterval }))
+			WithSessionIdleTimeout(func() time.Duration { return h.idleTimeout }))
 	}
 
 	var suite testsuite.WorkflowTestSuite
@@ -134,19 +132,19 @@ func newSessionTestEnv(t *testing.T, workflowVersion WorkerControllerInstanceWor
 			h.invokeReqs = append(h.invokeReqs, *req)
 			return h.invokeErr
 		})
-	start := h.env.Now()
-	h.env.OnActivity(h.activities.CheckSessionExistence, mock.Anything, mock.Anything).
-		Return(func(_ context.Context, req *CheckSessionExistenceRequest) (*CheckSessionExistenceResponse, error) {
-			h.existenceChecks = append(h.existenceChecks, h.env.Now().Sub(start))
+	h.start = h.env.Now()
+	h.env.OnActivity(h.activities.RefreshSessionSpec, mock.Anything, mock.Anything).
+		Return(func(_ context.Context, req *RefreshSessionSpecRequest) (*RefreshSessionSpecResponse, error) {
+			h.refreshes = append(h.refreshes, h.elapsed())
 			assert.Equal(t, testSessionID, req.SessionID)
-			assert.Equal(t, testSessionWorkflowID, req.SessionWorkflowID)
-			if h.existenceErr != nil {
-				return nil, h.existenceErr
+			assert.Equal(t, "test-deployment", req.DeploymentName)
+			if h.refreshErr != nil {
+				return nil, h.refreshErr
 			}
-			if h.existenceResp != nil {
-				return h.existenceResp(), nil
+			if h.refreshResp != nil {
+				return h.refreshResp(), nil
 			}
-			return &CheckSessionExistenceResponse{SessionAlive: true, ParentAlive: true, ParentSpec: newTestInvokeSpec()}, nil
+			return &RefreshSessionSpecResponse{Spec: newTestInvokeSpec()}, nil
 		}).Maybe()
 	for name, fn := range map[string]any{
 		"pull-stats":     h.activities.PullStats,
@@ -163,6 +161,11 @@ func newSessionTestEnv(t *testing.T, workflowVersion WorkerControllerInstanceWor
 		Return(nil).Run(func(mock.Arguments) { h.externalCalls++ }).Maybe()
 
 	return h
+}
+
+// elapsed returns the workflow time since the test env was created.
+func (h *sessionTestEnv) elapsed() time.Duration {
+	return h.env.Now().Sub(h.start)
 }
 
 func (h *sessionTestEnv) signalAt(at time.Duration, req iface.SignalTaskAddRequest) {
@@ -239,6 +242,8 @@ func TestSessionWorkflow_InitThenSignalInvokesWithSessionFields(t *testing.T) {
 	require.NoError(t, *deleteErr)
 
 	assert.Equal(t, []string{"init", "task-add", "invoke", "task-add", "invoke"}, h.calls)
+	// The first signal after init uses the spec init just read; the second refreshes it.
+	assert.Equal(t, []time.Duration{sessionInitDuration}, h.refreshes)
 	for _, req := range h.taskAddReqs {
 		assert.Zero(t, req.Request.SyncMatchSignalsSinceLast, "sync counts are dropped in session mode")
 		assert.Equal(t, 2, req.Request.NoSyncMatchSignalsSinceLast)
@@ -445,7 +450,7 @@ func TestSessionWorkflow_DeleteDuringInitCompletesWithoutProcessingSignals(t *te
 	require.NoError(t, h.run())
 	require.NoError(t, *deleteErr)
 	assert.Equal(t, []string{"init"}, h.calls)
-	assert.Empty(t, h.existenceChecks)
+	assert.Empty(t, h.refreshes)
 	h.requireNoVersionOnlyPaths()
 }
 

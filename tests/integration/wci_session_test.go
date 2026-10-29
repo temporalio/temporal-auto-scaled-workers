@@ -34,8 +34,8 @@ import (
 	"go.temporal.io/server/tests/testcore"
 )
 
-// sessionPruneTimeout leaves room for several existence checks, which run every
-// testSessionExistenceCheckInterval (see createWCITestEnv).
+// sessionPruneTimeout bounds how long a session WCI may take to complete or pick up a
+// parent config change after the triggering signal.
 const sessionPruneTimeout = 30 * time.Second
 
 // A session WCI started via signal-with-start takes the parent's invoke groups, invokes with
@@ -60,7 +60,7 @@ func testWCISessionStartViaSignalWithStart(t *testing.T) {
 	var state iface.WorkerControllerInstanceLocalState
 	f.queryWCI(t, f.sessionWCIID(session), iface.QueryDumpWorkerControllerInstanceLocalState, &state)
 	requireSpecsEqual(t, parent.Spec, state.Spec)
-	require.NotNil(t, state.NextExistenceCheckTime, "session WCI should persist its next existence check time")
+	require.NotNil(t, state.LastNoSyncSignalTime, "session WCI should persist its last no-sync signal time")
 	require.Nil(t, state.NextPollTime, "session WCI should not arm the metrics poll")
 
 	require.EventuallyWithT(t, func(c *assert.CollectT) {
@@ -69,8 +69,7 @@ func testWCISessionStartViaSignalWithStart(t *testing.T) {
 		memo, err := iface.DecodeWorkerControllerInstanceMemo(resp.GetWorkflowExecutionInfo().GetMemo())
 		require.NoError(c, err)
 		require.Equal(c, session.SessionID, memo.SessionID)
-		require.Equal(c, session.SessionWorkflowID, memo.SessionWorkflowID)
-	}, 30*time.Second, 500*time.Millisecond, "session WCI memo should carry the session ID and session workflow ID")
+	}, 30*time.Second, 500*time.Millisecond, "session WCI memo should carry the session ID")
 }
 
 // Sync-only signals never invoke, and a session WCI never pulls stats, validates, registers
@@ -90,8 +89,7 @@ func testWCISessionSyncOnlySignalsDoNotInvoke(t *testing.T) {
 	f.signalWithStart(t, session, syncOnly)
 	f.signalWithStart(t, session, syncOnly)
 
-	// Cover a few existence checks so the session's timer path runs too.
-	f.assertNoSessionInvokes(t, 3*testSessionExistenceCheckInterval, "for sync-only signals")
+	f.assertNoSessionInvokes(t, 3*time.Second, "for sync-only signals")
 	f.requireRunning(t, f.sessionWCIID(session))
 
 	var state iface.WorkerControllerInstanceLocalState
@@ -99,38 +97,38 @@ func testWCISessionSyncOnlySignalsDoNotInvoke(t *testing.T) {
 	require.Nil(t, state.NextPollTime, "session WCI should not arm the metrics poll")
 	require.Nil(t, state.ValidationStatus, "session WCI should not run validation")
 
-	forbiddenActivities := []string{"PullStats", "ValidateSpec", "InvokeWorkersToRegisterTaskQueues", "InvokeWorker"}
+	// Sync-only signals don't refresh the parent spec either.
+	forbiddenActivities := []string{"PullStats", "ValidateSpec", "InvokeWorkersToRegisterTaskQueues", "InvokeWorker", "RefreshSessionSpec"}
 	events := f.historyAcrossRuns(t, f.sessionWCIID(session))
 	require.NotEmpty(t, events)
-	var checks int
 	for _, e := range events {
 		switch e.GetEventType() {
 		case enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
 			name := e.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName()
 			require.NotContains(t, forbiddenActivities, name, "session WCI scheduled activity %s", name)
-			if name == "CheckSessionExistence" {
-				checks++
-			}
 		case enumspb.EVENT_TYPE_SIGNAL_EXTERNAL_WORKFLOW_EXECUTION_INITIATED:
 			t.Fatalf("session WCI signaled an external workflow: %v",
 				e.GetSignalExternalWorkflowExecutionInitiatedEventAttributes().GetWorkflowExecution().GetWorkflowId())
 		}
 	}
-	require.Positive(t, checks, "session WCI should have run the existence check")
 }
 
-// A session WCI completes once its session workflow is gone.
-func testWCISessionSelfPruneOnSessionClose(t *testing.T) {
+// A session WCI completes once no no-sync signal has arrived for the idle timeout.
+func testWCISessionIdleCompletion(t *testing.T) {
 	f := newSessionFixture(t)
+	// Read at the start of each run, so set it before the session WCI starts.
+	t.Cleanup(f.env.OverrideDynamicConfig(wciclient.WorkerControllerSessionIdleTimeout, testSessionShortIdleTimeout))
 
+	start := time.Now()
 	session := f.startSession(t, noSyncTaskAdd(f.sessionQueue))
 	f.waitForSessionInvoke(t, 30*time.Second, "session invoke")
 
-	require.NoError(t, f.cli.TerminateWorkflow(f.ctx, session.SessionWorkflowID, "", "session closed"))
 	f.waitForCompleted(t, f.sessionWCIID(session))
+	require.GreaterOrEqual(t, time.Since(start), testSessionShortIdleTimeout, "session WCI completed before the idle timeout")
 }
 
-// A session WCI completes once its parent version (and with it the version WCI) is deleted.
+// A session WCI completes on the next no-sync signal once its parent version (and with it
+// the version WCI) is deleted, without invoking.
 func testWCISessionSelfPruneOnParentDelete(t *testing.T) {
 	f := newSessionFixture(t)
 
@@ -145,11 +143,14 @@ func testWCISessionSelfPruneOnParentDelete(t *testing.T) {
 		})
 	require.NoError(t, err)
 	requireVersionDeleted(t, f.env, f.version)
+	f.requireRunning(t, f.sessionWCIID(session))
 
+	f.signalWithStart(t, session, noSyncTaskAdd(f.sessionQueue))
 	f.waitForCompleted(t, f.sessionWCIID(session))
+	require.Empty(t, f.spy.invokes, "session WCI invoked although its parent is gone")
 }
 
-// A session WCI picks up the parent's compute config change on its next existence check.
+// A session WCI picks up the parent's compute config change on the next no-sync signal.
 func testWCISessionConfigRefresh(t *testing.T) {
 	f := newSessionFixture(t)
 
@@ -174,6 +175,9 @@ func testWCISessionConfigRefresh(t *testing.T) {
 
 	parent := f.describeWCI(t, wciclient.GenerateWorkerControllerInstanceWorkflowID(f.version))
 	require.NotNil(t, defaultScalerConfig(parent.Spec), "parent should have the updated scaler details")
+
+	// The first signal after init used the spec init read; this one refreshes it.
+	f.signalWithStart(t, session, noSyncTaskAdd(f.sessionQueue))
 
 	require.Eventually(t, func() bool {
 		var desc iface.QueryDescribeWorkerControllerInstanceResponse
@@ -254,7 +258,7 @@ type sessionFixture struct {
 func newSessionFixture(t *testing.T) *sessionFixture {
 	t.Helper()
 	env := createWCITestEnv(t)
-	t.Cleanup(wciworkflow.SetMinSessionExistenceCheckIntervalForTest(testSessionExistenceCheckInterval / 2))
+	t.Cleanup(wciworkflow.SetMinSessionIdleTimeoutForTest(time.Second))
 
 	deploymentName := uuid.NewString()
 	buildID := uuid.NewString()
@@ -275,25 +279,13 @@ func newSessionFixture(t *testing.T) *sessionFixture {
 	}
 }
 
-// startSession starts a placeholder session workflow and signal-with-starts its session WCI.
-// Both are terminated on cleanup if still running.
+// startSession signal-with-starts a session WCI. It is terminated on cleanup if still running.
 func (f *sessionFixture) startSession(t *testing.T, req *iface.SignalTaskAddRequest) *iface.WorkerControllerInstanceSessionArgs {
 	t.Helper()
-	// The session workflow ID differs from the session ID: the session's workflow can have
-	// any ID, and the existence check must look it up by its workflow ID.
 	session := &iface.WorkerControllerInstanceSessionArgs{
-		SessionID:         "session-" + uuid.NewString(),
-		SessionWorkflowID: "session-wf-" + uuid.NewString(),
-		SessionQueue:      f.sessionQueue,
+		SessionID:    "session-" + uuid.NewString(),
+		SessionQueue: f.sessionQueue,
 	}
-
-	// No worker polls this queue, so the session workflow stays running until terminated.
-	_, err := f.cli.ExecuteWorkflow(f.ctx, sdkclient.StartWorkflowOptions{
-		ID:        session.SessionWorkflowID,
-		TaskQueue: "session-wf-tq-" + uuid.NewString(),
-	}, "session-placeholder-workflow")
-	require.NoError(t, err)
-	t.Cleanup(func() { f.terminateIfRunning(t, session.SessionWorkflowID) })
 
 	f.signalWithStart(t, session, req)
 	t.Cleanup(func() { f.terminateIfRunning(t, f.sessionWCIID(session)) })

@@ -22,14 +22,14 @@ func SetPollIntervalsForTest(initial, floor time.Duration) func() {
 	}
 }
 
-// SetMinSessionExistenceCheckIntervalForTest lowers the floor applied to the session
-// existence check interval so integration tests can observe self-prune and config
-// refresh without waiting out the production 30-second minimum. It returns a function
-// that restores the previous value. It exists only under the test_dep build tag.
-func SetMinSessionExistenceCheckIntervalForTest(floor time.Duration) func() {
-	prev := minSessionExistenceCheckInterval
-	minSessionExistenceCheckInterval = floor
+// SetMinSessionIdleTimeoutForTest lowers the floor applied to the session idle timeout
+// so integration tests can observe idle completion without waiting out the production
+// 1-minute minimum. It returns a function that restores the previous value. It exists
+// only under the test_dep build tag.
+func SetMinSessionIdleTimeoutForTest(floor time.Duration) func() {
+	prev := minSessionIdleTimeout
+	minSessionIdleTimeout = floor
 	return func() {
-		minSessionExistenceCheckInterval = prev
+		minSessionIdleTimeout = prev
 	}
 }

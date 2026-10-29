@@ -104,15 +104,6 @@ type (
 			session *iface.WorkerControllerInstanceSessionArgs,
 			request *iface.SignalTaskAddRequest,
 		) error
-
-		// WorkflowIsRunning reports whether the workflow with the given ID is running in the
-		// namespace. A workflow that is not found counts as not running. Session WCIs use it
-		// to check their session workflow.
-		WorkflowIsRunning(
-			ctx context.Context,
-			namespaceEntry *namespace.Namespace,
-			workflowID string,
-		) (bool, error)
 	}
 
 	WorkerControllerInstanceSummary struct {
@@ -196,17 +187,6 @@ func (d *clientImpl) WorkerControllerInstanceExists(
 	version *deploymentpb.WorkerDeploymentVersion,
 ) (bool, error) {
 	workflowID := GenerateWorkerControllerInstanceWorkflowID(version)
-	return workflowIsRunning(ctx, d.historyClient, namespaceEntry, workflowID)
-}
-
-// WorkflowIsRunning reports whether the workflow with the given ID is running. A workflow
-// that is not found counts as not running. Session WCIs use it to check their session
-// workflow.
-func (d *clientImpl) WorkflowIsRunning(
-	ctx context.Context,
-	namespaceEntry *namespace.Namespace,
-	workflowID string,
-) (bool, error) {
 	return workflowIsRunning(ctx, d.historyClient, namespaceEntry, workflowID)
 }
 

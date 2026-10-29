@@ -96,11 +96,8 @@ type (
 	// worker deployment version (parent version WCI) it takes its compute config from is
 	// WorkerControllerInstanceWorkflowArgs.DeploymentName / BuildId.
 	WorkerControllerInstanceSessionArgs struct {
-		// SessionID is the AgentCore runtime session ID. It is not the session workflow's ID.
+		// SessionID is the AgentCore runtime session ID.
 		SessionID string `json:"session_id,omitempty"`
-		// SessionWorkflowID is the workflow ID of the session's workflow, checked by the
-		// periodic existence check.
-		SessionWorkflowID string `json:"session_workflow_id,omitempty"`
 		// SessionQueue is the session sticky task queue name.
 		SessionQueue string `json:"session_queue,omitempty"`
 	}
@@ -124,10 +121,10 @@ type (
 		// ValidationStatus holds the result of the last validation.
 		ValidationStatus *ValidationStatus `json:"validation_state,omitempty"`
 
-		// NextExistenceCheckTime is the persisted deadline for the next session existence
-		// check; carried across continue-as-new so the check cadence survives CaN. Only
-		// used by session WCIs.
-		NextExistenceCheckTime *timestamppb.Timestamp `json:"next_existence_check_time,omitempty"`
+		// LastNoSyncSignalTime is when the session WCI last processed a no-sync task-add
+		// signal (or started). The session WCI completes once it has been idle for the
+		// configured idle timeout; carried across continue-as-new. Only used by session WCIs.
+		LastNoSyncSignalTime *timestamppb.Timestamp `json:"last_no_sync_signal_time,omitempty"`
 	}
 
 	QueryDescribeWorkerControllerInstanceResponse struct {
@@ -193,9 +190,8 @@ type (
 		DeploymentName string                 `json:"deployment_name,omitempty"`
 		BuildId        string                 `json:"build_id,omitempty"`
 		CreateTime     *timestamppb.Timestamp `json:"create_time,omitempty"`
-		// SessionID and SessionWorkflowID are only set for session WCIs.
-		SessionID         string `json:"session_id,omitempty"`
-		SessionWorkflowID string `json:"session_workflow_id,omitempty"`
+		// SessionID is only set for session WCIs.
+		SessionID string `json:"session_id,omitempty"`
 	}
 )
 
@@ -227,9 +223,6 @@ func (s *WorkerControllerInstanceSessionArgs) Validate() error {
 	var errs []error
 	if s.SessionID == "" {
 		errs = append(errs, errors.New("session ID is required"))
-	}
-	if s.SessionWorkflowID == "" {
-		errs = append(errs, errors.New("session workflow ID is required"))
 	}
 	if s.SessionQueue == "" {
 		errs = append(errs, errors.New("session queue is required"))

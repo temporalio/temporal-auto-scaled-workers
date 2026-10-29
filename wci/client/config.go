@@ -59,17 +59,17 @@ var (
 		[]string(nil),
 		`WorkerControllerEnabledComputeProviders defines the list of compute providers enabled for use. Namespace-scoped: a namespace-level value overrides the cell-wide (global) value, and namespaces without an entry inherit the cell value.`,
 	)
-	WorkerControllerSessionExistenceCheckInterval = dynamicconfig.NewNamespaceDurationSetting(
-		"workercontroller.session.existence_check_interval",
-		5*time.Minute,
-		`WorkerControllerSessionExistenceCheckInterval controls how often a session WCI checks that its session workflow and parent version WCI still exist, and re-reads the parent's spec.`,
+	WorkerControllerSessionIdleTimeout = dynamicconfig.NewNamespaceDurationSetting(
+		"workercontroller.session.idle_timeout",
+		24*time.Hour,
+		`WorkerControllerSessionIdleTimeout controls how long a session WCI waits without a no-sync task-add signal before it completes.`,
 	)
 )
 
-// SessionExistenceCheckIntervalGetter returns a getter for the session existence-check
-// interval of the given namespace, for use by the session WCI workflow.
-func SessionExistenceCheckIntervalGetter(dc *dynamicconfig.Collection, namespaceName string) func() time.Duration {
-	get := WorkerControllerSessionExistenceCheckInterval.Get(dc)
+// SessionIdleTimeoutGetter returns a getter for the session idle timeout of the given
+// namespace, for use by the session WCI workflow.
+func SessionIdleTimeoutGetter(dc *dynamicconfig.Collection, namespaceName string) func() time.Duration {
+	get := WorkerControllerSessionIdleTimeout.Get(dc)
 	return func() time.Duration {
 		return get(namespaceName)
 	}

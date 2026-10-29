@@ -12,31 +12,33 @@ import (
 )
 
 const (
-	// DefaultSessionExistenceCheckInterval is used when no interval getter is configured.
-	DefaultSessionExistenceCheckInterval = 5 * time.Minute
-	// MinSessionExistenceCheckInterval bounds the configured interval from below.
-	MinSessionExistenceCheckInterval = 30 * time.Second
+	// DefaultSessionIdleTimeout is used when no idle timeout getter is configured.
+	DefaultSessionIdleTimeout = 24 * time.Hour
+	// MinSessionIdleTimeout bounds the configured idle timeout from below.
+	MinSessionIdleTimeout = time.Minute
 )
 
-// minSessionExistenceCheckInterval is the effective floor; integration tests lower it
-// through SetMinSessionExistenceCheckIntervalForTest.
-var minSessionExistenceCheckInterval = MinSessionExistenceCheckInterval
+// minSessionIdleTimeout is the effective floor; integration tests lower it through
+// SetMinSessionIdleTimeoutForTest.
+var minSessionIdleTimeout = MinSessionIdleTimeout
 
 // WorkflowOption configures optional WorkflowRunner settings.
 type WorkflowOption func(*WorkflowRunner)
 
-// WithSessionExistenceCheckInterval sets the getter for the session existence check
-// interval. It is read once per run and only used by session WCIs.
-func WithSessionExistenceCheckInterval(getter func() time.Duration) WorkflowOption {
+// WithSessionIdleTimeout sets the getter for the session idle timeout: how long a session
+// WCI waits without a no-sync task-add signal before it completes. It is read once per run
+// and only used by session WCIs.
+func WithSessionIdleTimeout(getter func() time.Duration) WorkflowOption {
 	return func(d *WorkflowRunner) {
-		d.unsafeSessionExistenceCheckInterval = getter
+		d.unsafeSessionIdleTimeout = getter
 	}
 }
 
 // Session mode: a WCI started with session args (args.Session != nil) scales a single
-// session's sticky queue. It takes its spec from the parent version WCI, only invokes
-// workers on no-sync task-add signals and never pulls stats, registers task queues,
-// runs periodic validation or signals the version workflow. Everything in this file only
+// session's sticky queue. It takes its spec from the parent version WCI (re-read on every
+// processed no-sync task-add signal), only invokes workers on no-sync task-add signals,
+// completes after the idle timeout without one, and never pulls stats, registers task
+// queues, runs periodic validation or signals the version workflow. Everything in this file only
 // runs on the session branch, so version WCIs keep their command sequence.
 
 // checkSessionMode fails the run with a non-retryable error if session mode is not
@@ -77,10 +79,7 @@ func (d *WorkflowRunner) initSessionFromParent(ctx workflow.Context) (done bool,
 	}
 
 	if resp.Spec == nil || len(resp.Spec.ScalingGroupSpecs) == 0 {
-		reason := wcimetrics.SkippedReasonSessionParentUnavailable
-		if resp.UnavailableReason == SessionInitReasonNoInvokeGroup {
-			reason = wcimetrics.SkippedReasonSessionNoInvokeGroup
-		}
+		reason := sessionUnavailableSkipReason(resp.UnavailableReason)
 		d.logger.Info("Session WCI cannot be initialized from parent version WCI; completing", "reason", resp.UnavailableReason, "dropped_groups", resp.DroppedGroups)
 		d.operationMetric(wcimetrics.OperationTypeSessionInit).recordSkipped(reason)
 		d.markDeleted()
@@ -91,6 +90,8 @@ func (d *WorkflowRunner) initSessionFromParent(ctx workflow.Context) (done bool,
 		d.logger.Info("Session WCI ignores parent scaling groups without invoke strategy", "dropped_groups", resp.DroppedGroups)
 	}
 	d.State.Spec = resp.Spec
+	// The parent was just read, so the first signal processed in this run skips the refresh.
+	d.sessionSpecFresh = true
 	d.operationMetric(wcimetrics.OperationTypeSessionInit).recordSuccess()
 
 	// A delete may have landed while the activity ran.
@@ -124,95 +125,105 @@ func (d *WorkflowRunner) sessionID() string {
 	return ""
 }
 
-func (d *WorkflowRunner) sessionWorkflowID() string {
-	if d.IsSession() {
-		return d.Session.SessionWorkflowID
+// sessionIdleTimeout returns the configured idle timeout, clamped to the minimum.
+func (d *WorkflowRunner) sessionIdleTimeout() time.Duration {
+	timeout := DefaultSessionIdleTimeout
+	if d.unsafeSessionIdleTimeout != nil {
+		timeout = d.unsafeSessionIdleTimeout()
 	}
-	return ""
+	return max(timeout, minSessionIdleTimeout)
 }
 
-// sessionExistenceCheckInterval returns the configured interval, clamped to the minimum.
-func (d *WorkflowRunner) sessionExistenceCheckInterval() time.Duration {
-	interval := DefaultSessionExistenceCheckInterval
-	if d.unsafeSessionExistenceCheckInterval != nil {
-		interval = d.unsafeSessionExistenceCheckInterval()
-	}
-	return max(interval, minSessionExistenceCheckInterval)
+// recordSessionActivity records a processed no-sync task-add signal, which pushes out the
+// idle deadline. It does not set stateChanged: the time is carried in state at the next CaN.
+func (d *WorkflowRunner) recordSessionActivity(ctx workflow.Context) {
+	d.State.LastNoSyncSignalTime = timestamppb.New(workflow.Now(ctx))
 }
 
-// armSessionExistenceCheck arms the periodic existence check timer. The next check time is
-// persisted in state so the cadence survives continue-as-new; a past-due check fires
-// immediately. The timer runs on every interval, whether or not signals are being processed.
-func (d *WorkflowRunner) armSessionExistenceCheck(ctx, timerCtx workflow.Context, timerSel workflow.Selector) {
+// armSessionIdleTimer arms the idle timer. The session WCI completes once no no-sync
+// task-add signal has been processed for the idle timeout. The start of the session counts
+// as activity. Instead of re-creating the timer on every signal, a timer that fires before
+// the (moved) deadline re-arms for the remainder. The last activity time is persisted in
+// state, so the deadline survives continue-as-new; a past-due deadline fires immediately.
+func (d *WorkflowRunner) armSessionIdleTimer(ctx, timerCtx workflow.Context, timerSel workflow.Selector) {
 	// Read once at run start. Dynamic config changes take effect at the next CaN.
-	interval := d.sessionExistenceCheckInterval()
+	timeout := d.sessionIdleTimeout()
+	if d.State.LastNoSyncSignalTime == nil {
+		d.recordSessionActivity(ctx)
+	}
+	remaining := func() time.Duration {
+		return max(d.State.LastNoSyncSignalTime.AsTime().Add(timeout).Sub(workflow.Now(ctx)), 0)
+	}
 
 	var addTimer func(next time.Duration)
 	addTimer = func(next time.Duration) {
-		d.State.NextExistenceCheckTime = timestamppb.New(workflow.Now(ctx).Add(next))
 		timerFuture := workflow.NewTimer(timerCtx, next)
 		timerSel.AddFuture(timerFuture, func(f workflow.Future) {
 			if err := f.Get(timerCtx, nil); err != nil {
-				d.logger.Debug("Session existence check timer cancelled, not re-arming", "error", err)
+				d.logger.Debug("Session idle timer cancelled, not re-arming", "error", err)
 				return
 			}
-			if d.checkSessionExistence(timerCtx) {
+			if next := remaining(); next > 0 {
+				addTimer(next)
 				return
 			}
-			addTimer(interval)
+			d.logger.Info("Session WCI has been idle for the idle timeout; completing", "idle_timeout", timeout, "last_no_sync_signal_time", d.State.LastNoSyncSignalTime.AsTime())
+			d.operationMetric(wcimetrics.OperationTypeSessionIdle).recordSkipped(wcimetrics.SkippedReasonSessionIdle)
+			d.markDeleted()
 		})
 	}
-
-	next := interval
-	if d.State.NextExistenceCheckTime != nil {
-		next = max(d.State.NextExistenceCheckTime.AsTime().Sub(workflow.Now(ctx)), 0)
-	}
-	addTimer(next)
+	addTimer(remaining())
 }
 
-// checkSessionExistence runs the existence check activity and applies its result. It returns
-// done=true when the session WCI completes because the session workflow or the parent version
-// WCI is gone, or the parent has no invoke-strategy group left.
-func (d *WorkflowRunner) checkSessionExistence(ctx workflow.Context) (done bool) {
-	recorder := d.operationMetric(wcimetrics.OperationTypeSessionExistenceCheck)
+// refreshSessionSpec re-reads the parent version WCI's spec before a no-sync task-add
+// signal is processed. It returns done=true when the session WCI completes because the
+// parent is gone or has no invoke-strategy group left; the signal must then not invoke.
+// A changed spec replaces the session's spec and triggers a CaN after this signal. If the
+// parent cannot be read, the current spec is kept and the signal is still processed.
+func (d *WorkflowRunner) refreshSessionSpec(ctx workflow.Context) (done bool) {
+	if d.sessionSpecFresh {
+		d.sessionSpecFresh = false
+		return false
+	}
+	recorder := d.operationMetric(wcimetrics.OperationTypeSessionSpecRefresh)
 
-	var resp CheckSessionExistenceResponse
+	var resp RefreshSessionSpecResponse
 	if err := workflow.ExecuteActivity(
 		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			StartToCloseTimeout: CheckSessionExistenceActivityTimeout,
-			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, MaximumAttempts: 5},
+			StartToCloseTimeout: RefreshSessionSpecActivityTimeout,
+			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, MaximumAttempts: 3},
 		}),
-		d.a.CheckSessionExistence,
-		&CheckSessionExistenceRequest{RequestContext: d.requestContext(), SessionWorkflowID: d.Session.SessionWorkflowID},
+		d.a.RefreshSessionSpec,
+		&RefreshSessionSpecRequest{RequestContext: d.requestContext()},
 	).Get(ctx, &resp); err != nil {
-		// Try again on the next interval.
-		d.logger.Error("Session existence check failed", "error", err)
+		d.logger.Warn("Failed to refresh session spec from parent version WCI; keeping the current spec", "error", err)
 		recorder.recordActivityError(err)
 		return false
 	}
 
-	var reason wcimetrics.SkippedReason
-	switch {
-	case !resp.SessionAlive:
-		reason = wcimetrics.SkippedReasonSessionWorkflowGone
-	case !resp.ParentAlive:
-		reason = wcimetrics.SkippedReasonSessionParentUnavailable
-	case resp.ParentSpec == nil || len(resp.ParentSpec.ScalingGroupSpecs) == 0:
-		reason = wcimetrics.SkippedReasonSessionNoInvokeGroup
-	}
-	if reason != "" {
-		d.logger.Info("Session WCI is no longer needed; completing", "reason", reason, "dropped_groups", resp.DroppedGroups)
+	if resp.Spec == nil || len(resp.Spec.ScalingGroupSpecs) == 0 {
+		reason := sessionUnavailableSkipReason(resp.UnavailableReason)
+		d.logger.Info("Parent version WCI is no longer available to the session WCI; completing", "reason", resp.UnavailableReason, "dropped_groups", resp.DroppedGroups)
 		recorder.recordSkipped(reason)
 		d.markDeleted()
 		return true
 	}
 
 	recorder.recordSuccess()
-	if d.applyParentSpec(resp.ParentSpec) {
+	if d.applyParentSpec(resp.Spec) {
 		d.logger.Info("Session WCI picked up a config change from the parent version WCI", "dropped_groups", resp.DroppedGroups)
 		d.stateChanged = true
 	}
-	return false
+	// A delete may have landed while the activity ran.
+	return d.deleteInstance
+}
+
+// sessionUnavailableSkipReason maps a parent read's UnavailableReason to a skip reason.
+func sessionUnavailableSkipReason(unavailableReason string) wcimetrics.SkippedReason {
+	if unavailableReason == SessionInitReasonNoInvokeGroup {
+		return wcimetrics.SkippedReasonSessionNoInvokeGroup
+	}
+	return wcimetrics.SkippedReasonSessionParentUnavailable
 }
 
 // applyParentSpec replaces the session's spec with the parent's if they differ. The scaling

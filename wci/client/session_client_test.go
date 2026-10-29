@@ -24,9 +24,8 @@ import (
 
 func newTestSessionArgs() *iface.WorkerControllerInstanceSessionArgs {
 	return &iface.WorkerControllerInstanceSessionArgs{
-		SessionID:         "session-0123456789abcdef0123456789abcdef",
-		SessionWorkflowID: "session-workflow-id",
-		SessionQueue:      "session-queue",
+		SessionID:    "session-0123456789abcdef0123456789abcdef",
+		SessionQueue: "session-queue",
 	}
 }
 
@@ -144,7 +143,7 @@ func TestWorkflowIsRunning(t *testing.T) {
 					}, nil
 				})
 
-			running, err := c.WorkflowIsRunning(context.Background(), newTestNamespace(), "session-workflow-id")
+			running, err := workflowIsRunning(context.Background(), c.historyClient, newTestNamespace(), "session-workflow-id")
 			if tc.wantErr {
 				require.Error(t, err)
 				return
