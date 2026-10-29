@@ -47,10 +47,9 @@ type (
 		namespace             *namespace.Namespace
 		workflowserviceClient workflowservice.WorkflowServiceClient
 		staticConfig          *client.StaticConfig
-		// parentClient reads parent version WCIs for session WCIs; see SetParentInstanceClient.
-		parentClient ParentInstanceClient
-		// sessionWorkflowClient checks session workflows; see SetSessionWorkflowClient.
-		sessionWorkflowClient SessionWorkflowClient
+		// wciClient reads parent version WCIs and checks session workflows for session
+		// WCIs. It is optional; the session activities fail non-retryably when it is nil.
+		wciClient client.Client
 	}
 
 	// RequestContext aliases the compute-provider request context so activity
@@ -179,12 +178,14 @@ func NewActivities(
 	dc *dynamicconfig.Collection,
 	workflowserviceClient workflowservice.WorkflowServiceClient,
 	staticConfig *client.StaticConfig,
+	wciClient client.Client,
 ) *Activities {
 	return &Activities{
 		dc:                    dc,
 		namespace:             namespace,
 		workflowserviceClient: workflowserviceClient,
 		staticConfig:          staticConfig,
+		wciClient:             wciClient,
 	}
 }
 

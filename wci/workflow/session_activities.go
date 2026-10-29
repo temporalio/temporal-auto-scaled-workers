@@ -14,7 +14,6 @@ import (
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/server/common/namespace"
 )
 
 const (
@@ -27,19 +26,6 @@ const (
 )
 
 type (
-	// ParentInstanceClient is the part of the WCI client the session activities need to
-	// read the parent version WCI. It is satisfied by client.Client.
-	ParentInstanceClient interface {
-		WorkerControllerInstanceExists(ctx context.Context, namespaceEntry *namespace.Namespace, version *deploymentpb.WorkerDeploymentVersion) (bool, error)
-		DescribeWorkerControllerInstance(ctx context.Context, namespaceEntry *namespace.Namespace, version *deploymentpb.WorkerDeploymentVersion) (*iface.QueryDescribeWorkerControllerInstanceResponse, []byte, error)
-	}
-
-	// SessionWorkflowClient checks whether an arbitrary workflow in the namespace is running.
-	// It is satisfied by the WCI client and used to check the session workflow.
-	SessionWorkflowClient interface {
-		WorkflowIsRunning(ctx context.Context, namespaceEntry *namespace.Namespace, workflowID string) (bool, error)
-	}
-
 	CheckSessionExistenceRequest struct {
 		RequestContext
 		// SessionWorkflowID is the workflow ID of the session's workflow. It is not the
@@ -76,18 +62,6 @@ type (
 	}
 )
 
-// SetParentInstanceClient wires the client used to read parent version WCIs. It is a
-// function rather than a method so the SDK does not try to register it as an activity.
-func SetParentInstanceClient(a *Activities, c ParentInstanceClient) {
-	a.parentClient = c
-}
-
-// SetSessionWorkflowClient wires the client used to check the session workflow is running.
-// It is a function rather than a method so the SDK does not try to register it as an activity.
-func SetSessionWorkflowClient(a *Activities, c SessionWorkflowClient) {
-	a.sessionWorkflowClient = c
-}
-
 // CheckSessionExistence checks the session workflow and the parent version WCI are still
 // running and re-reads the parent's invoke-strategy scaling groups. A missing, closed or
 // deleted workflow is reported through the response rather than as an error; transient
@@ -96,15 +70,15 @@ func (a *Activities) CheckSessionExistence(ctx context.Context, req *CheckSessio
 	if req == nil || req.SessionWorkflowID == "" {
 		return nil, temporal.NewNonRetryableApplicationError("Invalid activity request", "InvalidArgument", nil)
 	}
-	if a.parentClient == nil || a.sessionWorkflowClient == nil {
-		return nil, temporal.NewNonRetryableApplicationError("session existence check clients are not configured", "InvalidArgument", nil)
+	if a.wciClient == nil {
+		return nil, temporal.NewNonRetryableApplicationError("WCI client is not configured", "InvalidArgument", nil)
 	}
 
 	logger := activity.GetLogger(ctx)
 	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeCheckSessionExistence, noComputeProvider)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
-	sessionAlive, err := a.sessionWorkflowClient.WorkflowIsRunning(ctx, a.namespace, req.SessionWorkflowID)
+	sessionAlive, err := a.wciClient.WorkflowIsRunning(ctx, a.namespace, req.SessionWorkflowID)
 	if err != nil {
 		recordError(wcimetrics.ErrorTypeSessionParentQueryFailed)
 		return nil, err
@@ -116,7 +90,7 @@ func (a *Activities) CheckSessionExistence(ctx context.Context, req *CheckSessio
 	}
 
 	version := &deploymentpb.WorkerDeploymentVersion{DeploymentName: req.DeploymentName, BuildId: req.DeploymentBuildID}
-	parentRunning, err := a.parentClient.WorkerControllerInstanceExists(ctx, a.namespace, version)
+	parentRunning, err := a.wciClient.WorkerControllerInstanceExists(ctx, a.namespace, version)
 	if err != nil {
 		recordError(wcimetrics.ErrorTypeSessionParentQueryFailed)
 		return nil, err
@@ -127,7 +101,7 @@ func (a *Activities) CheckSessionExistence(ctx context.Context, req *CheckSessio
 		return &CheckSessionExistenceResponse{SessionAlive: true}, nil
 	}
 
-	desc, _, err := a.parentClient.DescribeWorkerControllerInstance(ctx, a.namespace, version)
+	desc, _, err := a.wciClient.DescribeWorkerControllerInstance(ctx, a.namespace, version)
 	if err != nil {
 		// queryWorkflowWithRetry maps both a missing and a deleted parent to NotFound.
 		var notFound *serviceerror.NotFound
@@ -161,8 +135,8 @@ func (a *Activities) InitSessionFromParent(ctx context.Context, req *InitSession
 	if req == nil || req.SessionID == "" {
 		return nil, temporal.NewNonRetryableApplicationError("Invalid activity request", "InvalidArgument", nil)
 	}
-	if a.parentClient == nil {
-		return nil, temporal.NewNonRetryableApplicationError("parent instance client is not configured", "InvalidArgument", nil)
+	if a.wciClient == nil {
+		return nil, temporal.NewNonRetryableApplicationError("WCI client is not configured", "InvalidArgument", nil)
 	}
 
 	logger := activity.GetLogger(ctx)
@@ -171,7 +145,7 @@ func (a *Activities) InitSessionFromParent(ctx context.Context, req *InitSession
 
 	version := &deploymentpb.WorkerDeploymentVersion{DeploymentName: req.DeploymentName, BuildId: req.DeploymentBuildID}
 
-	running, err := a.parentClient.WorkerControllerInstanceExists(ctx, a.namespace, version)
+	running, err := a.wciClient.WorkerControllerInstanceExists(ctx, a.namespace, version)
 	if err != nil {
 		recordError(wcimetrics.ErrorTypeSessionParentQueryFailed)
 		return nil, err
@@ -182,7 +156,7 @@ func (a *Activities) InitSessionFromParent(ctx context.Context, req *InitSession
 		return &InitSessionFromParentResponse{UnavailableReason: SessionInitReasonParentNotFound}, nil
 	}
 
-	desc, _, err := a.parentClient.DescribeWorkerControllerInstance(ctx, a.namespace, version)
+	desc, _, err := a.wciClient.DescribeWorkerControllerInstance(ctx, a.namespace, version)
 	if err != nil {
 		// queryWorkflowWithRetry maps both a missing and a deleted parent to NotFound.
 		var notFound *serviceerror.NotFound

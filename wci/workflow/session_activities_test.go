@@ -20,20 +20,35 @@ import (
 	"go.temporal.io/server/common/namespace"
 )
 
-type fakeParentInstanceClient struct {
+// fakeWCIClient implements the client.Client methods the session activities use. Other
+// methods hit the nil embedded interface and panic.
+type fakeWCIClient struct {
+	client.Client
+
+	// Parent version WCI.
 	running     bool
 	existsErr   error
 	desc        *iface.QueryDescribeWorkerControllerInstanceResponse
 	describeErr error
 	versions    []*deploymentpb.WorkerDeploymentVersion
+
+	// Session workflow.
+	sessionRunning bool
+	sessionErr     error
+	workflowIDs    []string
 }
 
-func (f *fakeParentInstanceClient) WorkerControllerInstanceExists(_ context.Context, _ *namespace.Namespace, v *deploymentpb.WorkerDeploymentVersion) (bool, error) {
+func (f *fakeWCIClient) WorkflowIsRunning(_ context.Context, _ *namespace.Namespace, workflowID string) (bool, error) {
+	f.workflowIDs = append(f.workflowIDs, workflowID)
+	return f.sessionRunning, f.sessionErr
+}
+
+func (f *fakeWCIClient) WorkerControllerInstanceExists(_ context.Context, _ *namespace.Namespace, v *deploymentpb.WorkerDeploymentVersion) (bool, error) {
 	f.versions = append(f.versions, v)
 	return f.running, f.existsErr
 }
 
-func (f *fakeParentInstanceClient) DescribeWorkerControllerInstance(_ context.Context, _ *namespace.Namespace, v *deploymentpb.WorkerDeploymentVersion) (*iface.QueryDescribeWorkerControllerInstanceResponse, []byte, error) {
+func (f *fakeWCIClient) DescribeWorkerControllerInstance(_ context.Context, _ *namespace.Namespace, v *deploymentpb.WorkerDeploymentVersion) (*iface.QueryDescribeWorkerControllerInstanceResponse, []byte, error) {
 	f.versions = append(f.versions, v)
 	return f.desc, nil, f.describeErr
 }
@@ -57,7 +72,7 @@ func newParentSpec() *iface.WorkerControllerInstanceSpec {
 	}
 }
 
-func runInitSessionFromParent(t *testing.T, parent ParentInstanceClient) (*InitSessionFromParentResponse, error) {
+func runInitSessionFromParent(t *testing.T, parent *fakeWCIClient) (*InitSessionFromParentResponse, error) {
 	t.Helper()
 	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
 	dc := dynamicconfig.NewCollection(dynamicconfig.StaticClient(map[dynamicconfig.Key]any{
@@ -67,10 +82,11 @@ func runInitSessionFromParent(t *testing.T, parent ParentInstanceClient) (*InitS
 			string(testFailingComputeProviderType),
 		},
 	}), log.NewNoopLogger())
-	activities := NewActivities(ns, dc, nil, nil)
+	var wciClient client.Client
 	if parent != nil {
-		SetParentInstanceClient(activities, parent)
+		wciClient = parent
 	}
+	activities := NewActivities(ns, dc, nil, nil, wciClient)
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()
@@ -93,7 +109,7 @@ func runInitSessionFromParent(t *testing.T, parent ParentInstanceClient) (*InitS
 }
 
 func TestInitSessionFromParent_KeepsOnlyInvokeGroups(t *testing.T) {
-	parent := &fakeParentInstanceClient{running: true, desc: &iface.QueryDescribeWorkerControllerInstanceResponse{Spec: newParentSpec()}}
+	parent := &fakeWCIClient{running: true, desc: &iface.QueryDescribeWorkerControllerInstanceResponse{Spec: newParentSpec()}}
 	resp, err := runInitSessionFromParent(t, parent)
 	require.NoError(t, err)
 
@@ -113,13 +129,13 @@ func TestInitSessionFromParent_Unavailable(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		parent *fakeParentInstanceClient
+		parent *fakeWCIClient
 		reason string
 	}{
-		{"parent not running", &fakeParentInstanceClient{running: false}, SessionInitReasonParentNotFound},
-		{"parent missing or deleted", &fakeParentInstanceClient{running: true, describeErr: serviceerror.NewNotFound("worker controller instance not found")}, SessionInitReasonParentNotFound},
-		{"no invoke group", &fakeParentInstanceClient{running: true, desc: &iface.QueryDescribeWorkerControllerInstanceResponse{Spec: workerSetOnly}}, SessionInitReasonNoInvokeGroup},
-		{"empty spec", &fakeParentInstanceClient{running: true, desc: &iface.QueryDescribeWorkerControllerInstanceResponse{}}, SessionInitReasonNoInvokeGroup},
+		{"parent not running", &fakeWCIClient{running: false}, SessionInitReasonParentNotFound},
+		{"parent missing or deleted", &fakeWCIClient{running: true, describeErr: serviceerror.NewNotFound("worker controller instance not found")}, SessionInitReasonParentNotFound},
+		{"no invoke group", &fakeWCIClient{running: true, desc: &iface.QueryDescribeWorkerControllerInstanceResponse{Spec: workerSetOnly}}, SessionInitReasonNoInvokeGroup},
+		{"empty spec", &fakeWCIClient{running: true, desc: &iface.QueryDescribeWorkerControllerInstanceResponse{}}, SessionInitReasonNoInvokeGroup},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -132,7 +148,7 @@ func TestInitSessionFromParent_Unavailable(t *testing.T) {
 }
 
 func TestInitSessionFromParent_TransientErrorIsReturned(t *testing.T) {
-	_, err := runInitSessionFromParent(t, &fakeParentInstanceClient{existsErr: errors.New("unavailable")})
+	_, err := runInitSessionFromParent(t, &fakeWCIClient{existsErr: errors.New("unavailable")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unavailable")
 }
@@ -151,8 +167,7 @@ func keys[V any](m map[string]V) []string {
 }
 
 func TestInitSessionFromParent_InvalidRequestIsNonRetryable(t *testing.T) {
-	activities := NewActivities(nil, nil, nil, nil)
-	SetParentInstanceClient(activities, &fakeParentInstanceClient{})
+	activities := NewActivities(nil, nil, nil, nil, &fakeWCIClient{})
 	for _, req := range []*InitSessionFromParentRequest{nil, {}} {
 		_, err := activities.InitSessionFromParent(context.Background(), req)
 		requireApplicationErrorType(t, err, "InvalidArgument")
@@ -160,7 +175,7 @@ func TestInitSessionFromParent_InvalidRequestIsNonRetryable(t *testing.T) {
 }
 
 func TestInitSessionFromParent_DescribeErrorIsReturned(t *testing.T) {
-	_, err := runInitSessionFromParent(t, &fakeParentInstanceClient{running: true, describeErr: serviceerror.NewUnavailable("query unavailable")})
+	_, err := runInitSessionFromParent(t, &fakeWCIClient{running: true, describeErr: serviceerror.NewUnavailable("query unavailable")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "query unavailable")
 }
@@ -168,7 +183,7 @@ func TestInitSessionFromParent_DescribeErrorIsReturned(t *testing.T) {
 // A parent group whose provider cannot be instantiated fails the activity (so it is retried)
 // rather than being silently dropped.
 func TestInitSessionFromParent_ComputeProviderErrorIsReturned(t *testing.T) {
-	_, err := runInitSessionFromParent(t, &fakeParentInstanceClient{running: true, desc: &iface.QueryDescribeWorkerControllerInstanceResponse{Spec: newFailingProviderParentSpec()}})
+	_, err := runInitSessionFromParent(t, &fakeWCIClient{running: true, desc: &iface.QueryDescribeWorkerControllerInstanceResponse{Spec: newFailingProviderParentSpec()}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "constructor failed")
 }

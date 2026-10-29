@@ -27,7 +27,7 @@ func TestReplayVersionWorkflowHistories(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
 
-	activities := NewActivities(nil, nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil, nil)
 	for _, file := range files {
 		t.Run(filepath.Base(file), func(t *testing.T) {
 			replayer := sdkworker.NewWorkflowReplayer()

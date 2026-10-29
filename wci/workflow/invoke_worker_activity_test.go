@@ -81,7 +81,7 @@ func runInvokeWorkerWithSpecAndMetrics(t *testing.T, sessionID string, spec *ifa
 			string(testFailingComputeProviderType),
 		},
 	}), log.NewNoopLogger())
-	activities := NewActivities(ns, dc, nil, nil)
+	activities := NewActivities(ns, dc, nil, nil, nil)
 
 	var suite testsuite.WorkflowTestSuite
 	if h != nil {
@@ -213,7 +213,7 @@ func TestInvokeWorker_SetupErrors(t *testing.T) {
 	}
 
 	// A nil request or one without compute config is rejected before any provider lookup.
-	activities := NewActivities(nil, nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil, nil)
 	require.Error(t, activities.InvokeWorker(context.Background(), nil))
 	require.Error(t, activities.InvokeWorker(context.Background(), &InvokeWorkerActivityRequest{}))
 }

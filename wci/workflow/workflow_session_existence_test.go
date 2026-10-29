@@ -179,7 +179,7 @@ func TestSessionExistenceCheck_NoChangeDoesNotContinueAsNew(t *testing.T) {
 func TestVersionWorkflow_NeverArmsSessionExistenceCheck(t *testing.T) {
 	h := newEnabledTestEnv(t, SessionModeVersion, true)
 	checkCalled := false
-	h.env.OnActivity(NewActivities(nil, nil, nil, nil).CheckSessionExistence, mock.Anything, mock.Anything).
+	h.env.OnActivity(NewActivities(nil, nil, nil, nil, nil).CheckSessionExistence, mock.Anything, mock.Anything).
 		Return(&CheckSessionExistenceResponse{}, nil).Run(func(mock.Arguments) { checkCalled = true }).Maybe()
 	var state *iface.WorkerControllerInstanceLocalState
 	h.env.RegisterDelayedCallback(func() {

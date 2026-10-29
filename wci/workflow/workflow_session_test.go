@@ -85,7 +85,7 @@ func newSessionTestEnv(t *testing.T, workflowVersion WorkerControllerInstanceWor
 
 	h := &sessionTestEnv{
 		t:                 t,
-		activities:        NewActivities(nil, nil, nil, nil),
+		activities:        NewActivities(nil, nil, nil, nil, nil),
 		args:              newTestSessionArgs(),
 		metrics:           newCapturingMetricsHandler(),
 		existenceInterval: DefaultSessionExistenceCheckInterval,
@@ -406,7 +406,7 @@ func TestSessionWorkflow_InvalidSessionArgsFailNonRetryable(t *testing.T) {
 func TestVersionWorkflow_DoesNotInitFromParent(t *testing.T) {
 	h := newEnabledTestEnv(t, SessionModeVersion, true)
 	initCalled := false
-	h.env.OnActivity(NewActivities(nil, nil, nil, nil).InitSessionFromParent, mock.Anything, mock.Anything).
+	h.env.OnActivity(NewActivities(nil, nil, nil, nil, nil).InitSessionFromParent, mock.Anything, mock.Anything).
 		Return(&InitSessionFromParentResponse{}, nil).Run(func(mock.Arguments) { initCalled = true }).Maybe()
 	var deleteErr error
 	h.sendUpdate(time.Hour, iface.DeleteWorkerControllerInstance, "delete", &iface.DeleteWorkerControllerInstanceRequest{}, &deleteErr)
