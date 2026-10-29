@@ -2,7 +2,11 @@
 package wci
 
 import (
+	"context"
+	"io"
+
 	"go.uber.org/fx"
+	"go.uber.org/zap"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workercomponent"
@@ -63,8 +67,14 @@ var Module = fx.Options(
 	}),
 	// The zero value leaves the Modal compute provider disabled; a deployment
 	// that uses it decorates this with its own flags and environment.
-	fx.Provide(func() computeprovider.ModalVaultConfig {
-		return computeprovider.ModalVaultConfig{}
+	fx.Provide(func() computeprovider.ModalStoreConfig {
+		return computeprovider.ModalStoreConfig{}
+	}),
+	// The object store client logs through zap and the server's own log.Logger does not expose the
+	// zap logger underneath it, so the deployment decorates this with the one it built. Discarding
+	// by default rather than inventing a second destination for logs.
+	fx.Provide(func() *zap.Logger {
+		return zap.NewNop()
 	}),
 	// Install the (possibly fx.Decorate-replaced) chain provider into the
 	// compute_provider package singleton, where the GCP Cloud Run provider
@@ -77,29 +87,36 @@ var Module = fx.Options(
 	fx.Invoke(func(r computeprovider.ModalAccountResolver) {
 		computeprovider.SetModalAccountResolver(r)
 	}),
-	// Vault is opt-in: without an address the Modal provider uses the API key the
-	// Modal SDK finds for itself, the same way the AWS and GCP providers use the
-	// credentials theirs find. With one, credentials are resolved per account instead.
+	// Per-account credentials are opt-in: without a cloud provider the Modal provider uses the API
+	// key the Modal SDK finds for itself, the same way the AWS and GCP providers use the
+	// credentials theirs find. With one, each account's grant is read from the cell's own regional
+	// data plane config bucket and unwrapped through that cloud's KMS.
 	//
-	// Building the source here rather than lazily means a deployment whose Vault
-	// configuration is wrong finds out in its startup logs instead of on a
-	// customer's first scale-up. It is logged rather than returned: failing
-	// startup would take worker-controller down for every other provider over one
-	// provider's configuration.
-	fx.Invoke(func(cfg computeprovider.ModalVaultConfig, logger log.Logger) {
-		computeprovider.SetModalVaultConfig(cfg)
-		if cfg.Address == "" {
-			logger.Info("Modal compute provider using the API key the SDK finds for itself; set a Vault address to resolve credentials per account")
+	// Building the source here rather than lazily means a deployment whose bucket or key
+	// configuration is wrong finds out in its startup logs instead of on a customer's first
+	// scale-up. It is logged rather than returned: failing startup would take worker-controller
+	// down for every other provider over one provider's configuration.
+	fx.Invoke(func(lc fx.Lifecycle, cfg computeprovider.ModalStoreConfig, logger log.Logger, zapLogger *zap.Logger) {
+		computeprovider.SetModalStoreConfig(cfg)
+		if cfg.CloudProvider == "" {
+			logger.Info("Modal compute provider using the API key the SDK finds for itself; set a cloud provider to resolve credentials per account")
 			return
 		}
-		source, err := computeprovider.NewVaultModalSecretSource(cfg)
+		source, err := computeprovider.NewObjectStoreModalSecretSource(context.Background(), cfg, zapLogger)
 		if err != nil {
 			logger.Error("Modal compute provider disabled: cannot build its secret source", tag.Error(err))
 			computeprovider.SetModalSecretSource(computeprovider.FailingModalSecretSource{Reason: err})
 			return
 		}
 		computeprovider.SetModalSecretSource(source)
-		logger.Info("Modal compute provider resolving credentials per account from Vault")
+		if closer, ok := source.(io.Closer); ok {
+			lc.Append(fx.StopHook(closer.Close))
+		}
+		logger.Info("Modal compute provider resolving credentials per account from the data plane config store",
+			tag.NewStringTag("cloud-provider", cfg.CloudProvider),
+			tag.NewStringTag("region", cfg.Region),
+			tag.NewStringTag("bucket", cfg.Bucket),
+		)
 	}),
 	fx.Invoke(ServiceLifetimeHooks),
 )

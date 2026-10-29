@@ -54,7 +54,8 @@ func createModalTestEnv(t *testing.T) *testcore.TestEnv {
 	)
 }
 
-// modalFakeSecrets is an in-memory stand-in for Vault. It records reads so a
+// modalFakeSecrets is an in-memory stand-in for the sealed material in the data plane config
+// store. It records reads so a
 // test can assert that secret storage stays off the per-invocation path.
 type modalFakeSecrets struct {
 	mu sync.Mutex

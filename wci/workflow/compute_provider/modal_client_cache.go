@@ -26,12 +26,19 @@ type (
 	}
 )
 
-// modalClientIdleTimeout is how long an unused Modal connection is kept. The
-// SDK builds its gRPC connection with PermitWithoutStream, so an idle one keeps
-// pinging Modal every 30s; without this the connections and the map entries
-// holding them would grow with every grant the process ever served and never
-// shrink. It is a constant rather than dynamic config: closing a connection is
-// transparent, the next use rebuilds it.
+// modalClientIdleTimeout is how long an unused Modal connection is kept before it is closed. Its
+// value is not derived from anything; it is long enough that a workspace scaling up on any normal
+// cadence keeps its connection, and short enough that a workspace nobody uses stops costing a
+// connection within the hour.
+//
+// Something has to evict, because the SDK builds its gRPC connection with PermitWithoutStream: an
+// idle connection goes on pinging Modal (on the SDK's own keepalive interval, unrelated to this
+// value) and neither it nor its map entry is ever dropped, so without eviction both grow with
+// every grant the process has served and never shrink.
+//
+// A constant rather than dynamic config, because getting it wrong is cheap in both directions:
+// closing a connection is transparent and the next use rebuilds it, and keeping one costs a
+// keepalive ping.
 const modalClientIdleTimeout = 30 * time.Minute
 
 // modalClientCache keeps one Modal connection per grant and the Function handles

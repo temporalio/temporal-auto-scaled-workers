@@ -189,7 +189,6 @@ func stubModalClient(t *testing.T, c *fakeModalClient) {
 
 func newModalProvider() *modalFunctionComputeProvider {
 	return &modalFunctionComputeProvider{
-		vaultConfig:            ModalVaultConfig{OAuthClientID: testModalClientID},
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
 	}
 }
@@ -427,7 +426,7 @@ func TestModalInvokeWorker_ClassifiesFailures(t *testing.T) {
 
 func TestModalInvokeWorker_ClassifiesCredentialFailuresAsInternal(t *testing.T) {
 	src := newFakeSecretSource()
-	src.signingKeyErr = errors.New("vault unreachable")
+	src.signingKeyErr = errors.New("bucket unreachable")
 	stubModalSecretSource(t, src)
 	stubModalClient(t, &fakeModalClient{})
 
@@ -862,7 +861,7 @@ func TestModalInvokeWorker_APIKeyWorksForAnyNamespace(t *testing.T) {
 func TestModalInvokeWorker_FailingSourceDoesNotFallBackToAPIKey(t *testing.T) {
 	// A deployment that asked for per-account credentials and could not build the
 	// source must fail, not quietly serve every account from one key.
-	SetModalSecretSource(FailingModalSecretSource{Reason: errors.New("vault unreachable")})
+	SetModalSecretSource(FailingModalSecretSource{Reason: errors.New("bucket unreachable")})
 	t.Cleanup(clearModalSecretSource)
 	resetModalCredentialCacheForTest()
 
@@ -873,15 +872,6 @@ func TestModalInvokeWorker_FailingSourceDoesNotFallBackToAPIKey(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errWCIOwned)
 	assert.Zero(t, c.spawns)
-}
-
-func TestSetModalVaultConfig_RoundTrips(t *testing.T) {
-	prev := GetModalVaultConfig()
-	t.Cleanup(func() { SetModalVaultConfig(prev) })
-
-	cfg := ModalVaultConfig{Address: "https://vault.example", OAuthClientID: "oc-abc"}
-	SetModalVaultConfig(cfg)
-	assert.Equal(t, cfg, GetModalVaultConfig())
 }
 
 func TestSetModalSecretSource_IsWhatTheProviderReads(t *testing.T) {
@@ -899,7 +889,7 @@ func TestSetModalSecretSource_IsWhatTheProviderReads(t *testing.T) {
 	c := &fakeModalClient{}
 	stubModalClient(t, c)
 
-	// No Vault configuration at all: the installed source is what gets read.
+	// No store configuration at all: the installed source is what gets read.
 	p := &modalFunctionComputeProvider{
 		credentialReloadPolicy: modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Minute},
 	}

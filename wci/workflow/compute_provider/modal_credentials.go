@@ -49,7 +49,7 @@ type (
 )
 
 // errModalCredentialsExhausted is returned once a grant has used up its reload
-// budget. It minimizes requests to Vault.
+// budget. It minimizes reads of secret storage.
 var errModalCredentialsExhausted = errors.New("modal credential reloads exhausted; not reading secret storage again until the cooldown elapses")
 
 // modalCredentialEntry is one grant's cached credentials plus the state bounding
@@ -97,7 +97,7 @@ type modalCredentialPolicy struct {
 	reloadCooldown time.Duration
 }
 
-func (c *modalCredentialCache) entry(key modalGrantKey) *modalCredentialEntry {
+func (c *modalCredentialCache) entryFor(key modalGrantKey) *modalCredentialEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
@@ -117,7 +117,7 @@ func (c *modalCredentialCache) get(
 	key modalGrantKey,
 	policy modalCredentialPolicy,
 ) (*ModalCredentials, string, error) {
-	e := c.entry(key)
+	e := c.entryFor(key)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -143,7 +143,7 @@ func (c *modalCredentialCache) reload(
 	seenDigest string,
 	policy modalCredentialPolicy,
 ) (*ModalCredentials, bool, error) {
-	e := c.entry(key)
+	e := c.entryFor(key)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -171,7 +171,7 @@ func (c *modalCredentialCache) reload(
 // successful refresh clears the budget, so repairing a grant and re-checking it
 // unblocks the data path immediately instead of waiting out the cooldown.
 func (c *modalCredentialCache) refresh(ctx context.Context, src ModalSecretSource, key modalGrantKey) (*ModalCredentials, error) {
-	e := c.entry(key)
+	e := c.entryFor(key)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -263,4 +263,50 @@ func modalCredentialDigest(c *ModalCredentials) string {
 		_, _ = h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// modalSecretSource is where Modal credentials come from. The default leaves them to the Modal SDK
+// -- one API key for the process.
+var (
+	modalSecretSourceMu sync.RWMutex
+	modalSecretSource   ModalSecretSource = APIKeyModalSecretSource{}
+)
+
+// APIKeyModalSecretSource leaves credentials to the Modal SDK, which reads an API key from
+// MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml. It ignores the account and workspace: one key
+// serves the whole process.
+type APIKeyModalSecretSource struct{}
+
+func (APIKeyModalSecretSource) Credentials(context.Context, string, string) (*ModalCredentials, error) {
+	return &ModalCredentials{APIKey: true}, nil
+}
+
+// FailingModalSecretSource is installed when a deployment asked for per-account credentials and the
+// source could not be built. It fails every lookup rather than leaving the API key default in
+// place, which would serve every account from one key.
+type FailingModalSecretSource struct{ Reason error }
+
+func (f FailingModalSecretSource) Credentials(context.Context, string, string) (*ModalCredentials, error) {
+	return nil, fmt.Errorf("the Modal secret source could not be built: %w", f.Reason)
+}
+
+func SetModalSecretSource(src ModalSecretSource) {
+	modalSecretSourceMu.Lock()
+	defer modalSecretSourceMu.Unlock()
+	if src != nil {
+		modalSecretSource = src
+	}
+}
+
+func getModalSecretSource() ModalSecretSource {
+	modalSecretSourceMu.RLock()
+	defer modalSecretSourceMu.RUnlock()
+	return modalSecretSource
+}
+
+// clearModalSecretSource restores the API key default. Only tests need this.
+func clearModalSecretSource() {
+	modalSecretSourceMu.Lock()
+	defer modalSecretSourceMu.Unlock()
+	modalSecretSource = APIKeyModalSecretSource{}
 }

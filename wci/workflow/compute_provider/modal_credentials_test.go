@@ -129,7 +129,7 @@ func TestModalCredentialCache_FailedReadCountsAgainstBudget(t *testing.T) {
 	now := time.Now()
 	c := newTestCache(&now)
 	src := newFakeSecretSource()
-	src.refreshTokenErr = errors.New("vault unreachable")
+	src.refreshTokenErr = errors.New("bucket unreachable")
 	policy := modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Hour}
 
 	for range 2 {

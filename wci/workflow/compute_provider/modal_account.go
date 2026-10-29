@@ -25,15 +25,25 @@ type (
 	// workspace wants: there is one set of credentials, so there is nothing to
 	// scope them by. A deployment serving many accounts installs a resolver that
 	// tells them apart.
-	UnscopedModalAccountResolver struct{}
+	UnscopedModalAccountResolver struct {
+		// Account is what every namespace resolves to. Empty uses
+		// unscopedModalAccount, so the zero value is usable.
+		Account string
+	}
 )
 
-// unscopedModalAccount is the account every namespace resolves to by default.
-// It is not an identity, just a stable cache key.
+// unscopedModalAccount is what UnscopedModalAccountResolver answers with when it
+// was given no account of its own.
+//
+// Nothing authenticates as it and nothing looks it up anywhere. Credentials are
+// cached by (account, workspace), and this is the account half for a deployment
+// that has no accounts to tell apart -- a constant, so every namespace in such a
+// deployment shares one cache entry per workspace instead of one each.
 const unscopedModalAccount = "default"
 
-// namespaceSuffixRE matches "<namespace>.<account id>", the internal namespace
-// naming convention. The account is the suffix, so it is the second group.
+// namespaceSuffixRE matches "<namespace>.<account id>", the naming convention
+// Temporal Cloud namespaces follow. The account is the suffix, so it is the
+// second group.
 var namespaceSuffixRE = regexp.MustCompile(`^([a-z][a-z0-9-]*[^-])[.]([a-z0-9][a-z0-9-]*[^-])$`)
 
 var (
@@ -58,7 +68,10 @@ func getModalAccountResolver() ModalAccountResolver {
 	return modalAccountResolver
 }
 
-func (UnscopedModalAccountResolver) ResolveAccountID(context.Context, string) (string, error) {
+func (r UnscopedModalAccountResolver) ResolveAccountID(context.Context, string) (string, error) {
+	if r.Account != "" {
+		return r.Account, nil
+	}
 	return unscopedModalAccount, nil
 }
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"sync"
 	"time"
 
 	modal "github.com/modal-labs/modal-client/go"
@@ -48,7 +47,6 @@ type (
 	}
 
 	modalFunctionComputeProvider struct {
-		vaultConfig            ModalVaultConfig
 		credentialReloadPolicy modalCredentialPolicy
 	}
 )
@@ -71,7 +69,6 @@ func NewModalFunctionComputeProvider(_ context.Context, dc *dynamicconfig.Collec
 		p.credentialReloadPolicy.reloadLimit = client.WorkerControllerModalCredentialReloadLimit.Get(dc)()
 		p.credentialReloadPolicy.reloadCooldown = time.Duration(client.WorkerControllerModalCredentialReloadCooldownSeconds.Get(dc)()) * time.Second
 	}
-	p.vaultConfig = GetModalVaultConfig()
 	return p, nil
 }
 
@@ -85,7 +82,7 @@ func (p *modalFunctionComputeProvider) ValidateConfig(ctx context.Context, rc Re
 		return err
 	}
 
-	// After acquiring the refresh token from Vault, the Modal SDK internally exchanges it
+	// After acquiring the refresh token, the Modal SDK internally exchanges it
 	// for an access token. Validation creates a new Modal SDK to verify the connection test
 	// is using the latest refresh token and not the temporary access token inside the Modal SDK.
 	if err := p.validateUncached(ctx, rc, params); err != nil {
@@ -272,75 +269,6 @@ func (f *modalSDKFunction) Spawn(ctx context.Context, args []any, kwargs map[str
 	return err
 }
 
-// modalVaultConfig is the deployment-supplied Vault configuration, installed
-// once at startup. It is process-wide rather than carried on the provider
-// because GetComputeProvider builds a fresh provider for every activity.
-var (
-	modalVaultConfigMu sync.RWMutex
-	modalVaultConfig   ModalVaultConfig
-)
-
-// SetModalVaultConfig installs the Vault configuration the Modal compute
-// provider authenticates with. Called once at startup from the deployment's own
-// configuration; leaving it unset disables the provider, which then fails closed.
-func SetModalVaultConfig(cfg ModalVaultConfig) {
-	modalVaultConfigMu.Lock()
-	defer modalVaultConfigMu.Unlock()
-	modalVaultConfig = cfg
-}
-
-func GetModalVaultConfig() ModalVaultConfig {
-	modalVaultConfigMu.RLock()
-	defer modalVaultConfigMu.RUnlock()
-	return modalVaultConfig
-}
-
-// modalSecretSource is where Modal credentials come from. The default leaves
-// them to the Modal SDK -- one API key for the process.
-var (
-	modalSecretSourceMu sync.RWMutex
-	modalSecretSource   ModalSecretSource = APIKeyModalSecretSource{}
-)
-
-// APIKeyModalSecretSource leaves credentials to the Modal SDK, which reads an
-// API key from MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml. It ignores
-// the account and workspace: one key serves the whole process.
-type APIKeyModalSecretSource struct{}
-
-func (APIKeyModalSecretSource) Credentials(context.Context, string, string) (*ModalCredentials, error) {
-	return &ModalCredentials{APIKey: true}, nil
-}
-
-// FailingModalSecretSource is installed when a deployment asked for Vault-backed
-// credentials and the source could not be built. It fails every lookup rather
-// than leaving the API key default in place.
-type FailingModalSecretSource struct{ Reason error }
-
-func (f FailingModalSecretSource) Credentials(context.Context, string, string) (*ModalCredentials, error) {
-	return nil, fmt.Errorf("the Modal secret source could not be built: %w", f.Reason)
-}
-
-func SetModalSecretSource(src ModalSecretSource) {
-	modalSecretSourceMu.Lock()
-	defer modalSecretSourceMu.Unlock()
-	if src != nil {
-		modalSecretSource = src
-	}
-}
-
-func getModalSecretSource() ModalSecretSource {
-	modalSecretSourceMu.RLock()
-	defer modalSecretSourceMu.RUnlock()
-	return modalSecretSource
-}
-
-// clearModalSecretSource restores the API key default. Only tests need this.
-func clearModalSecretSource() {
-	modalSecretSourceMu.Lock()
-	defer modalSecretSourceMu.Unlock()
-	modalSecretSource = APIKeyModalSecretSource{}
-}
-
 func resolveModalParams(cfg ComputeProviderConfig) (ModalParams, error) {
 	appName, _ := cfg[configModalAppName].(string)
 	if appName == "" {
@@ -360,7 +288,7 @@ func resolveModalParams(cfg ComputeProviderConfig) (ModalParams, error) {
 	// source rejects an empty one if it needs it.
 	workspaceID, _ := cfg[configModalWorkspaceID].(string)
 	if workspaceID != "" {
-		if err := validateVaultPathSegment("workspace", workspaceID); err != nil {
+		if err := validateModalIDSegment("workspace", workspaceID); err != nil {
 			return ModalParams{}, fmt.Errorf("the Modal compute provider %q is invalid: %w", configModalWorkspaceID, err)
 		}
 	}

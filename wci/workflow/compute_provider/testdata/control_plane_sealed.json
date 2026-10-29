@@ -1,0 +1,18 @@
+{
+  "_comment": "Produced by saas-control-plane's internal/common/modaloauth.Seal so this repo's reader is tested against the real writer. The RSA key below was generated for this file and is used nowhere else -- it stands in for a KMS key whose private half never leaves KMS. The sealed refresh token is the literal string ak-fixture.as-fixture.",
+  "grant_object": {
+    "key_id": "projects/p/locations/l/keyRings/r/cryptoKeys/sealing/cryptoKeyVersions/1",
+    "sealed_dek": "dX4hf24mXbu4DPUzQrsH9J50KPDJ5pzqEDyu44NdfjC1IlQ08V0baYfG/4+QjOkKyhWyeaHLNtLOkuWI3Acs/mXBaieJ4YiNGqcqeWL2/6E8A9tiDpt0K4r3YVsB94TeUEjfjRDoVLDX9E2zNozLQAn7RcEdDVlOjJjtx+2xaWDYcLszYHwWMkKtOrow7s2TXhda+b9AZ9QZtJyZ2KRezYdryUkbXSAAeW5iiR5thYetcjS5RH+WzhJRySBty3wReSHzsbb2uiGrZHNt+yh7AGWEJDqXvIDCh+Gu3gKCjRX/IqSSv5o6UpwfGNxmjzXoIQ7lsw7ylx88SdW130bKOg==",
+    "nonce": "zqerQ8JGpI/Arpjp",
+    "payload": "TEBKiz5qJMCOMsA3ZC+wG8vlXZ2bHf/Jca771dgAxrSi8WlRQv2YQvXcyDRlTPnbwkhxGgPFXTFK6oZCtq6ekcJX4qz6vQE1WJNOu5/RtcGHPSM/iUHvDfPMtmIBVym3spawDoWc7JPDOQFmbMwiYDDCC0UpzGK9h/iYqJBHyX40hG5HsOZnhqvDIoZv1lYopu+k6dwbyzvWaeY69vN4K2ggqVr4874dO6GBVIWWSHO7EOh9ZiHs"
+  },
+  "grant_object_key": "serverless-modal-grants/accounts/temporal-dev/ac-FixtureWorkspace.json",
+  "sealing_private_key_pem": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCcVx+WtydrM2Jo\nI5IeFclpWr7ETDSWiZCukkIIIRKdyyDR/rsfJLmoZfoqQgZ+nGvTxxSWOrRU7Riv\n8Yk1mOTRvcruic2+NyFeBOQvLkYaKu9Xl5lhwqfPk2QaijYHznNM7Ia+ctNuSwQY\nBnqq1NOgXS0oT3RLWW+Ey7Gcjh6Q/lwZ0eWifiL+hZDOhgOCiyvludv6I5MI6lJI\nAN9RYotZdUAIM+0ooXx6QEGOesYRNL1Qv2U22a8YPCya4hjlfAZCvTHOb2Ie1IQi\nWdGbeK+VvspJ6F9ygIN2GOGQUdHBtE/kzW+M+VqCAUgLgdbcrIe69K6fKaSvhGNx\nXBJLyw+5AgMBAAECggEAQtf7QRDREUQYhIcE38kX4uwyGTKt31k023bcNaaSU5X4\nU+CyN7gXixkC01OEfFi7v4HkWvEBjjgLMJq4PArBdq3LmJ6hsXzXzt+Pgl6qCWEn\nEQ/XvBUic51ElRZX0JGj+ZU9bSsiHAuF1hHbG7RAQVXlS1FhWyADjscaiuG2zu3O\n9e5G8LXv2PXrRS4PojE8ieS10222Io1PEecismYqBXv1hs/fe88ciI46ag1D5/0+\nihzsp9dlsD6mNPwH1vUX96V4mOTfe6JC26Csn47JgZYtjZgfrPvPI0bzOtqz4Fl/\nVE3LbS3ZIYVEzapRy6GM7RjwqAO8JXvWnlbBYsPMCwKBgQDGawW82QLDp57Go0bL\nd9te1z/Ao4nnA29LSPHe4sMn/5pN+4hNG+q8KQhNn5GFKtHX3L4rnSLKLOmMdsmf\nbvTC+Rb9d1tQvIb0UkayCcWMjr9OAoxmP8a9PmWJ9EfS3OHi9FfGKTv5YJ+kHplU\neDzJ3FsN6m9AnpGGaYtO+B4olwKBgQDJtgpRhCTjkEde4J/QELVpvsZ820HRZ3nC\nx3jnFWCRiseUz/rRwgUvymqlKchw/GAtk0q7bp5fWgp38fjwIf8gH/0msSNwzVS5\nf2ETTBG7bKGxOZSPdbB6JP0nPDzgoTqsEnDCDY0cNoFRKVaa57X/j9H1hHZz7wkN\n4UfAGgLELwKBgHfwuccuZz1eVdw9Vs4n5bOu6hrIwNOkf+JCdfMFoHLNT7lUE1CJ\nT5vuMda6XnzhJXgXN92lXyJXg9Yk+DwoFkzFxd/yBoEHdYy7L4Dv5zrQD1RYtgYZ\nB0neLgL2Z3RPkTxf968Rve9BOT88P/OPuy9KxL/kttuY/t8BbfSOh6yBAoGBAL/f\n137lScXiZ9G7sKnWSwtU+zCnzLsqSCvdXYfL0PmBXwqSsI+5lP959+o2jcHUgJS5\n6LvUpPglCZJBbcDXRf3EECYvGHxkBbUSk0As+y0jT8fq8wNoO0BlUR5ycaJoHAy0\n2eftxg5RVr/ip8xgn8KDh4CZyafMePtoEb2NwJXnAoGBALUHI5JUBNUfChmsNvSe\nVnLI0jdISFpAgP/oQmsnjO3XZr0drOOAuh4nJpYNMZBIwTVrIegyeL/TIgRe5pt5\norPx2QuP4mJe+wPcIDAlTE0ASKrX2OGV1g9M1FFxMs6mKDwfedaLHTiW4p4wzCrf\nhkT6cOdM78ZEaHPf5S8F5Clm\n-----END PRIVATE KEY-----\n",
+  "signing_key_object": {
+    "key_id": "projects/p/locations/l/keyRings/r/cryptoKeys/sealing/cryptoKeyVersions/1",
+    "sealed_dek": "NcdhOgFTOHl09YQ47I3Duxr9JZZyUlLrwSdYCuSkHwT2HDQ7llQjFw92TXgrzlTFAUrFbSI6JSXN8qadMbu6i4SL6IUmd2cS3aKGGrOQDjB348S6/d3EEMgxFocgekrih4eNkffYaFMUX4JZRm9hKMd9G4hsaL0+L2wrK5Iv5dftc+UYYoFUDgG13VDbG+Gc3vqFJSRU5DSMkB6Qg7+73Y7cG44HvJUQylvOKXcYqYKiCymqPO90CwVehJaykdUgGUiJpw1bA+SgOn0AyERozg8qSk/9z2BGSnTLg+y8ZsyAh9mkpSBK/PFFPgHROsYH65lm3ed6OGUiMw6zNsE8qA==",
+    "nonce": "Br1TF/OahMAyW0h1",
+    "payload": "NFckRTlfc+sdvQWMFosFMvr1ryiPivyRVyQ1BBj6NW92Tvh7M+osTqnrkE/AL7BC38GkJU9maSeH92MisO2effcCE57STVKQoUcb0krzIDwxDhOX3/1tuTv+Tbyupbi0WBv1Dn0="
+  },
+  "signing_key_object_key": "serverless-modal-grants/signing-key.json"
+}

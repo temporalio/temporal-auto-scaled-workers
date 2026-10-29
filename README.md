@@ -49,8 +49,8 @@ The development-only subprocess provider accepts an optional positive Go duratio
 | `WorkerControllerAWSIntermediaryRoles` | `[]` | IAM role chain for AWS STS |
 | `WorkerControllerGCPIntermediaryServiceAccounts` | `[]` | Service account chain for GCP |
 | `WorkerControllerAWSRequireRoleAndExternalID` | `true` | Enforce role + external ID on AWS configs |
-| `WorkerControllerModalCredentialReloadLimit` | `2` | Vault re-reads allowed for a grant Modal keeps rejecting |
-| `WorkerControllerModalCredentialReloadCooldownSeconds` | `900` | How long to stop reading Vault for a grant after that |
+| `WorkerControllerModalCredentialReloadLimit` | `2` | Secret re-reads allowed for a grant Modal keeps rejecting |
+| `WorkerControllerModalCredentialReloadCooldownSeconds` | `900` | How long to stop reading secret storage for a grant after that |
 
 ## Spec Format
 
@@ -101,7 +101,7 @@ A WCI spec is a map of named scaling groups:
 | `app_name` | yes | Deployed Modal App name |
 | `function_name` | yes | Function within the App to spawn |
 | `environment` | yes | Modal environment the App is deployed in |
-| `workspace_id` | only with Vault | Modal workspace. Must be one the namespace's account has connected |
+| `workspace_id` | only with OAuth | Modal workspace. Must be one the namespace's account has connected |
 | `version` | no | Pins the lookup to a deployed App version; omitted uses the current deployment |
 
 Modal Functions are invoke-based, so it pairs with the `no-sync` algorithm and takes the same scaling options as AWS Lambda.
@@ -110,32 +110,46 @@ Modal Functions are invoke-based, so it pairs with the `no-sync` algorithm and t
 
 By default WCI leaves credentials to the Modal SDK, which reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` from the environment or `~/.modal.toml` — the same way the AWS and GCP providers leave their SDKs to find theirs. Nothing else is needed, and `workspace_id` is not required because the key already names the workspace.
 
-A deployment using Modal OAuth can be used by configuring Vault (see below). WCI then authenticates as the Modal grant belonging to the account that owns the namespace, derived server-side. In that mode `workspace_id` selects which of that account's connected workspaces to use, and is required. Either way the config cannot carry a credential or name another account: no credential is ever read from it, and the account half of the lookup comes from the namespace. The signing key and refresh token are read from Vault on a grant's first use and cached in process memory; they never enter workflow or activity history.
+A deployment using Modal OAuth configures a data plane config bucket (see below). WCI then authenticates as the Modal grant belonging to the account that owns the namespace, derived server-side. In that mode `workspace_id` selects which of that account's connected workspaces to use, and is required. Either way the config cannot carry a credential or name another account: no credential is ever read from it, and the account half of the lookup comes from the namespace. The signing key and refresh token are read on a grant's first use and cached in process memory; they never enter workflow or activity history.
 
-A steady-state invocation costs one `Spawn`: the Modal connection is kept per grant and the resolved Function handle per `(app, function, version)`, so neither the connection setup nor the `FunctionGet` lookup repeats. Validation shares none of this — it re-reads the credentials, builds its own connection and resolves the Function itself, so a check reflects what Vault and Modal hold now rather than what a previous spawn cached. A grant revoked in Vault fails the check immediately, instead of passing on a copy that would survive only until the pod restarts. A handle is dropped if a spawn fails against it, so the next invocation resolves a fresh one.
+A steady-state invocation costs one `Spawn`: the Modal connection is kept per grant and the resolved Function handle per `(app, function, version)`, so neither the connection setup nor the `FunctionGet` lookup repeats. Validation shares none of this — it re-reads the credentials, builds its own connection and resolves the Function itself, so a check reflects what the bucket and Modal hold now rather than what a previous spawn cached. A grant the control plane has removed fails the check immediately, instead of passing on a copy that would survive only until the pod restarts. A handle is dropped if a spawn fails against it, so the next invocation resolves a fresh one.
 
-#### Vault layout and deployment config (optional)
+#### Sealed material in the data plane config store (optional)
 
-Configuring a Vault address switches the provider from one process-wide API key to per-account grants. WCI then authenticates to Modal with an OAuth client assertion (RFC 7523), built from two secrets in a KV v2 mount:
+Configuring a cloud provider switches the provider from one process-wide API key to per-account grants. WCI then authenticates to Modal with an OAuth client assertion (RFC 7523), built from two objects in its own region's data plane config bucket:
 
-| What | Path | Field |
-|---|---|---|
-| RSA signing key | `<kv>/compute/modal-oauth/test` | `jwtKey` |
-| Refresh token | `<kv>/compute/modal-oauth/grants/<account id>/<workspace id>` | `refreshToken` |
+| What | Object |
+|---|---|
+| RSA signing key | `<prefix>/signing-key.json` |
+| Refresh token | `<prefix>/accounts/<account id>/<workspace id>.json` |
 
-The signing key is WCI-owned and shared by every grant, so it is read once for the life of the process; rotating it takes a restart. That is the trade for never having to guess which half Modal rejected: the key was good when it was loaded, so a rejection is the refresh token's, and only the token is re-read. A refresh token belongs to exactly one account's grant on one workspace, which is what makes a grant reachable only by the account that holds it. The OAuth client ID is not secret, so it is supplied as deployment config rather than stored next to the key.
+There is no Vault client here, deliberately. A Vault client is billed per client and a cell would need its own; the material a cell needs is already projected to a bucket the cell can read. The control plane remains the system of record and the only writer.
 
-Vault is reached over Kubernetes auth with the pod's service account token at the standard projected path, logging in on first use, before the lease expires, and once more if a token is refused mid-flight.
+Both objects are **sealed**, so bucket access alone yields nothing. The control plane encrypts a fresh AES-GCM data key to the public half of a cloud KMS key — public, so it travels as ordinary control plane config and the control plane makes no KMS call and cannot read back what it writes — and WCI asks that cloud's KMS to unwrap it, authorized by the identity the pod already has. The AEAD's additional data binds a grant's ciphertext to its account and workspace, so an object moved into another grant's path fails to open rather than yielding the wrong customer's token, and the decrypted payload repeats both ids so a reader that got the path and the AAD wrong the same way still notices. `SealingKeyID` is checked against the key the object names, by prefix so GCP key rotation keeps working.
 
-Where Vault is and who WCI logs in as is **deployment configuration, not dynamic config** — the address is where the pod's service account token gets sent, so changing it should take the same privilege as changing the cell. The deployment installs a `computeprovider.ModalVaultConfig` through fx at startup (`SetModalVaultConfig`); leaving the address unset keeps the Modal API key default. If an address is set but the source cannot be built, the provider fails closed rather than falling back to ambient credentials, which would serve every account from one key. `WithDefaults` fills in the secret layout above, so a deployment normally supplies only:
+The signing key is WCI-owned and shared by every grant in the region, so it is read once for the life of the process; rotating it takes a restart. That is the trade for never having to guess which half Modal rejected: the key was good when it was loaded, so a rejection is the refresh token's, and only the token is re-read. The OAuth client ID is not secret, so it is deployment config rather than something read from the bucket; the sealed grant records the client it was issued to and is refused if the two disagree.
+
+Which bucket a cell reads is **deployment configuration, not dynamic config** — a cell reads its own region and nobody else's, so it changes when the cell does. The deployment installs a `computeprovider.ModalStoreConfig` through fx at startup (`SetModalStoreConfig`); leaving the cloud provider unset keeps the Modal API key default. If one is set but the source cannot be built, the provider fails closed rather than falling back to ambient credentials, which would serve every account from one key.
 
 | Field | Example |
 |---|---|
-| `Address` | `https://vault.test.tmprl-test.cloud` |
-| `Namespace` | `admin` |
-| `AuthMount` | `s-mycell` (per-cell) |
-| `AuthRole` | `worker-controller` |
+| `CloudProvider` | `aws` or `gcp` |
+| `Region` | `us-west-2` |
+| `Bucket` | `data-plane-config-test-us-west-2` |
+| `AssumeRoleARN` | `arn:aws:iam::730335288748:role/data-plane-config-test-us-west-2-reader` (AWS only) |
+| `ObjectPrefix` | `serverless-modal-grants` (the default) |
 | `OAuthClientID` | `oc-xxxxxxxx` |
+| `SealingKeyID` | the KMS key ARN, or the GCP cryptoKey without its version |
+
+Azure is absent on purpose: the control plane holds no sealing key for it and skips those regions, so a cell there has nothing to read.
+
+To check a region is wired up without deploying anything, `cmd/modal-secret-probe` resolves a grant through exactly this code path and reports what it found without printing any of it:
+
+```
+go run ./cmd/modal-secret-probe \
+  -targets aws/us-east-1,aws/us-west-2,gcp/us-central1,gcp/us-west1 \
+  -account <account id> -workspace <workspace id> -client-id oc-xxxxxxxx
+```
 
 Only the runtime tuning knobs in the table above stay in dynamic config.
 

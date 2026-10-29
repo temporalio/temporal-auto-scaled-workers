@@ -91,12 +91,12 @@ var (
 	WorkerControllerModalCredentialReloadLimit = dynamicconfig.NewGlobalIntSetting(
 		"workercontroller.compute_providers.modal.credential_reload_limit",
 		2,
-		`WorkerControllerModalCredentialReloadLimit caps how many times WCI re-reads Vault for a grant whose credentials Modal rejected, before giving up for the cooldown window. This is deliberately small as to avoid overwhelming Vault.`,
+		`WorkerControllerModalCredentialReloadLimit caps how many times WCI re-reads secret storage for a grant whose credentials Modal rejected, before giving up for the cooldown window. This is deliberately small: each read is an object fetch plus a KMS decrypt.`,
 	)
 	WorkerControllerModalCredentialReloadCooldownSeconds = dynamicconfig.NewGlobalIntSetting(
 		"workercontroller.compute_providers.modal.credential_reload_cooldown_s",
 		int((15 * time.Minute).Seconds()), // 900
-		`WorkerControllerModalCredentialReloadCooldownSeconds is how long WCI stops reading Vault for a grant after WorkerControllerModalCredentialReloadLimit consecutive reads failed to produce working credentials.`,
+		`WorkerControllerModalCredentialReloadCooldownSeconds is how long WCI stops reading secret storage for a grant after WorkerControllerModalCredentialReloadLimit consecutive reads failed to produce working credentials.`,
 	)
 	WorkerControllerPeriodicValidationIntervalSeconds = dynamicconfig.NewGlobalIntSetting(
 		"workercontroller.periodic_validation_interval_s",
