@@ -1,4 +1,4 @@
-//go:build !release
+//go:build computeprovider_k8s && !release
 
 package computeprovider
 

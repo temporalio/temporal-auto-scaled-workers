@@ -20,11 +20,13 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 | AWS Lambda | `aws-lambda` | Invoke (one-off) |
 | AWS ECS | `aws-ecs` | Worker set (managed scaling) |
 | GCP Cloud Run | `gcp-cloud-run` | Worker set |
-| Kubernetes | `k8s` | Worker set |
+| Kubernetes | `k8s` | Worker set (dev/test only) |
 | Subprocess | `subprocess` | Invoke (dev/test only) |
 
 **Invoke** providers are called once per scaling event to start a short-lived worker.
 **Worker-set** providers manage a persistent pool whose size is adjusted up or down.
+
+Dev/test-only providers are excluded by default; build with `-tags computeprovider_k8s` or `-tags computeprovider_subprocess` to include them.
 
 ## Supported Scaling Algorithms
 
