@@ -1482,7 +1482,7 @@ func testWCISetRampingVersionHappyPath(t *testing.T) {
 	require.NotNil(t, ramping, "expected a ramping deployment version to be set")
 	require.Equal(t, versionB.GetBuildId(), ramping.GetBuildId(),
 		"ramping version build_id should match the requested version")
-	require.Equal(t, float32(20.0), rc.GetRampingVersionPercentage(),
+	require.InDelta(t, 20.0, rc.GetRampingVersionPercentage(), 0.001,
 		"ramping version percentage should be 20")
 
 	require.Eventually(t, func() bool {
@@ -1538,7 +1538,7 @@ func testWCISetRampingVersionClear(t *testing.T) {
 	rc := descResp.GetWorkerDeploymentInfo().GetRoutingConfig()
 	require.Nil(t, rc.GetRampingDeploymentVersion(),
 		"ramping deployment version should be cleared")
-	require.Equal(t, float32(0), rc.GetRampingVersionPercentage(),
+	require.InDelta(t, 0.0, rc.GetRampingVersionPercentage(), 0.001,
 		"ramping version percentage should be reset to 0")
 
 	// The previously ramping version drains: once the drainage check finds no
