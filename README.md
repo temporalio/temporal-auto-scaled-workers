@@ -151,10 +151,10 @@ go run ./cmd/modal-secret-probe \
   -account <account id> -workspace <workspace id> -client-id oc-xxxxxxxx
 ```
 
-It needs the caller to be able to assume each region's bucket reader role, and that role to hold `kms:Decrypt` on the sealing key — the same access the WCI pod needs, which is the point of probing with it. For a multi-Region key one statement covers every replica, because replicas share the key id:
+It needs the caller to be able to assume each region's bucket reader role, and that role to hold `kms:Decrypt` on the sealing key — the same access the WCI pod needs, which is the point of probing with it. The sealing key lives in one region of one account, and every cell calls it there, so a single statement covers every region:
 
 ```
-"kms:Decrypt" on arn:aws:kms:*:<account>:key/mrk-<id>
+"kms:Decrypt" on arn:aws:kms:<key region>:<account>:key/<id>
 ```
 
 Only the runtime tuning knobs in the table above stay in dynamic config.
