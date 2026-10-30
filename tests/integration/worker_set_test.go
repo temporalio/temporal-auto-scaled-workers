@@ -98,7 +98,7 @@ func testWCIWorkerSetScaleUp(t *testing.T) {
 
 	// The backlog with no poller should drive the rate-based scaler to resize the worker set.
 	count := waitForWorkerSetUpdate(t, events, 60*time.Second, "scale-up worker-set update")
-	require.Greater(t, count, 0, "Expected non-zero scale-up")
+	require.Positive(t, count, "Expected non-zero scale-up")
 
 	// Bring up a worker to drain the backlog and complete the workflow.
 	w2 := startVersionedWorker(t, cli, taskQueue, deploymentName, buildID)
