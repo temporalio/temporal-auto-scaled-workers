@@ -18,13 +18,16 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 | Provider | Type string | Launch strategy |
 |---|---|---|
 | AWS Lambda | `aws-lambda` | Invoke (one-off) |
+| AWS SNS | `aws-sns` | Invoke (publish activation notification) |
 | AWS AgentCore | `aws-agentcore` | Invoke (one-off) |
 | AWS ECS | `aws-ecs` | Worker set (managed scaling) |
 | GCP Cloud Run | `gcp-cloud-run` | Worker set |
 | Kubernetes | `k8s` | Worker set |
 | Subprocess | `subprocess` | Invoke (dev/test only) |
 
-**Invoke** providers are called once per scaling event to start a short-lived worker.
+**Invoke** providers are called once per scaling event to start a short-lived worker or publish an activation notification. The `aws-sns` provider publishes a JSON message to an SNS topic; the subscriber is responsible for activating a worker and polling the matching Temporal task queue. Only `topic_arn` is required. By default, SNS uses the subscriber's local AWS credentials. For cross-account access, optionally configure `role` and, when required by that role's trust policy, `role_external_id`.
+
+The SNS payload is represented by the exported Go type `computeprovider.AWSSNSWorkerActivationMessage`, with event constant `computeprovider.AWSSNSWorkerActivationEvent`. Its JSON fields are `event`, `namespaceName`, `deploymentName`, and `buildId`.
 **Worker-set** providers manage a persistent pool whose size is adjusted up or down.
 
 The development-only subprocess provider accepts an optional positive Go duration string as `config.timeout` (for example, `"30m"` or `"1h"`). It defaults to `"1m"`.
@@ -58,6 +61,23 @@ A WCI spec is a map of named scaling groups:
   "scaling_group_specs": {
     "workflows": {
       "task_types": ["WORKFLOW"],
+      "compute": {
+        "provider_type": "aws-sns",
+        "config": {
+          "topic_arn": "arn:aws:sns:us-east-1:123456789012:worker-activation"
+        }
+      },
+      "scaling": {
+        "scaling_algorithm": "no-sync",
+        "config": {
+          "scale_up_backlog_threshold": "5",
+          "scale_up_cooloff_ms": "500",
+          "max_worker_lifetime_ms": "300000"
+        }
+      }
+    },
+    "lambda-example": {
+      "task_types": ["ACTIVITY"],
       "compute": {
         "provider_type": "aws-lambda",
         "config": {
