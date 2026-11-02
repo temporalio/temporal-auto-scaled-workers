@@ -3,6 +3,7 @@ package computeprovider
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -86,16 +87,33 @@ func modalSigningKeyObjectKey(prefix string) string {
 	return fmt.Sprintf("%s/signing-key.json", strings.Trim(prefix, "/"))
 }
 
-// modalGrantAAD binds a sealed grant to one account and workspace, so a ciphertext moved into
-// another grant's object path fails to open rather than yielding the wrong customer's token.
+// modalGrantAAD binds a sealed grant to one purpose, account and workspace, so a ciphertext moved
+// into another grant's object path fails to open rather than yielding the wrong customer's token.
+//
+// Length-prefixed rather than delimited: a delimiter can appear inside an id, so "a/b" with "c"
+// and "a" with "b/c" would bind to the same bytes, and a grant sealed under one split would open
+// under the other.
 func modalGrantAAD(accountID, workspaceID string) []byte {
-	return []byte("modal/grant/" + accountID + "/" + workspaceID)
+	return modalAAD("modal/grant", accountID, workspaceID)
 }
 
 // modalSigningKeyAAD is deliberately distinct from modalGrantAAD, so a signing key object cannot be
 // opened as a grant or the reverse.
 func modalSigningKeyAAD() []byte {
-	return []byte("modal/signing-key")
+	return modalAAD("modal/signing-key")
+}
+
+// modalAAD writes the purpose and each field as a 64-bit length followed by its bytes, so one list
+// of fields has exactly one encoding. Byte-identical to the control plane's aad(); the golden
+// vectors in the test pin that, since neither side can import the other.
+func modalAAD(purpose string, fields ...string) []byte {
+	out := binary.BigEndian.AppendUint64(nil, uint64(len(purpose)))
+	out = append(out, purpose...)
+	for _, field := range fields {
+		out = binary.BigEndian.AppendUint64(out, uint64(len(field)))
+		out = append(out, field...)
+	}
+	return out
 }
 
 // openModalEnvelope decrypts a payload with a data key the caller has already had KMS unwrap. aad
