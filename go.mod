@@ -1,6 +1,6 @@
 module go.temporal.io/auto-scaled-workers
 
-go 1.27.0
+go 1.27.3
 
 require (
 	cloud.google.com/go/run v1.19.0
@@ -16,9 +16,9 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.11.1
-	go.temporal.io/api v1.63.8-0.20261014221631-25d6833c5701
+	go.temporal.io/api v1.64.1-0.20261030195137-01272cbd37c9
 	go.temporal.io/sdk v1.49.0
-	go.temporal.io/server v1.29.0-135.0.0.20261026023829-bf024cd04dac
+	go.temporal.io/server v1.29.0-135.0.0.20261102185404-d7b94edea53c
 	go.uber.org/fx v1.24.0
 	go.uber.org/mock v0.6.0
 	golang.org/x/oauth2 v0.36.0
@@ -64,6 +64,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.20 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/bits-and-blooms/bitset v1.24.2 // indirect
+	github.com/bits-and-blooms/bloom/v3 v3.7.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/cactus/go-statsd-client/statsd v0.0.0-20200423205355-cb0885a1018c // indirect
 	github.com/cactus/go-statsd-client/v5 v5.1.0 // indirect
@@ -175,19 +177,20 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
+	go.temporal.io/testx v0.0.0-20261029001555-ddcb0739798d // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/dig v1.19.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20260611194520-c48552f49976 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/term v0.45.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto v0.0.0-20260420184626-e10c466a9529 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
