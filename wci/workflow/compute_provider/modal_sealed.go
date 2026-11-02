@@ -127,6 +127,13 @@ func openModalEnvelope(dek []byte, env modalEnvelope, aad []byte, into any) erro
 	if err != nil {
 		return fmt.Errorf("failed to create the AEAD: %w", err)
 	}
+	// AES-GCM panics rather than returning an error when the nonce is the wrong length, and env
+	// comes from a bucket object that may have been truncated or rewritten. A sealed DEK can
+	// unwrap cleanly and leave a nonce that does not.
+	if len(env.Nonce) != aead.NonceSize() {
+		return fmt.Errorf("failed to open the sealed payload: nonce is %d bytes, want %d",
+			len(env.Nonce), aead.NonceSize())
+	}
 	plaintext, err := aead.Open(nil, env.Nonce, env.Payload, aad)
 	if err != nil {
 		return fmt.Errorf("failed to open the sealed payload: %w", err)
