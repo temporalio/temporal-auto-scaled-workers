@@ -216,6 +216,14 @@ func (r *routingClient) updateOnce(
 			r.served("update", backendCHASM)
 			return resp, false, err
 		}
+		// A handover may have activated between the probes; falling back would start a second run.
+		onCHASM, existsErr := r.chasm.WorkerControllerInstanceExists(ctx, ns, version)
+		if existsErr != nil {
+			return nil, false, existsErr
+		}
+		if onCHASM {
+			return nil, true, err
+		}
 	}
 	r.served("update", backendWorkflow)
 	resp, err := r.workflow.UpdateWorkerControllerInstance(ctx, ns, version, conflictToken, identity, upsertScalingGroups, removeScalingGroups)
