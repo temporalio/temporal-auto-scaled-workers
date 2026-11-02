@@ -147,14 +147,37 @@ func TestRouting_UpdatePlacement(t *testing.T) {
 // A handover between the router's probes must not start a second workflow run.
 func TestRouting_UpdateDuringHandover(t *testing.T) {
 	notFound := serviceerror.NewNotFound("workflow execution already completed")
+	gateOn := dynamicconfig.StaticClient{
+		WorkerControllerCHASMCreationEnabled.Key():        true,
+		WorkerControllerCHASMCreationRolloutPercent.Key(): 100,
+	}
 	tests := []struct {
 		name          string
 		chasm         *fakeBackend
 		workflow      *fakeBackend
+		settings      dynamicconfig.StaticClient
 		wantCHASM     []string
 		wantWorkflow  []string
 		wantErrNotNil bool
 	}{
+		{
+			// Create on CHASM is unsupported, but the handover activated meanwhile: no workflow fallback.
+			name:          "unsupported_create_after_activation",
+			chasm:         &fakeBackend{existsSeq: []bool{false, true}, err: ErrProviderNotSupportedOnCHASM},
+			workflow:      &fakeBackend{},
+			settings:      gateOn,
+			wantCHASM:     []string{"exists", "update", "exists", "exists", "update"},
+			wantWorkflow:  []string{"exists"},
+			wantErrNotNil: true,
+		},
+		{
+			name:         "unsupported_create_falls_back",
+			chasm:        &fakeBackend{err: ErrProviderNotSupportedOnCHASM},
+			workflow:     &fakeBackend{},
+			settings:     gateOn,
+			wantCHASM:    []string{"exists", "update", "exists"},
+			wantWorkflow: []string{"exists", "update"},
+		},
 		{
 			// CHASM probe sees a pending target, the workflow probe sees the run closed: re-probe CHASM.
 			name:         "to_chasm_activates_between_probes",
@@ -189,7 +212,7 @@ func TestRouting_UpdateDuringHandover(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := newTestRouter(tc.workflow, tc.chasm, nil).UpdateWorkerControllerInstance(t.Context(), newTestNamespace(), newTestVersion(), nil, "id", nil, nil)
+			_, err := newTestRouter(tc.workflow, tc.chasm, tc.settings).UpdateWorkerControllerInstance(t.Context(), newTestNamespace(), newTestVersion(), nil, "id", nil, nil)
 			require.Equal(t, tc.wantErrNotNil, err != nil, err)
 			require.Equal(t, tc.wantCHASM, tc.chasm.calls)
 			require.Equal(t, tc.wantWorkflow, tc.workflow.calls)
