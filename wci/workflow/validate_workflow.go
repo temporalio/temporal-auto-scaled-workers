@@ -81,7 +81,7 @@ func ValidateSpecWorkflow(
 		spec.ScalingGroupSpecs[scalingGroupId] = args.UpsertScalingGroups[scalingGroupId].Spec
 	}
 
-	if err := spec.Validate(); err != nil {
+	if err := validateSpec(ctx, &spec); err != nil {
 		return temporal.NewApplicationError(err.Error(), "InvalidArgument")
 	}
 

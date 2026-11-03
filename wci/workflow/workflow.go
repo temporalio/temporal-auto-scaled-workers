@@ -50,6 +50,9 @@ const (
 	// signal alone in signalSelector, so the timers never share a Select with the always ready
 	// signal under sustained load. The poll deadline is persisted across CaN.
 	timerSelectorPatch = "timerSelector"
+
+	// workerSetTargetCheck: specs where two groups resize the same worker set are rejected.
+	workerSetTargetCheckPatch = "workerSetTargetCheck"
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -612,7 +615,7 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 	}
 
 	if updatedSpec != nil {
-		if err := updatedSpec.Validate(); err != nil {
+		if err := validateSpec(ctx, updatedSpec); err != nil {
 			d.updateMetric(wcimetrics.UpdateTypeValidateSpec).recordFailure(wcimetrics.ErrorTypeInvalidSpec)
 
 			return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
@@ -714,7 +717,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 
 		validationTime := workflow.Now(ctx)
 
-		if err := updatedSpec.Validate(); err != nil {
+		if err := validateSpec(ctx, updatedSpec); err != nil {
 			d.updateMetric(wcimetrics.UpdateTypeUpdateInstance).recordFailure(wcimetrics.ErrorTypeInvalidSpec)
 			return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 		}
@@ -1320,4 +1323,15 @@ func (d *WorkflowRunner) signalVersionWorkflow(ctx workflow.Context) {
 			d.logger.Warn("failed to signal version workflow with validation status", "error", err, "version_wf_id", versionWfID)
 		}
 	}
+}
+
+// validateSpec runs the spec checks, gating ones added later so replayed handlers decide as they did.
+func validateSpec(ctx workflow.Context, spec *iface.WorkerControllerInstanceSpec) error {
+	if err := spec.Validate(); err != nil {
+		return err
+	}
+	if workflow.GetVersion(ctx, workerSetTargetCheckPatch, workflow.DefaultVersion, 1) > workflow.DefaultVersion {
+		return spec.ValidateWorkerSetTargets()
+	}
+	return nil
 }
