@@ -29,6 +29,7 @@ type fakeMigrationClient struct {
 	prepareErr  error
 	activateErr []error // one per call; nil once exhausted
 	onPrepare   func()
+	onActivate  func()
 
 	prepares  []string
 	expires   []time.Time
@@ -56,6 +57,9 @@ func (f *fakeMigrationClient) ActivateMigration(_ context.Context, _ *iface.Work
 		return client.ErrMigrationAborted
 	}
 	f.activates = append(f.activates, pending)
+	if f.onActivate != nil {
+		f.onActivate()
+	}
 	if len(f.activateErr) == 0 {
 		return nil
 	}
@@ -231,6 +235,53 @@ func TestWorkflowStaysWhenActivationRejected(t *testing.T) {
 
 	require.True(t, isContinueAsNew(run.err), "the target is gone, so the workflow keeps the WCI: %v", run.err)
 	require.Len(t, mc.activates, 1)
+}
+
+// Task-adds signalled while the handover's local activities run must survive its failure.
+func TestWorkflowKeepsTaskAddsWhenHandoverFails(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(dc *dynamicconfig.MemoryClient, mc *fakeMigrationClient, signal func())
+	}{
+		{name: "prepare_failed", setup: func(_ *dynamicconfig.MemoryClient, mc *fakeMigrationClient, signal func()) {
+			mc.prepareErr = errors.New("history unavailable")
+			mc.onPrepare = signal
+		}},
+		{name: "provider_unsupported", setup: func(_ *dynamicconfig.MemoryClient, mc *fakeMigrationClient, signal func()) {
+			mc.prepareErr = client.ErrProviderNotSupportedOnCHASM
+			mc.onPrepare = signal
+		}},
+		{name: "gate_closed_before_commit", setup: func(dc *dynamicconfig.MemoryClient, mc *fakeMigrationClient, signal func()) {
+			mc.onPrepare = func() {
+				dc.OverrideValue(client.WorkerControllerCHASMMigrationEnabled.Key(), false)
+				signal()
+			}
+		}},
+		{name: "activation_rejected", setup: func(_ *dynamicconfig.MemoryClient, mc *fakeMigrationClient, signal func()) {
+			mc.activateErr = []error{client.ErrMigrationAborted}
+			mc.onActivate = signal
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dc := newMigrationDC(true, true)
+			mc := &fakeMigrationClient{}
+			env, _, testWorkflow, handled := newMigrationEnv(t, MigrateToCHASMVersion, dc, mc)
+			tc.setup(dc, mc, func() {
+				signal := newTestSignalTaskAddEvent()
+				env.SignalWorkflow(iface.SignalTaskAdd, &signal)
+			})
+			env.RegisterDelayedCallback(func() { forceCaNUpdate(t, env) }, time.Millisecond)
+			env.ExecuteWorkflow(testWorkflow, testMigrationArgs(t))
+			require.True(t, env.IsWorkflowCompleted())
+
+			var can *sdkworkflow.ContinueAsNewError
+			require.ErrorAs(t, env.GetWorkflowError(), &can)
+			var next iface.WorkerControllerInstanceWorkflowArgs
+			require.NoError(t, sdk.PreferProtoDataConverter.FromPayloads(can.Input, &next))
+			require.Equal(t, 1, *handled+len(next.State.PendingTaskAddSignals), "the task-add is handled or carried into the next run")
+		})
+	}
 }
 
 // With routing off a migrated WCI would be unreachable, so the gate stays closed.

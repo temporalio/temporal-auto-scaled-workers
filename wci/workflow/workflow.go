@@ -375,6 +375,8 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	if d.migrateToCHASM(ctx) {
 		return nil
 	}
+	// Task-adds signalled during a failed handover's local activities are still on the channel.
+	d.drainTaskAddSignalsForCaN()
 
 	return workflow.NewContinueAsNewError(ctx, iface.WorkerControllerInstanceWorkflowType, d.WorkerControllerInstanceWorkflowArgs)
 }
