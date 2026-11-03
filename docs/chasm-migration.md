@@ -32,7 +32,9 @@ Per namespace, in order; watch the [metrics](#metrics) between steps.
    `backend="chasm"`.
 3. `instanceWorkflowVersion: 5`, wait until running WCIs have continued-as-new onto it.
 4. `migration_enabled: true`, `migration_rollout_percent` 1 → 10 → 100. Each WCI moves at its next
-   continue-as-new (any spec update forces one; task-adds and polls don't). Watch
+   continue-as-new: any spec update forces one, and task-adds and polls grow history until the server
+   suggests one (`limit.historyCount.suggestContinueAsNew`, 4096 events), so busy WCIs move soon and
+   idle ones slowly. Use `tdbg wc migrate-to-chasm` to move one now. Watch
    `worker_controller_instance_chasm_migration_count{migration_outcome}`.
 
 ### High-traffic namespaces
@@ -93,10 +95,10 @@ invoke/resize done synchronously on update.
 - **Instance limit:** `workercontroller.maxInstances` is enforced only on workflow creation and counts
   workflow WCIs only; CHASM creation is unlimited.
 - **Task-adds during workflow → CHASM:** buffered signals are carried with each activate attempt; only
-  those reaching the workflow after activation and before the run closes are dropped. The next
-  metrics poll covers them.
+  those reaching the workflow after activation and before the run closes are dropped. CHASM polls
+  metrics as soon as it activates, which covers them.
 - **Task-adds during CHASM → workflow:** rejected with `ErrMigrationPending` while migrating and
-  dropped by the hook; same recovery.
+  dropped by the hook. The workflow polls metrics as soon as it activates.
 - **Provider change on a CHASM WCI:** updating an existing CHASM WCI to a provider CHASM doesn't
   support fails; migrate it back first.
 - **Region IDs** are not carried across migration.
