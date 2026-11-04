@@ -47,6 +47,10 @@ func (r operationRecorder) recordActivityError(err error) {
 	r.emit(wcimetrics.ErrorTypeActivityError, classifyActivityErrorType(err), wcimetrics.SkippedReasonNone)
 }
 
+func (r operationRecorder) recordFailure(errorType wcimetrics.ErrorType) {
+	r.emit(errorType, wcimetrics.ActivityErrorTypeNone, wcimetrics.SkippedReasonNone)
+}
+
 func (r operationRecorder) recordSkipped(reason wcimetrics.SkippedReason) {
 	r.emit(wcimetrics.ErrorTypeNone, wcimetrics.ActivityErrorTypeNone, reason)
 }

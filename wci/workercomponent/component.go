@@ -20,11 +20,12 @@ type (
 		dynamicConfig    *dynamicconfig.Collection
 		sdkClientFactory sdk.ClientFactory
 		staticConfig     *client.StaticConfig
+		wciClient        client.Client
 	}
 )
 
-func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory, staticConfig *client.StaticConfig) workercommon.PerNSWorkerComponent {
-	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory, staticConfig: staticConfig}
+func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory, staticConfig *client.StaticConfig, wciClient client.Client) workercommon.PerNSWorkerComponent {
+	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory, staticConfig: staticConfig, wciClient: wciClient}
 }
 
 func (s *workerComponent) DedicatedWorkerOptions(ns *namespace.Namespace) *workercommon.PerNSDedicatedWorkerOptions {
@@ -39,7 +40,7 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 		DataConverter: sdk.PreferProtoDataConverter,
 	})
 
-	activities := instancewf.NewActivities(ns, s.dynamicConfig, sdkClient.WorkflowService(), s.staticConfig)
+	activities := instancewf.NewActivities(ns, s.dynamicConfig, sdkClient.WorkflowService(), s.staticConfig, s.wciClient)
 	versionWorkflow := func(ctx workflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
 		workflowVersionGetter := func() instancewf.WorkerControllerInstanceWorkflowVersion {
 			return instancewf.WorkerControllerInstanceWorkflowVersion(client.WorkerControllerInstanceWorkflowVersion.Get(s.dynamicConfig)(ns.Name().String()))
@@ -54,7 +55,9 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 			sec := client.WorkerControllerPeriodicValidationIntervalSeconds.Get(s.dynamicConfig)()
 			return time.Duration(sec) * time.Second
 		}
-		return instancewf.Workflow(ctx, workflowVersionGetter, workerControllerEnabledGetter, maxVersionsGetter, validationIntervalGetter, args, activities)
+		sessionIdleTimeoutGetter := client.SessionIdleTimeoutGetter(s.dynamicConfig, ns.Name().String())
+		return instancewf.Workflow(ctx, workflowVersionGetter, workerControllerEnabledGetter, maxVersionsGetter, validationIntervalGetter, args, activities,
+			instancewf.WithSessionIdleTimeout(sessionIdleTimeoutGetter))
 	}
 	registry.RegisterWorkflowWithOptions(versionWorkflow, workflow.RegisterOptions{Name: iface.WorkerControllerInstanceWorkflowType})
 	validateWorkflow := func(ctx workflow.Context, args *iface.ValidateWorkerControllerInstanceSpecWorkflowArgs) error {

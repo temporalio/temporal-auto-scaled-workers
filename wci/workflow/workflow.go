@@ -73,6 +73,11 @@ const (
 	// Skip most mutating operations on the version workflow if
 	// workercontroller.enabled is false in the dynamic config.
 	CheckWorkerControllerEnabledVersion
+
+	// Adds session mode: a WCI started with session args initializes its spec from the
+	// parent version WCI and only scales via no-sync task-add signals. Version WCIs are
+	// unaffected by this version.
+	SessionModeVersion
 )
 
 type (
@@ -95,6 +100,11 @@ type (
 		unsafeWorkerControllerEnabled    func() bool
 		unsafeMaxVersion                 func() int
 		unsafePeriodicValidationInterval func() time.Duration
+		// unsafeSessionIdleTimeout is only used by session WCIs; see WithSessionIdleTimeout.
+		unsafeSessionIdleTimeout func() time.Duration
+		// sessionSpecFresh is set when initSessionFromParent read the parent in this run, so
+		// the next processed no-sync signal skips the parent spec refresh.
+		sessionSpecFresh bool
 
 		cancelTimerTasks workflow.CancelFunc
 
@@ -127,6 +137,7 @@ func Workflow(
 	unsafePeriodicValidationInterval func() time.Duration,
 	args *iface.WorkerControllerInstanceWorkflowArgs,
 	activities *Activities,
+	opts ...WorkflowOption,
 ) error {
 	// compute_provider is always present as a base tag (the "none" sentinel here)
 	// so that every workflow metric carries a stable tag key-set; emissions made in
@@ -137,13 +148,19 @@ func Workflow(
 		wcimetrics.WorkerDeploymentNameTag:    args.DeploymentName,
 		wcimetrics.WorkerDeploymentBuildIDTag: args.BuildId,
 		wcimetrics.ComputeProviderTag:         wcimetrics.ComputeProviderNone,
+		wcimetrics.SessionTagName:             wcimetrics.SessionTagValue(args.IsSession()),
+	}
+
+	logger := sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName, "wf-deployment-name", args.DeploymentName, "wf-build-id", args.BuildId)
+	if args.IsSession() {
+		logger = sdklog.With(logger, "wf-session-id", args.Session.SessionID, "wf-session-queue", args.Session.SessionQueue)
 	}
 
 	workflowRunner := &WorkflowRunner{
 		WorkerControllerInstanceWorkflowArgs: args,
 		workflowVersion:                      getWorkflowVersion(ctx, unsafeWorkflowVersionGetter),
 		a:                                    activities,
-		logger:                               sdklog.With(workflow.GetLogger(ctx), "wf-namespace", args.NamespaceName, "wf-deployment-name", args.DeploymentName, "wf-build-id", args.BuildId),
+		logger:                               logger,
 		metrics:                              workflow.GetMetricsHandler(ctx).WithTags(metricTags),
 		lock:                                 workflow.NewMutex(ctx),
 		unsafeWorkerControllerEnabled:        unsafeWorkerControllerEnabledGetter,
@@ -153,6 +170,9 @@ func Workflow(
 			signalSelector: workflow.NewSelector(ctx),
 			timerSelector:  workflow.NewSelector(ctx),
 		},
+	}
+	for _, opt := range opts {
+		opt(workflowRunner)
 	}
 
 	err := workflowRunner.run(ctx)
@@ -183,6 +203,11 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	if d.State.ConflictToken == nil {
 		d.State.ConflictToken, err = workflow.Now(ctx).MarshalBinary()
 		if err != nil {
+			return err
+		}
+	}
+	if d.IsSession() {
+		if err = d.checkSessionMode(); err != nil {
 			return err
 		}
 	}
@@ -250,6 +275,19 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		}
 	})
 
+	// Session WCIs take their spec from the parent version WCI on the first run. Task-add
+	// signals that arrive meanwhile (including the one from signal-with-start) stay buffered
+	// in the channel and are only processed after this.
+	if d.IsSession() {
+		done, initErr := d.initSessionFromParent(ctx)
+		if initErr != nil {
+			return initErr
+		}
+		if done {
+			return nil
+		}
+	}
+
 	var addStatsPullTimer func(nextPoll time.Duration)
 	addStatsPullTimer = func(nextPoll time.Duration) {
 		if d.useTimerSelector && d.State != nil {
@@ -272,18 +310,27 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 			addStatsPullTimer(nextPollDuration)
 		})
 	}
-	if d.useTimerSelector && d.State != nil && d.State.NextPollTime != nil {
-		remaining := d.State.NextPollTime.AsTime().Sub(workflow.Now(ctx))
-		// Past due timer needs to be armed to get the subsequent ones going on.
-		if remaining < 0 {
-			remaining = 0
+	// Session WCIs never pull stats; scaling is driven by no-sync task-add signals only.
+	if !d.IsSession() {
+		if d.useTimerSelector && d.State != nil && d.State.NextPollTime != nil {
+			remaining := d.State.NextPollTime.AsTime().Sub(workflow.Now(ctx))
+			// Past due timer needs to be armed to get the subsequent ones going on.
+			if remaining < 0 {
+				remaining = 0
+			}
+			addStatsPullTimer(remaining)
+		} else {
+			addStatsPullTimer(maxPollInterval)
 		}
-		addStatsPullTimer(remaining)
-	} else {
-		addStatsPullTimer(maxPollInterval)
 	}
 
-	if d.hasMinVersion(PeriodicValidationVersion) {
+	// Session WCIs complete once no no-sync task-add signal has arrived for the idle timeout.
+	if d.IsSession() {
+		d.armSessionIdleTimer(ctx, timerCtx, timerSel)
+	}
+
+	// The parent version WCI owns periodic validation, so session WCIs skip it.
+	if d.hasMinVersion(PeriodicValidationVersion) && !d.IsSession() {
 		// Read once at run start. Dynamic config changes take effect at the next
 		// ContinueAsNew. The interval defaults to 6h and is
 		// unlikely to change frequently, so waiting for a CaN boundary is acceptable.
@@ -392,7 +439,10 @@ func (d *WorkflowRunner) hasQueuedTaskAdds() bool {
 func (d *WorkflowRunner) validateValidateSpec(args *iface.ValidateSpecRequest) error {
 	// Unlike validateUpdateInstance, an empty request is valid here.
 	// It allows validating the current configuration rather than a dry-run of changes.
-	return d.ensureNotDeleted()
+	if err := d.ensureNotDeleted(); err != nil {
+		return err
+	}
+	return d.ensureNotSession()
 }
 
 // handleValidateSpec is the handler for the validateSpec update request. It implements a dry-run for any submitted changes,
@@ -458,6 +508,9 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 
 func (d *WorkflowRunner) validateUpdateInstance(args *iface.UpdateWorkerControllerInstanceRequest) error {
 	if err := d.ensureNotDeleted(); err != nil {
+		return err
+	}
+	if err := d.ensureNotSession(); err != nil {
 		return err
 	}
 	if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
@@ -708,6 +761,18 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 		return
 	}
 
+	taskAddReq := req
+	if d.IsSession() {
+		var ok bool
+		if taskAddReq, ok = d.sessionTaskAddRequest(req); !ok {
+			return
+		}
+		d.recordSessionActivity(ctx)
+		if d.refreshSessionSpec(ctx) {
+			return
+		}
+	}
+
 	var resp HandleTaskAddSignalActivityResponse
 	if err := workflow.ExecuteLocalActivity(
 		workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: HandleTaskAddSignalActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
@@ -715,7 +780,7 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 		HandleTaskAddSignalActivityRequest{
 			RequestContext: d.requestContext(),
 
-			Request: *req,
+			Request: *taskAddReq,
 
 			Spec:          d.State.Spec,
 			ScalingStatus: d.State.ScalingStatus,
@@ -734,7 +799,7 @@ func (d *WorkflowRunner) handleNoSyncMatchSignal(ctx workflow.Context, req *ifac
 		if resp.UpdatedScalingStatus != nil {
 			d.State.ScalingStatus = resp.UpdatedScalingStatus
 		}
-		d.handleActions(ctx, resp.Actions, req, scalingActionProcessingLatencyOrigin{start: signalReceiptTime, path: wcimetrics.PathTaskAdd})
+		d.handleActions(ctx, resp.Actions, taskAddReq, scalingActionProcessingLatencyOrigin{start: signalReceiptTime, path: wcimetrics.PathTaskAdd})
 	}
 }
 
@@ -843,6 +908,7 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 					// TODO: filter out further transient errors to avoid the validation state oscillating
 					d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
+					// No-op for session WCIs: they only record the status in their own state.
 					d.signalVersionWorkflow(ctx)
 				}
 				p.operationMetric(wcimetrics.OperationTypeInvokeWorker).recordActivityError(err)
@@ -853,6 +919,11 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
 		case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
+			if d.IsSession() {
+				d.logger.Warn("Session WCIs only support invoke-strategy providers; dropping worker-set action", "scaling_group_key", action.ScalingGroupKey)
+				p.operationMetric(wcimetrics.OperationTypeUpdateWorkerSetSize).recordSkipped(wcimetrics.SkippedReasonSessionWorkerSet)
+				continue
+			}
 			count := int32(1)
 			if action.Count != nil {
 				if *action.Count < 0 {
@@ -1008,11 +1079,16 @@ func (d *WorkflowRunner) preUpdateChecks(ctx workflow.Context) error {
 }
 
 func (d *WorkflowRunner) requestContext() RequestContext {
-	return RequestContext{
+	rc := RequestContext{
 		NamespaceName:     d.NamespaceName,
 		DeploymentName:    d.DeploymentName,
 		DeploymentBuildID: d.BuildId,
 	}
+	if d.IsSession() {
+		rc.SessionID = d.Session.SessionID
+		rc.SessionQueue = d.Session.SessionQueue
+	}
+	return rc
 }
 
 func (d *WorkflowRunner) ensureNotDeleted() error {
@@ -1028,6 +1104,7 @@ func (d *WorkflowRunner) updateMemo(ctx workflow.Context) error {
 			DeploymentName: d.DeploymentName,
 			BuildId:        d.BuildId,
 			CreateTime:     d.State.CreateTime,
+			SessionID:      d.sessionID(),
 		},
 	})
 }
@@ -1071,6 +1148,10 @@ func (d *WorkflowRunner) workerControllerEnabled(ctx workflow.Context) bool {
 // signalVersionWorkflow sends the current ValidationStatus to the version workflow
 // so the deployment workflow can maintain an aggregate validation summary in its memo.
 func (d *WorkflowRunner) signalVersionWorkflow(ctx workflow.Context) {
+	// Session WCIs never signal the version workflow; the version WCI owns its status.
+	if d.IsSession() {
+		return
+	}
 	if !d.hasMinVersion(SignalVersionWorkflowVersion) {
 		return
 	}

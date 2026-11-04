@@ -326,6 +326,54 @@ func updateWorkflowWithStart(
 	return outcome, err
 }
 
+// signalWithStartWorkflow signals a workflow, starting it first if it is not running.
+// namespaceDivision is stored as TemporalNamespaceDivision so visibility queries can tell
+// workflow kinds apart.
+func signalWithStartWorkflow(
+	ctx context.Context,
+	historyClient historyservice.HistoryServiceClient,
+	namespaceEntry *namespace.Namespace,
+	taskQueueName string,
+	workflowType string,
+	workflowID string,
+	startInput any,
+	namespaceDivision string,
+	signalName string,
+	signalArg any,
+	requestID string,
+) error {
+	startPayload, err := sdk.PreferProtoDataConverter.ToPayloads(startInput)
+	if err != nil {
+		return err
+	}
+	signalPayload, err := sdk.PreferProtoDataConverter.ToPayloads(signalArg)
+	if err != nil {
+		return err
+	}
+
+	_, err = historyClient.SignalWithStartWorkflowExecution(ctx, &historyservice.SignalWithStartWorkflowExecutionRequest{
+		NamespaceId: namespaceEntry.ID().String(),
+		SignalWithStartRequest: &workflowservice.SignalWithStartWorkflowExecutionRequest{
+			RequestId:                requestID,
+			Namespace:                namespaceEntry.Name().String(),
+			WorkflowId:               workflowID,
+			WorkflowType:             &commonpb.WorkflowType{Name: workflowType},
+			TaskQueue:                &taskqueuepb.TaskQueue{Name: taskQueueName},
+			Input:                    startPayload,
+			WorkflowIdReusePolicy:    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
+			WorkflowIdConflictPolicy: enumspb.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
+			SignalName:               signalName,
+			SignalInput:              signalPayload,
+			SearchAttributes: &commonpb.SearchAttributes{
+				IndexedFields: map[string]*commonpb.Payload{
+					sadefs.TemporalNamespaceDivision: payload.EncodeString(namespaceDivision),
+				},
+			},
+		},
+	})
+	return err
+}
+
 func workflowIsRunning(
 	ctx context.Context,
 	historyClient historyservice.HistoryServiceClient,

@@ -21,3 +21,15 @@ func SetPollIntervalsForTest(initial, floor time.Duration) func() {
 		minPollInterval = prevMin
 	}
 }
+
+// SetMinSessionIdleTimeoutForTest lowers the floor applied to the session idle timeout
+// so integration tests can observe idle completion without waiting out the production
+// 1-minute minimum. It returns a function that restores the previous value. It exists
+// only under the test_dep build tag.
+func SetMinSessionIdleTimeoutForTest(floor time.Duration) func() {
+	prev := minSessionIdleTimeout
+	minSessionIdleTimeout = floor
+	return func() {
+		minSessionIdleTimeout = prev
+	}
+}
