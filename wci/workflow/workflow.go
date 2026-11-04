@@ -53,6 +53,9 @@ const (
 
 	// workerSetTargetCheck: specs where two groups resize the same worker set are rejected.
 	workerSetTargetCheckPatch = "workerSetTargetCheck"
+
+	// forwardTaskAdds: after activating CHASM, task-adds that reach the run before it returns are forwarded.
+	forwardTaskAddsPatch = "forwardTaskAdds"
 )
 
 type WorkerControllerInstanceWorkflowVersion int64
@@ -432,6 +435,7 @@ func (d *WorkflowRunner) handOverToCHASM(ctx workflow.Context, token string) str
 		err := workflow.ExecuteLocalActivity(commitLACtx, d.a.ActivateCHASMMigration, req()).Get(commitCtx, &activated)
 		if err == nil {
 			if activated {
+				d.forwardTaskAdds(commitCtx, commitLACtx, req)
 				return migrationOutcomeMigrated
 			}
 			return migrationOutcomeAborted
@@ -439,6 +443,37 @@ func (d *WorkflowRunner) handOverToCHASM(ctx workflow.Context, token string) str
 		d.logger.Warn("Ambiguous CHASM migration activation, retrying", "error", err)
 		if err := workflow.Sleep(commitCtx, backoff); err != nil {
 			d.logger.Warn("Activation retry interrupted", "error", err)
+		}
+	}
+}
+
+// forwardTaskAdds re-sends the queue through activation until a drain finds nothing new; CHASM applies
+// only entries past those it has. The run can't complete past an unread signal, so the last drain sees all.
+func (d *WorkflowRunner) forwardTaskAdds(ctx, laCtx workflow.Context, req func() *CHASMMigrationRequest) {
+	if workflow.GetVersion(ctx, forwardTaskAddsPatch, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		return
+	}
+	backoff := time.Second
+	for {
+		sent := len(d.State.PendingTaskAddSignals)
+		d.drainTaskAddSignalsForCaN()
+		if len(d.State.PendingTaskAddSignals) == sent {
+			return
+		}
+		for {
+			var activated bool
+			err := workflow.ExecuteLocalActivity(laCtx, d.a.ActivateCHASMMigration, req()).Get(ctx, &activated)
+			if err == nil {
+				if !activated {
+					return
+				}
+				break
+			}
+			d.logger.Warn("Failed to forward task-adds to CHASM, retrying", "error", err)
+			if err := workflow.Sleep(ctx, backoff); err != nil {
+				d.logger.Warn("Forward retry interrupted", "error", err)
+			}
+			backoff = min(2*backoff, maxActivateMigrationBackoff)
 		}
 	}
 }
