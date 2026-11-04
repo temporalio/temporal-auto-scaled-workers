@@ -86,6 +86,8 @@ type (
 		PendingMigration *PendingMigration `json:"pending_migration,omitempty"`
 		// The CHASM → workflow activation this chain took; carried across CaN so a retried activation stays accepted.
 		ActivatedMigrationToken string `json:"activated_migration_token,omitempty"`
+		// Highest CHASM-queued task-add this chain applied; carried with ActivatedMigrationToken.
+		AppliedCHASMTaskAddSeq int64 `json:"applied_chasm_task_add_seq,omitempty"`
 	}
 
 	PendingMigration struct {
@@ -95,6 +97,9 @@ type (
 
 	MigrationTokenRequest struct {
 		Token string `json:"token"`
+		// activate-migration only: task-adds CHASM queued while migrating, numbered from FirstTaskAddSeq.
+		TaskAdds        []*SignalTaskAddRequest `json:"task_adds,omitempty"`
+		FirstTaskAddSeq int64                   `json:"first_task_add_seq,omitempty"`
 	}
 
 	MigrateToCHASMRequest struct {

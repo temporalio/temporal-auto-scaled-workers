@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"errors"
 	"sync"
 	"testing"
@@ -459,6 +460,56 @@ func TestPendingRunActivatesThenRunsNormally(t *testing.T) {
 	require.NoError(t, sdk.PreferProtoDataConverter.FromPayloads(can.Input, &next))
 	require.Nil(t, next.PendingMigration, "the next run is a normal one")
 	require.Equal(t, testPendingToken, next.ActivatedMigrationToken, "carried so a retried activation stays accepted")
+}
+
+// forwardUpdate sends activate-migration carrying n CHASM-queued task-adds numbered from 1.
+func forwardUpdate(t *testing.T, env *testsuite.TestWorkflowEnvironment, n int, rejected *error) {
+	taskAdds := make([]*iface.SignalTaskAddRequest, n)
+	for i := range taskAdds {
+		signal := newTestSignalTaskAddEvent()
+		taskAdds[i] = &signal
+	}
+	env.UpdateWorkflow(iface.UpdateActivateMigration, fmt.Sprintf("%s:%s:%d", iface.UpdateActivateMigration, testPendingToken, n), &testsuite.TestUpdateCallback{
+		OnReject: func(err error) { *rejected = err }, OnAccept: func() {}, OnComplete: func(any, error) {},
+	}, &iface.MigrationTokenRequest{Token: testPendingToken, TaskAdds: taskAdds, FirstTaskAddSeq: 1})
+}
+
+// CHASM forwards the task-adds it queued while migrating with the activation and after it; each applies once.
+func TestCHASMTaskAddsAppliedOnce(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    func(*testing.T) *iface.WorkerControllerInstanceWorkflowArgs
+		sends   []int
+		applied int
+	}{
+		{name: "pending_run", args: func(t *testing.T) *iface.WorkerControllerInstanceWorkflowArgs { return pendingArgs(t, time.Hour) },
+			sends: []int{2, 3, 3}, applied: 3},
+		{name: "after_continue_as_new", args: func(t *testing.T) *iface.WorkerControllerInstanceWorkflowArgs {
+			args := testMigrationArgs(t)
+			args.ActivatedMigrationToken = testPendingToken
+			args.AppliedCHASMTaskAddSeq = 2
+			return args
+		}, sends: []int{3, 3}, applied: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, testWorkflow, handled := newMigrationEnv(t, MigrateToCHASMVersion, newMigrationDC(false, true), &fakeMigrationClient{})
+			var rejected error
+			for i, n := range tc.sends {
+				env.RegisterDelayedCallback(func() { forwardUpdate(t, env, n, &rejected) }, time.Duration(i+1)*time.Millisecond)
+			}
+			env.RegisterDelayedCallback(func() { forceCaNUpdate(t, env) }, time.Second)
+			env.ExecuteWorkflow(testWorkflow, tc.args(t))
+
+			require.NoError(t, rejected)
+			var can *sdkworkflow.ContinueAsNewError
+			require.ErrorAs(t, env.GetWorkflowError(), &can)
+			var next iface.WorkerControllerInstanceWorkflowArgs
+			require.NoError(t, sdk.PreferProtoDataConverter.FromPayloads(can.Input, &next))
+			require.Equal(t, tc.applied, *handled+len(next.State.PendingTaskAddSignals), "each forwarded task-add is handled or queued once")
+			require.EqualValues(t, tc.sends[len(tc.sends)-1], next.AppliedCHASMTaskAddSeq, "the mark is carried across continue-as-new")
+		})
+	}
 }
 
 // CHASM's task can retry an activation after the activated run continued as new.

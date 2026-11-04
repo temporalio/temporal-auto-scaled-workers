@@ -533,8 +533,10 @@ func (d *WorkflowRunner) awaitMigrationActivation(ctx workflow.Context) (bool, e
 		}
 		return nil
 	}
-	if err := workflow.SetUpdateHandlerWithOptions(ctx, iface.UpdateActivateMigration, func(_ workflow.Context, _ *iface.MigrationTokenRequest) error {
+	// Stays registered after activation, so CHASM's later forwards land here too.
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, iface.UpdateActivateMigration, func(_ workflow.Context, req *iface.MigrationTokenRequest) error {
 		activated = true
+		d.applyCHASMTaskAdds(req)
 		return nil
 	}, workflow.UpdateHandlerOptions{Validator: validate}); err != nil {
 		return false, err
@@ -568,13 +570,27 @@ func (d *WorkflowRunner) awaitMigrationActivation(ctx workflow.Context) (bool, e
 	return true, nil
 }
 
+// applyCHASMTaskAdds queues the task-adds CHASM held while migrating, skipping those already applied.
+func (d *WorkflowRunner) applyCHASMTaskAdds(req *iface.MigrationTokenRequest) {
+	if req.FirstTaskAddSeq <= 0 {
+		return
+	}
+	for i, taskAdd := range req.TaskAdds {
+		if seq := req.FirstTaskAddSeq + int64(i); seq > d.AppliedCHASMTaskAddSeq {
+			d.AppliedCHASMTaskAddSeq = seq
+			d.queueTaskAddSignal(taskAdd)
+		}
+	}
+}
+
 // acceptRetriedActivation answers an activation retried after this chain continued as new: CHASM's
 // task may not have seen the first answer, and a rejection would make it resume next to this run.
 func (d *WorkflowRunner) acceptRetriedActivation(ctx workflow.Context) error {
 	if d.ActivatedMigrationToken == "" {
 		return nil
 	}
-	return workflow.SetUpdateHandlerWithOptions(ctx, iface.UpdateActivateMigration, func(_ workflow.Context, _ *iface.MigrationTokenRequest) error {
+	return workflow.SetUpdateHandlerWithOptions(ctx, iface.UpdateActivateMigration, func(_ workflow.Context, req *iface.MigrationTokenRequest) error {
+		d.applyCHASMTaskAdds(req)
 		return nil
 	}, workflow.UpdateHandlerOptions{Validator: func(req *iface.MigrationTokenRequest) error {
 		if req == nil || req.Token != d.ActivatedMigrationToken {
