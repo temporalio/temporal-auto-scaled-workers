@@ -94,9 +94,9 @@ invoke/resize done synchronously on update.
 
 - **Instance limit:** `workercontroller.maxInstances` is enforced only on workflow creation and counts
   workflow WCIs only; CHASM creation is unlimited.
-- **Task-adds during workflow → CHASM:** buffered signals are carried with each activate attempt; only
-  those reaching the workflow after activation and before the run closes are dropped. CHASM polls
-  metrics as soon as it activates, which covers them.
+- **Task-adds during workflow → CHASM:** none are lost. The frozen workflow queues signals and sends
+  the queue with each activate attempt, keeps it if the handover fails, and after activation forwards
+  new ones until none arrive; CHASM applies each once. CHASM also polls metrics as soon as it activates.
 - **Task-adds during CHASM → workflow:** rejected with `ErrMigrationPending` while migrating and
   dropped by the hook. The workflow polls metrics as soon as it activates.
 - **Provider change on a CHASM WCI:** updating an existing CHASM WCI to a provider CHASM doesn't

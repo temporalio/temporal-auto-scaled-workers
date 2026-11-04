@@ -237,6 +237,41 @@ func TestWorkflowStaysWhenActivationRejected(t *testing.T) {
 	require.Len(t, mc.activates, 1)
 }
 
+// Task-adds reaching the run after the committing activation are forwarded before it returns.
+func TestWorkflowForwardsTaskAddsAfterActivation(t *testing.T) {
+	tests := []struct {
+		name        string
+		activateErr []error
+		calls       int
+	}{
+		{name: "activated", calls: 2},
+		{name: "ambiguous_forward", activateErr: []error{nil, errors.New("timeout")}, calls: 3},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := &fakeMigrationClient{activateErr: tc.activateErr}
+			env, _, testWorkflow, handled := newMigrationEnv(t, MigrateToCHASMVersion, newMigrationDC(true, true), mc)
+			signalled := false
+			mc.onActivate = func() {
+				if !signalled {
+					signalled = true
+					signal := newTestSignalTaskAddEvent()
+					env.SignalWorkflow(iface.SignalTaskAdd, &signal)
+				}
+			}
+			env.RegisterDelayedCallback(func() { forceCaNUpdate(t, env) }, time.Millisecond)
+			env.ExecuteWorkflow(testWorkflow, testMigrationArgs(t))
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			require.Len(t, mc.activates, tc.calls, "the task-add is forwarded, retried until definitive")
+			last := mc.activates[len(mc.activates)-1]
+			require.Len(t, last, 1, "each call carries the whole queue")
+			require.Zero(t, *handled)
+		})
+	}
+}
+
 // Task-adds signalled while the handover's local activities run must survive its failure.
 func TestWorkflowKeepsTaskAddsWhenHandoverFails(t *testing.T) {
 	tests := []struct {
