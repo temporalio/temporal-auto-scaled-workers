@@ -103,4 +103,4 @@ invoke/resize done synchronously on update.
   as it activates.
 - **Provider change on a CHASM WCI:** updating an existing CHASM WCI to a provider CHASM doesn't
   support fails; migrate it back first.
-- **Region IDs** are not carried across migration.
+- **Region-scoped WCIs** move to CHASM only where history knows its region; elsewhere they stay workflows.
