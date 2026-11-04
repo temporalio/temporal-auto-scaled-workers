@@ -92,13 +92,15 @@ func (p *modalFunctionComputeProvider) ValidateConfig(ctx context.Context, rc Re
 }
 
 func (p *modalFunctionComputeProvider) validateUncached(ctx context.Context, rc RequestContext, params ModalParams) error {
-	accountID, err := getModalAccountResolver().ResolveAccountID(ctx, rc.NamespaceName)
+	source := getModalSecretSource()
+
+	accountID, err := modalAccountFor(ctx, source, rc.NamespaceName)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
 
 	key := modalGrantKey{accountID: accountID, workspaceID: params.WorkspaceID}
-	creds, err := modalCredentials.refresh(ctx, getModalSecretSource(), key)
+	creds, err := modalCredentials.refresh(ctx, source, key)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}
@@ -146,7 +148,7 @@ func (p *modalFunctionComputeProvider) spawn(
 ) error {
 	source := getModalSecretSource()
 
-	accountID, err := getModalAccountResolver().ResolveAccountID(ctx, rc.NamespaceName)
+	accountID, err := modalAccountFor(ctx, source, rc.NamespaceName)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errWCIOwned, err)
 	}

@@ -912,3 +912,37 @@ func TestSetModalSecretSource_IgnoresNil(t *testing.T) {
 	SetModalSecretSource(nil)
 	assert.Equal(t, ModalSecretSource(src), getModalSecretSource())
 }
+
+// The API key names the workspace by itself, so neither half of the grant lookup applies: a
+// namespace the resolver cannot place is not an error, and a config may omit workspace_id.
+func TestModalInvokeWorker_APIKeyNeedsNoAccountOrWorkspace(t *testing.T) {
+	stubModalSecretSource(t, APIKeyModalSecretSource{})
+	c := &fakeModalClient{}
+	stubModalClient(t, c)
+
+	rc := modalRequestContext()
+	rc.NamespaceName = "no-account-suffix"
+
+	cfg := testModalConfig()
+	delete(cfg, configModalWorkspaceID)
+
+	require.NoError(t, newModalProvider().InvokeWorker(t.Context(), rc, cfg))
+	assert.Equal(t, 1, c.spawns)
+	assert.True(t, c.lastCreds.APIKey)
+	assert.Nil(t, c.lastCreds.OAuth)
+}
+
+func TestModalValidateConfig_APIKeyNeedsNoAccountOrWorkspace(t *testing.T) {
+	stubModalSecretSource(t, APIKeyModalSecretSource{})
+	c := &fakeModalClient{}
+	stubModalClient(t, c)
+
+	rc := modalRequestContext()
+	rc.NamespaceName = "no-account-suffix"
+
+	cfg := testModalConfig()
+	delete(cfg, configModalWorkspaceID)
+
+	require.NoError(t, newModalProvider().ValidateConfig(t.Context(), rc, cfg))
+	assert.Equal(t, 1, c.lookups)
+}

@@ -95,3 +95,13 @@ func (NamespaceSuffixModalAccountResolver) ResolveAccountID(_ context.Context, n
 func DefaultModalAccountResolver() ModalAccountResolver {
 	return UnscopedModalAccountResolver{Account: os.Getenv(envModalAccount)}
 }
+
+// modalAccountFor derives the account that owns the namespace, for sources that resolve
+// credentials per account. One API key serves the whole process, so nothing about the namespace
+// selects anything and a namespace the resolver cannot place is not an error in that mode.
+func modalAccountFor(ctx context.Context, src ModalSecretSource, namespaceName string) (string, error) {
+	if _, ok := src.(APIKeyModalSecretSource); ok {
+		return "", nil
+	}
+	return getModalAccountResolver().ResolveAccountID(ctx, namespaceName)
+}
