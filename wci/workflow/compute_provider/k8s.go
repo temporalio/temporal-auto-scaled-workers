@@ -1,4 +1,4 @@
-//go:build !release
+//go:build computeprovider_k8s && !release
 
 package computeprovider
 
@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	// The full generated clientset substantially increases compiled binary size:
 	// "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/dynamic"
