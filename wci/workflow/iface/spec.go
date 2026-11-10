@@ -49,6 +49,7 @@ type (
 )
 
 const (
+	ComputeProviderTypeAzureFoundry  ComputeProviderType = "azure-foundry"
 	ComputeProviderTypeAWSLambda     ComputeProviderType = "aws-lambda"
 	ComputeProviderTypeAWSAgentCore  ComputeProviderType = "aws-agentcore"
 	ComputeProviderTypeAWSECS        ComputeProviderType = "aws-ecs"
@@ -63,6 +64,7 @@ const (
 )
 
 var validComputeProviderTypes = map[string]ComputeProviderType{
+	string(ComputeProviderTypeAzureFoundry):  ComputeProviderTypeAzureFoundry,
 	string(ComputeProviderTypeAWSLambda):     ComputeProviderTypeAWSLambda,
 	string(ComputeProviderTypeAWSAgentCore):  ComputeProviderTypeAWSAgentCore,
 	string(ComputeProviderTypeAWSECS):        ComputeProviderTypeAWSECS,

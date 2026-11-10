@@ -19,6 +19,7 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 |---|---|---|
 | AWS Lambda | `aws-lambda` | Invoke (one-off) |
 | AWS AgentCore | `aws-agentcore` | Invoke (one-off) |
+| Azure Foundry Managed Agents | `azure-foundry` | Invoke (one-off) |
 | AWS ECS | `aws-ecs` | Worker set (managed scaling) |
 | GCP Cloud Run | `gcp-cloud-run` | Worker set |
 | Kubernetes | `k8s` | Worker set (dev/test only) |
@@ -30,6 +31,28 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 The development-only subprocess provider accepts an optional positive Go duration string as `config.timeout` (for example, `"30m"` or `"1h"`). It defaults to `"1m"`.
 
 Dev/test-only providers are excluded by default; build with `-tags computeprovider_k8s` or `-tags computeprovider_subprocess` to include them.
+
+### Azure Foundry Managed Agents
+
+Configure an already deployed Foundry hosted agent that exposes the HTTP Invocations protocol:
+
+```json
+{
+  "provider_type": "azure-foundry",
+  "config": {
+    "project_endpoint": "https://my-account.services.ai.azure.com/api/projects/my-project",
+    "agent_name": "my-worker"
+  }
+}
+```
+
+Enable `azure-foundry` in `WorkerControllerEnabledComputeProviders` and enable the `no-sync` scaling algorithm. The provider uses Azure's `DefaultAzureCredential` chain in the controller environment (including workload identity, managed identity, environment credentials, or a local Azure CLI login). It requests `https://ai.azure.com/.default`; grant the controller identity Foundry Agent Consumer or equivalent invocation permissions at project scope. No credentials are stored in the compute spec. Public Azure endpoints are supported.
+
+Each scaling action POSTs `{"deploymentName":"…","buildId":"…"}` to the agent's `/endpoint/protocols/invocations?api-version=v1` endpoint without reusing a session ID. The handler should start a Temporal worker for that deployment and promptly return 2xx. Configure the agent's session idle timeout to accommodate the worker lifetime: Foundry manages compute per session and may release it after that timeout.
+
+The provider waits up to five seconds for response headers, then returns best-effort success if the complete request was transmitted and the caller context is still active. Transmission cannot guarantee that the handler started a worker. Connection/TLS failures, incomplete writes, caller cancellation, and explicit non-2xx responses remain errors. The provider does not automatically retry POSTs or follow redirects. Spec validation checks configuration and token acquisition without launching a worker; resource existence and invocation permissions are checked on invocation.
+
+See Microsoft's [Invocations endpoint documentation](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/deploy-hosted-agent-code#invoke-the-agent) and [session compute lifecycle](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/hosted-agents#session-compute-lifecycle).
 
 ## Supported Scaling Algorithms
 
