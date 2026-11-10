@@ -78,8 +78,18 @@ type (
 		State          *WorkerControllerInstanceLocalState `json:"state"`
 	}
 
+	PendingWorkerSetUpdate struct {
+		Compute  ComputeProviderSpec `json:"compute"`
+		Count    int32               `json:"count"`
+		Sequence int64               `json:"sequence"`
+	}
+
 	WorkerControllerInstanceLocalState struct {
-		Spec *WorkerControllerInstanceSpec `json:"spec,omitempty"`
+		CapacitySequence        int64                              `json:"capacity_sequence,omitempty"`
+		PendingWorkerSetUpdates map[string]*PendingWorkerSetUpdate `json:"pending_worker_set_updates,omitempty"`
+		NextCapacityRetryTime   *timestamppb.Timestamp             `json:"next_capacity_retry_time,omitempty"`
+		NextWorkerCloudPollTime *timestamppb.Timestamp             `json:"next_worker_cloud_poll_time,omitempty"`
+		Spec                    *WorkerControllerInstanceSpec      `json:"spec,omitempty"`
 
 		// ScalingStatus contains the state information keyd by the ScalingGroups key
 		ScalingStatus map[string]ScalingAlgorithmStatus `json:"scaling_state"`

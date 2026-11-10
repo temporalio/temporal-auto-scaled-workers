@@ -74,7 +74,11 @@ type (
 		unsafeMaxVersion                 func() int
 		unsafePeriodicValidationInterval func() time.Duration
 
-		cancelTimerTasks workflow.CancelFunc
+		cancelTimerTasks         workflow.CancelFunc
+		capacityRetryCtx         workflow.Context
+		capacityRetryArmed       bool
+		workerCloudPollArmed     bool
+		workerCloudConfigChanged workflow.Channel
 
 		// stateChanged is used to track if the state of the workflow has undergone a local state change since the last signal/update.
 		// This prevents a workflow from continuing-as-new if the state has not changed.
@@ -137,6 +141,12 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 	// This allows us to cancel these tasks when the WCI is deleted.
 	timerCtx, cancelTimerTasks := workflow.WithCancel(ctx)
 	d.cancelTimerTasks = cancelTimerTasks
+	d.capacityRetryCtx = timerCtx
+	d.workerCloudConfigChanged = workflow.NewBufferedChannel(ctx, 1)
+	d.signalHandler.signalSelector.AddReceive(d.workerCloudConfigChanged, func(c workflow.ReceiveChannel, _ bool) {
+		var changed bool
+		c.Receive(ctx, &changed)
+	})
 
 	// make sure we got all fields we want
 	if d.State == nil {
@@ -190,6 +200,19 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 		return err
 	}
 
+	if hasWorkerCloud(d.State.Spec) {
+		now := workflow.Now(ctx)
+		if d.State.NextWorkerCloudPollTime != nil && !d.State.NextWorkerCloudPollTime.AsTime().After(now) {
+			d.pullStatsAndUpdate(ctx)
+			d.State.NextWorkerCloudPollTime = timestamppb.New(workflow.Now(ctx).Add(workerCloudPollInterval(d.State.Spec)))
+		}
+		if len(d.State.PendingWorkerSetUpdates) > 0 && (d.State.NextCapacityRetryTime == nil || !d.State.NextCapacityRetryTime.AsTime().After(now)) {
+			d.deliverPendingCapacity(ctx)
+		}
+		d.armCapacityRetry()
+		d.armWorkerCloudPoll()
+	}
+
 	// Process the signals from the prior run (pre-CaN)
 	d.processPendingTaskAddSignals(ctx)
 
@@ -204,12 +227,20 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 
 	var addStatsPullTimer func(nextPoll time.Duration)
 	addStatsPullTimer = func(nextPoll time.Duration) {
+		if hasWorkerCloud(d.State.Spec) && !workerCloudPollTimer(ctx) {
+			nextPoll = min(nextPoll, workerCloudPollInterval(d.State.Spec))
+			d.State.NextWorkerCloudPollTime = timestamppb.New(workflow.Now(ctx).Add(nextPoll))
+		}
 		timerFuture := workflow.NewTimer(timerCtx, nextPoll)
 		d.signalHandler.signalSelector.AddFuture(timerFuture, func(f workflow.Future) {
 			if err = f.Get(timerCtx, nil); err != nil {
 				d.logger.Debug("Periodic stats timer cancelled, not re-arming", "error", err)
 
 				// Context was cancelled (e.g., continue-as-new). Do not validate or re-arm.
+				return
+			}
+			if hasWorkerCloud(d.State.Spec) && workerCloudPollTimer(ctx) {
+				addStatsPullTimer(maxPollInterval)
 				return
 			}
 			nextPollDuration := d.pullStatsAndUpdate(timerCtx)
@@ -219,7 +250,11 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 			addStatsPullTimer(nextPollDuration)
 		})
 	}
-	addStatsPullTimer(maxPollInterval)
+	initialPoll := maxPollInterval
+	if hasWorkerCloud(d.State.Spec) && !workerCloudPollTimer(ctx) && d.State.NextWorkerCloudPollTime != nil {
+		initialPoll = max(time.Duration(0), d.State.NextWorkerCloudPollTime.AsTime().Sub(workflow.Now(ctx)))
+	}
+	addStatsPullTimer(initialPoll)
 
 	if d.hasMinVersion(PeriodicValidationVersion) {
 		// Read once at run start. Dynamic config changes take effect at the next
@@ -301,7 +336,7 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 		}
 
 		if err := workflow.ExecuteActivity(
-			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
+			workflow.WithActivityOptions(ctx, workerCloudActivityOptions(updatedSpec, ValidateSpecActivityTimeout)),
 			d.a.ValidateSpec,
 			&ValidateSpecRequest{
 				RequestContext: d.requestContext(),
@@ -389,7 +424,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		}
 
 		if err := workflow.ExecuteActivity(
-			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: ValidateSpecActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
+			workflow.WithActivityOptions(ctx, workerCloudActivityOptions(updatedSpec, ValidateSpecActivityTimeout)),
 			d.a.ValidateSpec,
 			&ValidateSpecRequest{
 				RequestContext: d.requestContext(),
@@ -399,18 +434,26 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			d.updateMetric(wcimetrics.UpdateTypeUpdateInstance).recordActivityError(err)
 
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+				if hasWorkerCloud(updatedSpec) && appErr.Type() == "WorkerCloudUnavailable" {
+					return nil, serviceerror.NewUnavailable(appErr.Message())
+				}
 				return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
 			}
 			return nil, err
 		}
 
+		registrationContext := d.requestContext()
+		if hasWorkerCloud(updatedSpec) {
+			d.State.CapacitySequence++
+			registrationContext.CapacitySequence = d.State.CapacitySequence
+		}
 		// we need to scale up each of the groups for a moment to get them to register the task queues
 		var regResp InvokeWorkersToRegisterTaskQueuesResponse
 		if err := workflow.ExecuteActivity(
-			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: RegisterTaskQueuesViaWorkersActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}}),
+			workflow.WithActivityOptions(ctx, workerCloudActivityOptions(updatedSpec, RegisterTaskQueuesViaWorkersActivityTimeout)),
 			d.a.InvokeWorkersToRegisterTaskQueues,
 			&InvokeWorkersToRegisterTaskQueuesRequest{
-				RequestContext:               d.requestContext(),
+				RequestContext:               registrationContext,
 				WorkerControllerInstanceSpec: *updatedSpec,
 				ScalingStatus:                d.State.ScalingStatus,
 			},
@@ -419,6 +462,8 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 				switch appErr.Type() {
+				case "WorkerCloudUnavailable":
+					return nil, serviceerror.NewUnavailable(appErr.Message())
 				case "InvalidArgument":
 					return nil, serviceerror.NewInvalidArgumentf("%s", appErr.Message())
 				case "ResourceExhausted":
@@ -430,12 +475,19 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			return nil, err
 		}
 
+		for key, group := range updatedSpec.ScalingGroupSpecs {
+			if group.Compute.ProviderType == iface.ComputeProviderTypeWorkerCloud {
+				delete(d.State.PendingWorkerSetUpdates, key)
+			}
+		}
 		d.State.ScalingStatus = regResp.UpdatedScalingStatus
 
 		d.State.ValidationStatus = iface.NewValidationStatusSuccess(validationTime)
 		d.signalVersionWorkflow(ctx)
 		d.State.ConflictToken = args.ConflictToken
 		d.State.Spec = updatedSpec
+		d.armWorkerCloudPoll()
+		d.wakeWorkerCloud()
 	}
 
 	d.updateMetric(wcimetrics.UpdateTypeUpdateInstance).recordSuccess()
@@ -453,6 +505,7 @@ func (d *WorkflowRunner) validateDeleteInstance(args *iface.DeleteWorkerControll
 // markDeleted sets the deleteInstance flag to true as well as cancelling the background
 // task context - so that any further tasks will abort on next invocation.
 func (d *WorkflowRunner) markDeleted() {
+	d.wakeWorkerCloud()
 	d.deleteInstance = true
 	if d.hasMinVersion(CancelTimersOnDeleteVersion) {
 		d.cancelTimerTasks()
@@ -540,7 +593,7 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 	).Get(ctx, nil); err != nil {
 		d.operationMetric(wcimetrics.OperationTypeValidateSpec).recordActivityError(err)
 
-		if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+		if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok && appErr.Type() != "WorkerCloudUnavailable" {
 			d.State.ValidationStatus = iface.NewValidationStatusFailed(now, appErr.Message())
 			d.signalVersionWorkflow(ctx)
 			d.logger.Warn("Periodic spec validation failed with spec error", "error", err)
@@ -706,6 +759,13 @@ func (d *WorkflowRunner) handleActions(ctx workflow.Context, actions []scalingal
 				// We are not setting stateChanged to true to avoid unneccessary CaNs here.
 			}
 		case scalingalgorithm.ActionTypeUpdateWorkerSetSize:
+			if spec.Compute.ProviderType == iface.ComputeProviderTypeWorkerCloud {
+				if action.Count == nil || *action.Count < 0 {
+					continue
+				}
+				d.queueCapacityUpdate(ctx, action.ScalingGroupKey, spec.Compute, *action.Count)
+				continue
+			}
 			count := int32(1)
 			if action.Count != nil {
 				if *action.Count < 0 {
@@ -798,6 +858,7 @@ func (d *WorkflowRunner) preUpdateChecks(ctx workflow.Context) error {
 
 func (d *WorkflowRunner) requestContext() RequestContext {
 	return RequestContext{
+		NamespaceID:       d.NamespaceId,
 		NamespaceName:     d.NamespaceName,
 		DeploymentName:    d.DeploymentName,
 		DeploymentBuildID: d.BuildId,

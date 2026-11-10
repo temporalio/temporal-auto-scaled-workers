@@ -54,6 +54,16 @@ var (
 
 // Global settings.
 var (
+	WorkerControllerWorkerCloudAddress = dynamicconfig.NewGlobalStringSetting(
+		"workercontroller.compute_providers.worker_cloud.temporal_address",
+		"127.0.0.1:7233",
+		`Temporal frontend used to invoke the Worker Cloud capacity Nexus endpoint.`,
+	)
+	WorkerControllerWorkerCloudCallTimeout = dynamicconfig.NewGlobalDurationSetting(
+		"workercontroller.compute_providers.worker_cloud.call_timeout",
+		10*time.Second,
+		`Deadline for each Worker Cloud capacity delivery attempt. Pending decisions survive this deadline.`,
+	)
 	WorkerControllerAWSIntermediaryRoles = dynamicconfig.NewGlobalTypedSetting(
 		"workercontroller.compute_providers.aws.intermediary_roles",
 		[][]AWSIAMRoleRequest(nil),

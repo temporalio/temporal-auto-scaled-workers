@@ -22,6 +22,10 @@ type (
 	// specific namespace/deployment (e.g. resolving the GCP impersonation chain).
 	RequestContext struct {
 		NamespaceName     string `json:"namespace_name"`
+		NamespaceID       string `json:"namespace_id,omitempty"`
+		ScalingGroupID    string `json:"scaling_group_id,omitempty"`
+		NexusEndpoint     string `json:"nexus_endpoint,omitempty"`
+		CapacitySequence  int64  `json:"capacity_sequence,omitempty"`
 		DeploymentName    string `json:"deployment_name"`
 		DeploymentBuildID string `json:"deployment_build_id"`
 	}

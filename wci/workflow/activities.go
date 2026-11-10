@@ -215,8 +215,11 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 			recordError(wcimetrics.ErrorTypeInvalidRequest)
 			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
-		if err := provider.ValidateConfig(timeoutCtx, req.RequestContext, config); err != nil {
+		if err := provider.ValidateConfig(timeoutCtx, a.providerContext(req.RequestContext, entry.Compute, key), config); err != nil {
 			recordError(wcimetrics.ErrorTypeInvalidRequest)
+			if entry.Compute.ProviderType == iface.ComputeProviderTypeWorkerCloud {
+				return workerCloudActivityFailure(err)
+			}
 			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
 
@@ -291,7 +294,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 
 		// Skip groups whose task types are all already registered: a worker of that type
 		// has polled before, so the queue exists and any live worker set must not be disturbed.
-		if taskTypesAllRegistered(req.EffectiveTaskTypesForGroup(k), registered) {
+		if v.Compute.ProviderType != iface.ComputeProviderTypeWorkerCloud && taskTypesAllRegistered(req.EffectiveTaskTypesForGroup(k), registered) {
 			logger.Debug("Task queues already registered; skipping worker invocation", "scaling_group_key", k)
 			continue
 		}
@@ -339,8 +342,11 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 					recordError(wcimetrics.ErrorTypeInvalidRequest)
 					return nil, temporal.NewApplicationError(fmt.Sprintf("%s: registration action %q missing count", k, action.Action), "InternalError")
 				}
-				if err := provider.UpdateWorkerSetSize(ctx, req.RequestContext, config, *action.Count); err != nil {
+				if err := provider.UpdateWorkerSetSize(ctx, a.providerContext(req.RequestContext, v.Compute, k), config, *action.Count); err != nil {
 					recordError(wcimetrics.ErrorTypeComputeProviderFailed)
+					if v.Compute.ProviderType == iface.ComputeProviderTypeWorkerCloud {
+						return nil, workerCloudActivityFailure(err)
+					}
 					return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", k, err.Error()), "InvokeWorkerFailed", err)
 				}
 			default:
@@ -425,8 +431,11 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, updateWorkerSetSizeTimeout)
 	defer cancel()
-	if err := provider.UpdateWorkerSetSize(timeoutCtx, req.RequestContext, config, req.UpdatedSize); err != nil {
+	if err := provider.UpdateWorkerSetSize(timeoutCtx, a.providerContext(req.RequestContext, *req.ComputeConfig, req.ScalingGroupID), config, req.UpdatedSize); err != nil {
 		recordError(computeProviderErrorType(err))
+		if req.ComputeConfig.ProviderType == iface.ComputeProviderTypeWorkerCloud {
+			return workerCloudActivityFailure(err)
+		}
 		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
 
@@ -745,4 +754,26 @@ func newActivityRecorders(h sdkclient.MetricsHandler) (
 		emit(wcimetrics.ErrorTypeNone, wcimetrics.SkippedReasonNone)
 	}
 	return
+}
+
+func (a *Activities) providerContext(rc RequestContext, spec iface.ComputeProviderSpec, group string) RequestContext {
+	if spec.ProviderType == iface.ComputeProviderTypeWorkerCloud {
+		rc.NamespaceID = a.namespace.ID().String()
+		rc.NamespaceName = a.namespace.Name().String()
+		rc.ScalingGroupID = group
+		rc.NexusEndpoint = spec.NexusEndpoint
+	}
+	return rc
+}
+
+func workerCloudActivityFailure(err error) error {
+	var provider *computeprovider.ProviderError
+	if stderrors.As(err, &provider) {
+		switch provider.Class {
+		case computeprovider.FailureRejected, computeprovider.FailureNotFound, computeprovider.FailureAccessDenied:
+			return temporal.NewNonRetryableApplicationError(err.Error(), "FailedPrecondition", err)
+		default:
+		}
+	}
+	return temporal.NewApplicationErrorWithCause(err.Error(), "WorkerCloudUnavailable", err)
 }

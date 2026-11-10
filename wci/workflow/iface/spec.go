@@ -48,6 +48,7 @@ type (
 )
 
 const (
+	ComputeProviderTypeWorkerCloud   ComputeProviderType = "worker-cloud"
 	ComputeProviderTypeAWSLambda     ComputeProviderType = "aws-lambda"
 	ComputeProviderTypeAWSAgentCore  ComputeProviderType = "aws-agentcore"
 	ComputeProviderTypeAWSECS        ComputeProviderType = "aws-ecs"
@@ -62,6 +63,7 @@ const (
 )
 
 var validComputeProviderTypes = map[string]ComputeProviderType{
+	string(ComputeProviderTypeWorkerCloud):   ComputeProviderTypeWorkerCloud,
 	string(ComputeProviderTypeAWSLambda):     ComputeProviderTypeAWSLambda,
 	string(ComputeProviderTypeAWSAgentCore):  ComputeProviderTypeAWSAgentCore,
 	string(ComputeProviderTypeAWSECS):        ComputeProviderTypeAWSECS,

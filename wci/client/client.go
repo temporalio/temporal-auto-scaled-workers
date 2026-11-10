@@ -294,8 +294,13 @@ func (d *clientImpl) UpdateWorkerControllerInstance(
 
 	if failure := outcome.GetFailure(); failure != nil {
 		if appFailureInfo := failure.GetApplicationFailureInfo(); appFailureInfo != nil {
-			if appFailureInfo.Type == "InvalidArgument" {
+			switch appFailureInfo.Type {
+			case "InvalidArgument":
 				return nil, serviceerror.NewInvalidArgument(failure.Message)
+			case "Unavailable":
+				return nil, serviceerror.NewUnavailable(failure.Message)
+			case "FailedPrecondition":
+				return nil, serviceerror.NewFailedPrecondition(failure.Message)
 			}
 		}
 		return nil, serviceerror.NewInternal(failure.Message)
