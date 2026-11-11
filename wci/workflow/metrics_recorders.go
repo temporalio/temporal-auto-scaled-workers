@@ -136,7 +136,10 @@ func (p providerScope) recordEvent(name string) {
 }
 
 // recordTargetWorkerCount records the target worker-set size the scaling algorithm
-// requested, once a resize was applied successfully.
+// requested, once a resize was applied successfully. Unlike activity gauges, it isn't
+// cleared when the namespace leaves this cluster; emitting it from the activity would
+// change its tags, which the cloud metrics export depends on. Emit new gauges from
+// activities so ClearGaugeMetrics covers them.
 func (p providerScope) recordTargetWorkerCount(count int32) {
 	p.tagged.Gauge(wcimetrics.TargetWorkerCount.Name()).Update(float64(count))
 }
