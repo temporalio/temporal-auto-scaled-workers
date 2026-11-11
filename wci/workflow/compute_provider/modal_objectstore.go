@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,10 @@ import (
 // hundred bytes and a sealed signing key a few thousand; anything near this is a wrong object or a
 // bucket somebody else is writing to, and either way it should fail rather than be buffered.
 const maxModalObjectBytes = 1 << 20
+
+// errModalObjectNotFound is what a missing object reads as, which for a grant means the account has
+// not connected that workspace, or has disconnected it.
+var errModalObjectNotFound = errors.New("no sealed Modal object")
 
 // ModalStoreConfig tells the Modal compute provider which bucket its region's sealed OAuth
 // material sits in and which KMS key is expected to have sealed it. It is deployment
@@ -115,8 +120,12 @@ const (
 
 // modalObjectReader fetches one object's bytes out of the region's bucket. Which cloud's store
 // that is is settled when the source is built, so nothing above this has to know.
+//
+// Both methods report the object's version -- the ETag on S3, the generation on GCS -- so a cached
+// grant can be checked for a change without reading and unsealing it again.
 type modalObjectReader interface {
-	Read(ctx context.Context, objectKey string) ([]byte, error)
+	Read(ctx context.Context, objectKey string) ([]byte, string, error)
+	Version(ctx context.Context, objectKey string) (string, error)
 	Close() error
 }
 
@@ -189,24 +198,40 @@ func newObjectStoreModalSecretSource(ctx context.Context, cfg ModalStoreConfig) 
 // has not connected has no object under that account's prefix, which is what keeps one account's
 // grant unreachable from another's.
 //
-// Only the refresh token is read per grant, and re-read when Modal rejects the credentials. The
-// signing key is read once for the process.
+// Only the refresh token is read per grant: again when Modal rejects the credentials, and when the
+// cached copy is old enough to check and its version has changed. The signing key is read once for
+// the process.
 func (s *objectStoreModalSecretSource) Credentials(ctx context.Context, accountID, workspaceID string) (*ModalCredentials, error) {
 	jwtKey, err := s.signingKey(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	refreshToken, err := s.refreshToken(ctx, accountID, workspaceID)
+	refreshToken, version, err := s.refreshToken(ctx, accountID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 
-	return &ModalCredentials{OAuth: &ModalOAuthCredentials{
-		ClientID:     s.cfg.OAuthClientID,
-		JWTKey:       jwtKey,
-		RefreshToken: refreshToken,
-	}}, nil
+	return &ModalCredentials{
+		OAuth: &ModalOAuthCredentials{
+			ClientID:     s.cfg.OAuthClientID,
+			JWTKey:       jwtKey,
+			RefreshToken: refreshToken,
+		},
+		version: version,
+	}, nil
+}
+
+// GrantVersion reports the stored grant's object version without reading or unsealing it, so a
+// cached grant can be checked for a change with no KMS call.
+func (s *objectStoreModalSecretSource) GrantVersion(ctx context.Context, accountID, workspaceID string) (string, error) {
+	key, err := modalGrantObjectKey(s.cfg.ObjectPrefix, accountID, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
+	defer cancel()
+	return s.objects.Version(ctx, key)
 }
 
 // signingKey returns WCI's signing key, reading it from the bucket the first time and never again.
@@ -226,7 +251,7 @@ func (s *objectStoreModalSecretSource) signingKey(ctx context.Context) (string, 
 
 	var sealed modalSealedSigningKey
 	key := modalSigningKeyObjectKey(s.cfg.ObjectPrefix)
-	if err := s.readSealed(ctx, key, modalSigningKeyAAD(), &sealed); err != nil {
+	if _, err := s.readSealed(ctx, key, modalSigningKeyAAD(), &sealed); err != nil {
 		return "", fmt.Errorf("failed to read the Modal signing key: %w", err)
 	}
 	if sealed.PEM == "" {
@@ -237,61 +262,63 @@ func (s *objectStoreModalSecretSource) signingKey(ctx context.Context) (string, 
 	return sealed.PEM, nil
 }
 
-func (s *objectStoreModalSecretSource) refreshToken(ctx context.Context, accountID, workspaceID string) (string, error) {
+func (s *objectStoreModalSecretSource) refreshToken(ctx context.Context, accountID, workspaceID string) (string, string, error) {
 	key, err := modalGrantObjectKey(s.cfg.ObjectPrefix, accountID, workspaceID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	var grant modalSealedGrant
-	if err := s.readSealed(ctx, key, modalGrantAAD(accountID, workspaceID), &grant); err != nil {
-		return "", err
+	version, err := s.readSealed(ctx, key, modalGrantAAD(accountID, workspaceID), &grant)
+	if err != nil {
+		return "", "", err
 	}
 
 	// The AAD already binds the ciphertext to these two ids, so this cannot catch a swapped
 	// object. It catches the case AAD cannot: a reader that derived the object path and the AAD
 	// from the same wrong value, which would open cleanly and be the wrong customer's token.
 	if grant.AccountID != accountID || grant.WorkspaceID != workspaceID {
-		return "", fmt.Errorf("the grant at %s is for account %q workspace %q", key, grant.AccountID, grant.WorkspaceID)
+		return "", "", fmt.Errorf("the grant at %s is for account %q workspace %q", key, grant.AccountID, grant.WorkspaceID)
 	}
 	// The grant records which OAuth client it was issued to. A token minted for another client is
 	// not usable with our assertion, and failing here says so rather than leaving Modal to.
 	if grant.ClientID != "" && grant.ClientID != s.cfg.OAuthClientID {
-		return "", fmt.Errorf("the grant at %s was issued to OAuth client %q, not %q", key, grant.ClientID, s.cfg.OAuthClientID)
+		return "", "", fmt.Errorf("the grant at %s was issued to OAuth client %q, not %q", key, grant.ClientID, s.cfg.OAuthClientID)
 	}
 	if grant.RefreshToken == "" {
-		return "", fmt.Errorf("no Modal grant for workspace %q", workspaceID)
+		return "", "", fmt.Errorf("no Modal grant for workspace %q", workspaceID)
 	}
-	return grant.RefreshToken, nil
+	return grant.RefreshToken, version, nil
 }
 
-// readSealed fetches one object, has KMS unwrap its data key and opens the payload into out.
-func (s *objectStoreModalSecretSource) readSealed(ctx context.Context, objectKey string, aad []byte, out any) error {
+// readSealed fetches one object, has KMS unwrap its data key and opens the payload into out. It
+// returns the version of the object it opened.
+func (s *objectStoreModalSecretSource) readSealed(ctx context.Context, objectKey string, aad []byte, out any) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
 	defer cancel()
 
-	body, err := s.objects.Read(ctx, objectKey)
+	body, version, err := s.objects.Read(ctx, objectKey)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	var envelope modalEnvelope
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return fmt.Errorf("the object at %s is not a sealed envelope: %w", objectKey, err)
+		return "", fmt.Errorf("the object at %s is not a sealed envelope: %w", objectKey, err)
 	}
 	if err := checkModalSealingKeyID(s.cfg.SealingKeyID, envelope.KeyID); err != nil {
-		return fmt.Errorf("refusing the object at %s: %w", objectKey, err)
+		return "", fmt.Errorf("refusing the object at %s: %w", objectKey, err)
 	}
 
 	dek, err := s.unwrapper.Unwrap(ctx, envelope.KeyID, envelope.SealedDEK)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if err := openModalEnvelope(dek, envelope, aad, out); err != nil {
-		return fmt.Errorf("failed to open the object at %s: %w", objectKey, err)
+		return "", fmt.Errorf("failed to open the object at %s: %w", objectKey, err)
 	}
-	return nil
+	return version, nil
 }
 
 func (s *objectStoreModalSecretSource) Close() error {
@@ -325,7 +352,7 @@ func newS3ModalObjectReader(ctx context.Context, cfg ModalStoreConfig) (*s3Modal
 	return &s3ModalObjectReader{bucket: cfg.Bucket, client: s3.NewFromConfig(awsCfg)}, nil
 }
 
-func (r *s3ModalObjectReader) Read(ctx context.Context, objectKey string) ([]byte, error) {
+func (r *s3ModalObjectReader) Read(ctx context.Context, objectKey string) ([]byte, string, error) {
 	out, err := r.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(objectKey),
@@ -335,13 +362,33 @@ func (r *s3ModalObjectReader) Read(ctx context.Context, objectKey string) ([]byt
 		// workspace", so it reads as that rather than as a failure to reach S3.
 		var missing *s3types.NoSuchKey
 		if errors.As(err, &missing) {
-			return nil, fmt.Errorf("no sealed Modal object at %s in %s", objectKey, r.bucket)
+			return nil, "", fmt.Errorf("%w at %s in %s", errModalObjectNotFound, objectKey, r.bucket)
 		}
-		return nil, fmt.Errorf("failed to read %s from %s: %w", objectKey, r.bucket, err)
+		return nil, "", fmt.Errorf("failed to read %s from %s: %w", objectKey, r.bucket, err)
 	}
 	defer func() { _ = out.Body.Close() }()
 
-	return readCappedModalObject(out.Body, objectKey, r.bucket)
+	body, err := readCappedModalObject(out.Body, objectKey, r.bucket)
+	if err != nil {
+		return nil, "", err
+	}
+	return body, aws.ToString(out.ETag), nil
+}
+
+func (r *s3ModalObjectReader) Version(ctx context.Context, objectKey string) (string, error) {
+	out, err := r.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(r.bucket),
+		Key:    aws.String(objectKey),
+	})
+	if err != nil {
+		// HEAD has no body to carry NoSuchKey, so a missing object comes back as NotFound.
+		var missing *s3types.NotFound
+		if errors.As(err, &missing) {
+			return "", fmt.Errorf("%w at %s in %s", errModalObjectNotFound, objectKey, r.bucket)
+		}
+		return "", fmt.Errorf("failed to check %s in %s: %w", objectKey, r.bucket, err)
+	}
+	return aws.ToString(out.ETag), nil
 }
 
 func (r *s3ModalObjectReader) Close() error { return nil }
@@ -360,18 +407,37 @@ func newGCSModalObjectReader(ctx context.Context, cfg ModalStoreConfig) (*gcsMod
 	return &gcsModalObjectReader{bucket: cfg.Bucket, client: client}, nil
 }
 
-func (r *gcsModalObjectReader) Read(ctx context.Context, objectKey string) ([]byte, error) {
+func (r *gcsModalObjectReader) Read(ctx context.Context, objectKey string) ([]byte, string, error) {
 	reader, err := r.client.Bucket(r.bucket).Object(objectKey).NewReader(ctx)
 	if err != nil {
-		var apiErr *googleapi.Error
-		if errors.Is(err, gcs.ErrObjectNotExist) || (errors.As(err, &apiErr) && apiErr.Code == 404) {
-			return nil, fmt.Errorf("no sealed Modal object at %s in %s", objectKey, r.bucket)
+		if isGCSNotFound(err) {
+			return nil, "", fmt.Errorf("%w at %s in %s", errModalObjectNotFound, objectKey, r.bucket)
 		}
-		return nil, fmt.Errorf("failed to read %s from %s: %w", objectKey, r.bucket, err)
+		return nil, "", fmt.Errorf("failed to read %s from %s: %w", objectKey, r.bucket, err)
 	}
 	defer func() { _ = reader.Close() }()
 
-	return readCappedModalObject(reader, objectKey, r.bucket)
+	body, err := readCappedModalObject(reader, objectKey, r.bucket)
+	if err != nil {
+		return nil, "", err
+	}
+	return body, strconv.FormatInt(reader.Attrs.Generation, 10), nil
+}
+
+func (r *gcsModalObjectReader) Version(ctx context.Context, objectKey string) (string, error) {
+	attrs, err := r.client.Bucket(r.bucket).Object(objectKey).Attrs(ctx)
+	if err != nil {
+		if isGCSNotFound(err) {
+			return "", fmt.Errorf("%w at %s in %s", errModalObjectNotFound, objectKey, r.bucket)
+		}
+		return "", fmt.Errorf("failed to check %s in %s: %w", objectKey, r.bucket, err)
+	}
+	return strconv.FormatInt(attrs.Generation, 10), nil
+}
+
+func isGCSNotFound(err error) bool {
+	var apiErr *googleapi.Error
+	return errors.Is(err, gcs.ErrObjectNotExist) || (errors.As(err, &apiErr) && apiErr.Code == 404)
 }
 
 func (r *gcsModalObjectReader) Close() error { return r.client.Close() }

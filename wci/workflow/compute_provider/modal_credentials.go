@@ -15,6 +15,10 @@ type (
 	// in play: either an API key the SDK finds for itself, or an OAuth grant
 	// resolved from secret storage.
 	ModalCredentials struct {
+		// version is the stored grant's object version when it was read, which a later check
+		// compares against. Empty when the source cannot report one.
+		version string
+
 		// APIKey leaves the Modal SDK to find its own API key, from
 		// MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml, the way the AWS and
 		// GCP providers leave their SDKs to find their credentials. This is the
@@ -40,6 +44,12 @@ type (
 		Credentials(ctx context.Context, accountID, workspaceID string) (*ModalCredentials, error)
 	}
 
+	// modalVersionedSecretSource can report a stored grant's version without reading the grant
+	// itself, which lets an old cached grant be checked without a KMS call.
+	modalVersionedSecretSource interface {
+		GrantVersion(ctx context.Context, accountID, workspaceID string) (string, error)
+	}
+
 	// modalGrantKey identifies one account's grant on one workspace. The account
 	// half is always server-derived, never read from config.
 	modalGrantKey struct {
@@ -52,6 +62,14 @@ type (
 // budget. It minimizes reads of secret storage.
 var errModalCredentialsExhausted = errors.New("modal credential reloads exhausted; not reading secret storage again until the cooldown elapses")
 
+// modalCredentialMaxAge is how long cached credentials are used before secret storage is checked
+// for a change. Without it a pod keeps the token it first read until Modal rejects it, which misses
+// two changes that never cause a rejection: a reconnect as a different Modal user leaves the old
+// grant live, and a disconnect after one revokes only the new grant. Once Modal detects refresh
+// token reuse, presenting a token superseded by a reconnect more than 24 hours earlier would also
+// revoke the whole grant, so this has to stay well inside that.
+const modalCredentialMaxAge = time.Hour
+
 // modalCredentialEntry is one grant's cached credentials plus the state bounding
 // how often secret storage is consulted for it.
 type modalCredentialEntry struct {
@@ -62,6 +80,8 @@ type modalCredentialEntry struct {
 	mu sync.Mutex
 
 	creds *ModalCredentials
+	// loadedAt is when creds were last read or confirmed current.
+	loadedAt time.Time
 	// digest fingerprints creds so a reload can tell rotated material from the
 	// same material read twice, without keeping a second copy of the secrets.
 	digest string
@@ -75,7 +95,7 @@ type modalCredentialEntry struct {
 // process. Credentials are read from secret storage on a grant's first use and
 // reused by every later invocation, so they never travel through workflow or
 // activity history, and secret storage sees one read per grant rather than one
-// per worker invocation.
+// per worker invocation, plus a version check per grant in use each max age.
 type modalCredentialCache struct {
 	mu      sync.Mutex
 	entries map[modalGrantKey]*modalCredentialEntry
@@ -108,7 +128,8 @@ func (c *modalCredentialCache) entryFor(key modalGrantKey) *modalCredentialEntry
 	return e
 }
 
-// get returns the grant's credentials, reading them from src on first use. The
+// get returns the grant's credentials, reading them from src on first use and
+// checking them again once they are older than modalCredentialMaxAge. The
 // returned digest identifies the material, and is what a later reload is
 // compared against.
 func (c *modalCredentialCache) get(
@@ -122,10 +143,58 @@ func (c *modalCredentialCache) get(
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if e.creds != nil && c.now().Sub(e.loadedAt) >= modalCredentialMaxAge {
+		if err := c.revalidateLocked(ctx, src, e); err != nil {
+			return nil, "", err
+		}
+	}
 	if e.creds != nil {
 		return e.creds, e.digest, nil
 	}
 	return c.loadLocked(ctx, src, e, policy)
+}
+
+// revalidateLocked checks old cached credentials against secret storage. Only a
+// grant in use is checked, because only get calls this. A source that can report
+// versions is asked for one first, and the grant is re-read only when it changed.
+//
+// A grant that is gone is dropped and reported, so a disconnected workspace stops.
+// Any other failure keeps the cached credentials for another full max age: a
+// storage outage should not stop workloads whose grant is still good.
+//
+// The caller must hold e.mu.
+func (c *modalCredentialCache) revalidateLocked(ctx context.Context, src ModalSecretSource, e *modalCredentialEntry) error {
+	now := c.now()
+	if versioned, ok := src.(modalVersionedSecretSource); ok && e.creds.version != "" {
+		version, err := versioned.GrantVersion(ctx, e.grant.accountID, e.grant.workspaceID)
+		switch {
+		case errors.Is(err, errModalObjectNotFound):
+			return c.dropLocked(e, err)
+		case err != nil, version == e.creds.version:
+			e.loadedAt = now
+			return nil
+		}
+	}
+
+	creds, err := loadModalCredentials(ctx, src, e.grant)
+	switch {
+	case errors.Is(err, errModalObjectNotFound):
+		return c.dropLocked(e, err)
+	case err != nil:
+		e.loadedAt = now
+		return nil
+	}
+	e.creds = creds
+	e.digest = modalCredentialDigest(creds)
+	e.loadedAt = now
+	e.consecutiveFailures = 0
+	return nil
+}
+
+func (c *modalCredentialCache) dropLocked(e *modalCredentialEntry, err error) error {
+	e.creds = nil
+	e.digest = ""
+	return fmt.Errorf("the Modal grant for workspace %q is no longer stored: %w", e.grant.workspaceID, err)
 }
 
 // reload re-reads the grant from secret storage after Modal rejected the cached
@@ -183,6 +252,7 @@ func (c *modalCredentialCache) refresh(ctx context.Context, src ModalSecretSourc
 
 	e.creds = creds
 	e.digest = modalCredentialDigest(creds)
+	e.loadedAt = c.now()
 	e.consecutiveFailures = 0
 	e.blockedUntil = time.Time{}
 	return creds, nil
@@ -224,6 +294,7 @@ func (c *modalCredentialCache) loadLocked(
 
 	e.creds = creds
 	e.digest = digest
+	e.loadedAt = now
 	e.consecutiveFailures = 0
 	return creds, digest, nil
 }

@@ -45,12 +45,19 @@ func (u fixtureUnwrapper) Close() error { return nil }
 
 type fixtureObjects map[string][]byte
 
-func (o fixtureObjects) Read(_ context.Context, key string) ([]byte, error) {
+func (o fixtureObjects) Read(_ context.Context, key string) ([]byte, string, error) {
 	body, ok := o[key]
 	if !ok {
-		return nil, errors.New("no sealed Modal object at " + key)
+		return nil, "", errors.New("no sealed Modal object at " + key)
 	}
-	return body, nil
+	return body, "1", nil
+}
+
+func (o fixtureObjects) Version(_ context.Context, key string) (string, error) {
+	if _, ok := o[key]; !ok {
+		return "", errModalObjectNotFound
+	}
+	return "1", nil
 }
 
 func (o fixtureObjects) Close() error { return nil }

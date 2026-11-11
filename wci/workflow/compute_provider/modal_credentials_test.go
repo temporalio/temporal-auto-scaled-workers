@@ -241,3 +241,146 @@ func (s *countingSecretSource) Credentials(ctx context.Context, accountID, works
 	defer s.mu.Unlock()
 	return s.fakeSecretSource.Credentials(ctx, accountID, workspaceID)
 }
+
+// versionedFakeSource reports a version for the grant, as the bucket-backed source does.
+type versionedFakeSource struct {
+	*fakeSecretSource
+	version       string
+	versionErr    error
+	versionChecks int
+}
+
+func (s *versionedFakeSource) Credentials(ctx context.Context, accountID, workspaceID string) (*ModalCredentials, error) {
+	creds, err := s.fakeSecretSource.Credentials(ctx, accountID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	creds.version = s.version
+	return creds, nil
+}
+
+func (s *versionedFakeSource) GrantVersion(context.Context, string, string) (string, error) {
+	s.versionChecks++
+	return s.version, s.versionErr
+}
+
+func TestModalCredentialCache_RevalidatesAfterMaxAge(t *testing.T) {
+	type testCase struct {
+		name string
+		// change is applied to the source between the first read and the check.
+		change     func(*versionedFakeSource)
+		wantToken  string
+		wantErr    error
+		wantReads  int
+		wantChecks int
+	}
+
+	tests := []testCase{
+		{
+			name:       "unchanged_version_keeps_the_cached_grant",
+			change:     func(*versionedFakeSource) {},
+			wantToken:  "rt-original",
+			wantReads:  1,
+			wantChecks: 1,
+		},
+		{
+			name: "changed_version_rereads",
+			change: func(s *versionedFakeSource) {
+				s.version = "2"
+				s.refreshToken = "rt-reconnected"
+			},
+			wantToken:  "rt-reconnected",
+			wantReads:  2,
+			wantChecks: 1,
+		},
+		{
+			name: "removed_grant_is_dropped",
+			change: func(s *versionedFakeSource) {
+				s.versionErr = errModalObjectNotFound
+			},
+			wantErr:    errModalObjectNotFound,
+			wantReads:  1,
+			wantChecks: 1,
+		},
+		{
+			// A storage outage must not stop workloads whose grant is still good.
+			name: "storage_outage_keeps_the_cached_grant",
+			change: func(s *versionedFakeSource) {
+				s.versionErr = errors.New("bucket unavailable")
+			},
+			wantToken:  "rt-original",
+			wantReads:  1,
+			wantChecks: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			c := newTestCache(&now)
+			src := &versionedFakeSource{fakeSecretSource: newFakeSecretSource(), version: "1"}
+			policy := modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Hour}
+
+			_, _, err := c.get(t.Context(), src, testGrant, policy)
+			require.NoError(t, err)
+
+			tt.change(src)
+			now = now.Add(modalCredentialMaxAge)
+			got, _, err := c.get(t.Context(), src, testGrant, policy)
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantToken, got.OAuth.RefreshToken)
+			}
+			assert.Equal(t, tt.wantReads, src.refreshTokenReads)
+			assert.Equal(t, tt.wantChecks, src.versionChecks)
+		})
+	}
+}
+
+func TestModalCredentialCache_ChecksOnlyOncePerMaxAge(t *testing.T) {
+	now := time.Now()
+	c := newTestCache(&now)
+	src := &versionedFakeSource{fakeSecretSource: newFakeSecretSource(), version: "1"}
+	policy := modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Hour}
+
+	_, _, err := c.get(t.Context(), src, testGrant, policy)
+	require.NoError(t, err)
+
+	now = now.Add(modalCredentialMaxAge - time.Minute)
+	_, _, err = c.get(t.Context(), src, testGrant, policy)
+	require.NoError(t, err)
+	assert.Zero(t, src.versionChecks, "younger than the max age, so not checked")
+
+	// A failed check still waits a full max age before the next one, so an outage does not turn
+	// every invocation into a storage call.
+	src.versionErr = errors.New("bucket unavailable")
+	now = now.Add(time.Minute)
+	_, _, err = c.get(t.Context(), src, testGrant, policy)
+	require.NoError(t, err)
+	now = now.Add(modalCredentialMaxAge - time.Minute)
+	_, _, err = c.get(t.Context(), src, testGrant, policy)
+	require.NoError(t, err)
+	assert.Equal(t, 1, src.versionChecks)
+}
+
+// A source that cannot report versions is re-read in full instead.
+func TestModalCredentialCache_RereadsAnUnversionedSourceAfterMaxAge(t *testing.T) {
+	now := time.Now()
+	c := newTestCache(&now)
+	src := newFakeSecretSource()
+	policy := modalCredentialPolicy{reloadLimit: 2, reloadCooldown: time.Hour}
+
+	_, _, err := c.get(t.Context(), src, testGrant, policy)
+	require.NoError(t, err)
+
+	src.refreshToken = "rt-reconnected"
+	now = now.Add(modalCredentialMaxAge)
+	got, _, err := c.get(t.Context(), src, testGrant, policy)
+
+	require.NoError(t, err)
+	assert.Equal(t, "rt-reconnected", got.OAuth.RefreshToken)
+	assert.Equal(t, 2, src.refreshTokenReads)
+}

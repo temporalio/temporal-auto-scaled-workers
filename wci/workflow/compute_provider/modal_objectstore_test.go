@@ -9,6 +9,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
 	"sync/atomic"
 	"testing"
 
@@ -24,8 +26,10 @@ const testModalKeyID = "projects/p/locations/l/keyRings/r/cryptoKeys/sealing/cry
 type sealingFixture struct {
 	key     *rsa.PrivateKey
 	objects map[string][]byte
-	reads   atomic.Int32
-	err     error
+	// versions stands in for the ETag or generation: every seal of a key bumps it.
+	versions map[string]int
+	reads    atomic.Int32
+	err      error
 }
 
 func newSealingFixture(t *testing.T) *sealingFixture {
@@ -34,7 +38,7 @@ func newSealingFixture(t *testing.T) *sealingFixture {
 	// not care about the modulus size.
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
-	return &sealingFixture{key: key, objects: map[string][]byte{}}
+	return &sealingFixture{key: key, objects: map[string][]byte{}, versions: map[string]int{}}
 }
 
 // seal mirrors modaloauth.Seal in saas-control-plane.
@@ -69,18 +73,29 @@ func (f *sealingFixture) seal(t *testing.T, objectKey, keyID string, aad []byte,
 	require.NoError(t, err)
 
 	f.objects[objectKey] = body
+	f.versions[objectKey]++
 }
 
-func (f *sealingFixture) Read(_ context.Context, objectKey string) ([]byte, error) {
+func (f *sealingFixture) Read(_ context.Context, objectKey string) ([]byte, string, error) {
 	f.reads.Add(1)
 	if f.err != nil {
-		return nil, f.err
+		return nil, "", f.err
 	}
 	body, ok := f.objects[objectKey]
 	if !ok {
-		return nil, errors.New("no sealed Modal object at " + objectKey)
+		return nil, "", fmt.Errorf("%w at %s", errModalObjectNotFound, objectKey)
 	}
-	return body, nil
+	return body, strconv.Itoa(f.versions[objectKey]), nil
+}
+
+func (f *sealingFixture) Version(_ context.Context, objectKey string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	if _, ok := f.objects[objectKey]; !ok {
+		return "", fmt.Errorf("%w at %s", errModalObjectNotFound, objectKey)
+	}
+	return strconv.Itoa(f.versions[objectKey]), nil
 }
 
 func (f *sealingFixture) Close() error { return nil }
@@ -267,6 +282,42 @@ func TestObjectStoreModalSecretSource_UnconnectedWorkspace(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no sealed Modal object")
+}
+
+// The cache checks a grant's version rather than re-reading it, so an unchanged grant costs no
+// object read and no KMS call, while a reconnect or a disconnect is still seen.
+func TestObjectStoreModalSecretSource_GrantVersion(t *testing.T) {
+	f := newSealingFixture(t)
+	grant := modalSealedGrant{
+		AccountID:    testModalAccount,
+		WorkspaceID:  testModalWorkspace,
+		RefreshToken: "ak-refresh.as-token",
+		ClientID:     testModalClientID,
+	}
+	sealBoth(t, f, grant)
+	src := sourceFor(f, testModalStoreConfig())
+
+	creds, err := src.Credentials(t.Context(), testModalAccount, testModalWorkspace)
+	require.NoError(t, err)
+	reads := f.reads.Load()
+
+	version, err := src.GrantVersion(t.Context(), testModalAccount, testModalWorkspace)
+	require.NoError(t, err)
+	assert.Equal(t, creds.version, version, "an unchanged grant reports the version it was read at")
+	assert.Equal(t, reads, f.reads.Load(), "checking the version must not read the object")
+
+	grant.RefreshToken = "ak-reconnected"
+	grantKey, err := modalGrantObjectKey("", testModalAccount, testModalWorkspace)
+	require.NoError(t, err)
+	f.seal(t, grantKey, testModalKeyID, modalGrantAAD(testModalAccount, testModalWorkspace), grant)
+
+	version, err = src.GrantVersion(t.Context(), testModalAccount, testModalWorkspace)
+	require.NoError(t, err)
+	assert.NotEqual(t, creds.version, version, "a reconnect changes the version")
+
+	delete(f.objects, grantKey)
+	_, err = src.GrantVersion(t.Context(), testModalAccount, testModalWorkspace)
+	require.ErrorIs(t, err, errModalObjectNotFound, "a disconnect reads as not found")
 }
 
 func TestModalGrantObjectKey(t *testing.T) {
