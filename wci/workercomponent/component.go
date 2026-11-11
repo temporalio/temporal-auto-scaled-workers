@@ -3,12 +3,14 @@ package workercomponent
 import (
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	instancewf "go.temporal.io/auto-scaled-workers/wci/workflow"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	sdkclient "go.temporal.io/sdk/client"
 	sdkworker "go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/sdk"
@@ -20,11 +22,39 @@ type (
 		dynamicConfig    *dynamicconfig.Collection
 		sdkClientFactory sdk.ClientFactory
 		staticConfig     *client.StaticConfig
+		nsRegistry       namespace.Registry
+		clusterMetadata  cluster.Metadata
 	}
 )
 
-func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory, staticConfig *client.StaticConfig) workercommon.PerNSWorkerComponent {
-	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory, staticConfig: staticConfig}
+func NewWCIPerNSWorkerComponent(
+	dc *dynamicconfig.Collection,
+	sdkClientFactory sdk.ClientFactory,
+	staticConfig *client.StaticConfig,
+	nsRegistry namespace.Registry,
+	clusterMetadata cluster.Metadata,
+) workercommon.PerNSWorkerComponent {
+	return &workerComponent{
+		dynamicConfig:    dc,
+		sdkClientFactory: sdkClientFactory,
+		staticConfig:     staticConfig,
+		nsRegistry:       nsRegistry,
+		clusterMetadata:  clusterMetadata,
+	}
+}
+
+// namespaceInactiveInCluster reports whether the namespace is known to be deleted or not active in this cluster, the
+// same check the per-namespace worker manager uses to stop the worker. When that can't be determined it reports
+// false, so gauges are never cleared for a namespace that may still be active here.
+func (s *workerComponent) namespaceInactiveInCluster(id namespace.ID) bool {
+	if s.nsRegistry == nil || s.clusterMetadata == nil {
+		return false
+	}
+	ns, err := s.nsRegistry.GetNamespaceByID(id)
+	if err != nil {
+		return false
+	}
+	return ns.State() == enumspb.NAMESPACE_STATE_DELETED || !ns.ActiveInCluster(s.clusterMetadata.GetCurrentClusterName())
 }
 
 func (s *workerComponent) DedicatedWorkerOptions(ns *namespace.Namespace) *workercommon.PerNSDedicatedWorkerOptions {
@@ -69,5 +99,12 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 	registry.RegisterWorkflowWithOptions(validateWorkflow, workflow.RegisterOptions{Name: iface.WorkerControllerInstanceValidateWorkflowType})
 	registry.RegisterActivity(activities)
 
-	return func() { sdkClient.Close() }
+	return func() {
+		// Clear only when the namespace is inactive in this cluster (failover or deletion). If it's still active, the
+		// worker is restarting on this host or moving to another one; its gauges stay until set again.
+		if s.namespaceInactiveInCluster(ns.ID()) {
+			instancewf.ClearGaugeMetrics(activities)
+		}
+		sdkClient.Close()
+	}
 }
