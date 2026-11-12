@@ -21,7 +21,8 @@ const (
 	WorkerControllerInstanceValidateWorkflowType = "temporal-sys-worker-controller-instance-validate-workflow"
 
 	// Namespace division
-	WorkerControllerInstanceNamespaceDivision = "TemporalWorkerControllerInstance"
+	WorkerControllerInstanceNamespaceDivision        = "TemporalWorkerControllerInstance"
+	WorkerControllerSessionInstanceNamespaceDivision = "TemporalWorkerControllerSessionInstance"
 
 	// Queries
 	QueryDescribeWorkerControllerInstance       = "describe-wci"
@@ -42,6 +43,12 @@ const (
 	ErrInstanceDeleted    = "worker deployment deleted" // returned in the race condition that the deployment is deleted but the workflow is not yet closed.
 	ErrLongHistory        = "errLongHistory"            // update is not accepted until CaN happens. client should retry
 	ErrFailedPrecondition = "FailedPrecondition"
+	// ErrSessionModeNotSupported is returned when a session WCI runs with a workflow version
+	// that predates session mode.
+	ErrSessionModeNotSupported = "SessionModeNotSupported"
+	// ErrSessionInstanceReadOnly is returned for updates that a session WCI does not accept
+	// because its config comes from the parent version WCI.
+	ErrSessionInstanceReadOnly = "SessionInstanceReadOnly"
 
 	// ValidationResult values
 	ValidationResultSuccess ValidationResult = "success"
@@ -76,6 +83,20 @@ type (
 		DeploymentName string                              `json:"deployment_name,omitempty"`
 		BuildId        string                              `json:"build_id,omitempty"`
 		State          *WorkerControllerInstanceLocalState `json:"state"`
+
+		// Session is set only for session WCIs. A nil value means this is a version WCI.
+		// It is carried through continue-as-new together with State.
+		Session *WorkerControllerInstanceSessionArgs `json:"session,omitempty"`
+	}
+
+	// WorkerControllerInstanceSessionArgs identifies the session a session WCI scales. The
+	// worker deployment version (parent version WCI) it takes its compute config from is
+	// WorkerControllerInstanceWorkflowArgs.DeploymentName / BuildId.
+	WorkerControllerInstanceSessionArgs struct {
+		// SessionID is the AgentCore runtime session ID.
+		SessionID string `json:"session_id,omitempty"`
+		// SessionQueue is the session sticky task queue name.
+		SessionQueue string `json:"session_queue,omitempty"`
 	}
 
 	WorkerControllerInstanceLocalState struct {
@@ -96,6 +117,11 @@ type (
 
 		// ValidationStatus holds the result of the last validation.
 		ValidationStatus *ValidationStatus `json:"validation_state,omitempty"`
+
+		// LastNoSyncSignalTime is when the session WCI last processed a no-sync task-add
+		// signal (or started). The session WCI completes once it has been idle for the
+		// configured idle timeout; carried across continue-as-new. Only used by session WCIs.
+		LastNoSyncSignalTime *timestamppb.Timestamp `json:"last_no_sync_signal_time,omitempty"`
 	}
 
 	QueryDescribeWorkerControllerInstanceResponse struct {
@@ -161,6 +187,8 @@ type (
 		DeploymentName string                 `json:"deployment_name,omitempty"`
 		BuildId        string                 `json:"build_id,omitempty"`
 		CreateTime     *timestamppb.Timestamp `json:"create_time,omitempty"`
+		// SessionID is only set for session WCIs.
+		SessionID string `json:"session_id,omitempty"`
 	}
 )
 
@@ -177,6 +205,24 @@ func NewValidationStatusFailed(t time.Time, msg string) *ValidationStatus {
 		Status:             ValidationResultFailed,
 		ErrMessage:         msg,
 	}
+}
+
+func (a *WorkerControllerInstanceWorkflowArgs) IsSession() bool {
+	return a != nil && a.Session != nil
+}
+
+func (s *WorkerControllerInstanceSessionArgs) Validate() error {
+	if s == nil {
+		return errors.New("session args are required")
+	}
+	var errs []error
+	if s.SessionID == "" {
+		errs = append(errs, errors.New("session ID is required"))
+	}
+	if s.SessionQueue == "" {
+		errs = append(errs, errors.New("session queue is required"))
+	}
+	return errors.Join(errs...)
 }
 
 func DecodeWorkerControllerInstanceMemo(memo *commonpb.Memo) (*WorkerControllerInstanceMemo, error) {

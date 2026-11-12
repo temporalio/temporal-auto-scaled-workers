@@ -24,6 +24,10 @@ type (
 		NamespaceName     string `json:"namespace_name"`
 		DeploymentName    string `json:"deployment_name"`
 		DeploymentBuildID string `json:"deployment_build_id"`
+		// SessionID and SessionQueue are set only for session WCIs; version WCIs
+		// leave them empty.
+		SessionID    string `json:"session_id,omitempty"`
+		SessionQueue string `json:"session_queue,omitempty"`
 	}
 
 	ComputeProvider interface {

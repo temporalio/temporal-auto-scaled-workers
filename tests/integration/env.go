@@ -21,6 +21,10 @@ const (
 	testVersionDrainageVisibilityGracePeriod = 1 * time.Second
 )
 
+// Reduce from 24hrs to a test relative value, shot one used to test session instance across idle timeout
+const testSessionIdleTimeout = 2 * time.Minute
+const testSessionShortIdleTimeout = 3 * time.Second
+
 // createWCITestEnv returns a TestEnv backed by the suite-scoped cluster registered via
 // testcore.UseSuiteScopedCluster on the calling top-level test (see TestWCISuite). The worker
 // service is already enabled on suite-scoped clusters, so this lets every WCI scenario share one
@@ -41,5 +45,6 @@ func createWCITestEnv(t *testing.T) *testcore.TestEnv {
 		// decisions (e.g. rate-based's +1 per backlog signal) deterministic in
 		// tests instead of depending on the 500ms batch window.
 		testcore.WithDynamicConfig(client.WorkerControllerMinSignalIntervalNoSyncMatchMilliseconds, 1),
+		testcore.WithDynamicConfig(client.WorkerControllerSessionIdleTimeout, testSessionIdleTimeout),
 	)
 }

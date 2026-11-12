@@ -2,6 +2,7 @@ package client
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -90,4 +91,27 @@ func TestEnabledComputeProviders_NamespaceOverridesCellDefault(t *testing.T) {
 	require.Equal(t, []string{"gcp-cloud-run"}, get("cloud-run-ns"))
 	// A Lambda namespace with no entry inherits the cell-wide value.
 	require.Equal(t, []string{"aws-lambda"}, get("lambda-ns"))
+}
+
+func TestSessionIdleTimeout_KeyAndDefault(t *testing.T) {
+	setting := WorkerControllerSessionIdleTimeout
+	require.Equal(t, "workercontroller.session.idle_timeout", setting.Key().String())
+	require.Equal(t, dynamicconfig.PrecedenceNamespace, setting.Precedence())
+
+	get := SessionIdleTimeoutGetter(dynamicconfig.NewNoopCollection(), "any-ns")
+	require.Equal(t, 24*time.Hour, get())
+}
+
+func TestSessionIdleTimeout_Override(t *testing.T) {
+	setting := WorkerControllerSessionIdleTimeout
+	client := dynamicconfig.StaticClient{
+		setting.Key(): []dynamicconfig.ConstrainedValue{
+			{Constraints: dynamicconfig.Constraints{Namespace: "ns-fast"}, Value: "30s"},
+			{Value: 10 * time.Minute},
+		},
+	}
+	coll := dynamicconfig.NewCollection(client, log.NewNoopLogger())
+
+	require.Equal(t, 30*time.Second, SessionIdleTimeoutGetter(coll, "ns-fast")())
+	require.Equal(t, 10*time.Minute, SessionIdleTimeoutGetter(coll, "ns-other")())
 }

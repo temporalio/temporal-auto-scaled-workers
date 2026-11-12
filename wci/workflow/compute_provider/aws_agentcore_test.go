@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptrace"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	"go.temporal.io/sdk/temporal"
 )
 
 const (
@@ -125,13 +127,132 @@ func TestAWSAgentCoreInvokeWorker_Success(t *testing.T) {
 	assert.Equal(t, testAgentCoreAccountID, aws.ToString(gotAccountID))
 	assert.Equal(t, testAgentCoreEndpointName, aws.ToString(gotQualifier))
 
-	var payload struct {
-		DeploymentName string `json:"deploymentName"`
-		BuildID        string `json:"buildId"`
-	}
+	var payload map[string]any
 	require.NoError(t, json.Unmarshal(gotPayload, &payload))
-	assert.Equal(t, "dep", payload.DeploymentName)
-	assert.Equal(t, "build-1", payload.BuildID)
+	assert.Empty(t, payload)
+}
+
+// assertNoDeploymentVersionKeys checks the payload no longer carries the
+// worker deployment version, which was removed from the AgentCore invoke payload.
+func assertNoDeploymentVersionKeys(t *testing.T, payload []byte) {
+	t.Helper()
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(payload, &m))
+	assert.NotContains(t, m, "deploymentName")
+	assert.NotContains(t, m, "buildId")
+}
+
+// captureAgentCoreInvoke stubs the data client and returns a pointer that receives
+// the InvokeAgentRuntimeInput of the next invoke (nil if the invoke never happens).
+func captureAgentCoreInvoke(t *testing.T) **bedrockagentcore.InvokeAgentRuntimeInput {
+	var got *bedrockagentcore.InvokeAgentRuntimeInput
+	stubAgentCoreDataClient(t, &mockAgentCoreDataClient{
+		invokeFn: func(_ context.Context, params *bedrockagentcore.InvokeAgentRuntimeInput, _ ...func(*bedrockagentcore.Options)) (*bedrockagentcore.InvokeAgentRuntimeOutput, error) {
+			got = params
+			return &bedrockagentcore.InvokeAgentRuntimeOutput{StatusCode: aws.Int32(200)}, nil
+		},
+	})
+	return &got
+}
+
+func testAgentCoreSessionID(n int) string {
+	return strings.Repeat("s", n)
+}
+
+func TestAWSAgentCoreInvokeWorker_NonSession_EmptyPayload(t *testing.T) {
+	got := captureAgentCoreInvoke(t)
+	rc := RequestContext{NamespaceName: "ns", DeploymentName: "dep", DeploymentBuildID: "build-1"}
+
+	require.NoError(t, newAgentCoreProvider().InvokeWorker(t.Context(), rc, ComputeProviderConfig{
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
+	}))
+	require.NotNil(t, *got)
+	// Golden: non-session invokes send an empty object (a payload is required)
+	// and leave RuntimeSessionId for the SDK to generate.
+	assert.Equal(t, `{}`, string((*got).Payload))
+	assert.Equal(t, "application/json", aws.ToString((*got).ContentType))
+	assertNoDeploymentVersionKeys(t, (*got).Payload)
+	assert.Nil(t, (*got).RuntimeSessionId)
+}
+
+func TestAWSAgentCoreInvokeWorker_Session_PayloadAndRuntimeSessionID(t *testing.T) {
+	sessionID := "0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0"
+	cases := []struct {
+		name        string
+		queue       string
+		wantPayload string
+	}{
+		{"with queue", "session-q", `{"sessionId":"` + sessionID + `","sessionQueue":"session-q"}`},
+		// An empty queue is still sent explicitly so the worker sees a session-shaped payload.
+		{"empty queue", "", `{"sessionId":"` + sessionID + `","sessionQueue":""}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := captureAgentCoreInvoke(t)
+			rc := RequestContext{
+				NamespaceName:     "ns",
+				DeploymentName:    "dep",
+				DeploymentBuildID: "build-1",
+				SessionID:         sessionID,
+				SessionQueue:      tc.queue,
+			}
+
+			require.NoError(t, newAgentCoreProvider().InvokeWorker(t.Context(), rc, ComputeProviderConfig{
+				configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
+			}))
+			require.NotNil(t, *got)
+			assert.Equal(t, tc.wantPayload, string((*got).Payload))
+			assertNoDeploymentVersionKeys(t, (*got).Payload)
+			// The session ID is used as-is: no hashing or padding.
+			assert.Equal(t, sessionID, aws.ToString((*got).RuntimeSessionId))
+		})
+	}
+}
+
+func TestAWSAgentCoreInvokeWorker_SessionIDLengthBounds(t *testing.T) {
+	cases := []struct {
+		length  int
+		wantErr bool
+	}{
+		{1, true},
+		{32, true},
+		{33, false},
+		{256, false},
+		{257, true},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("len=%d", tc.length), func(t *testing.T) {
+			got := captureAgentCoreInvoke(t)
+			sessionID := testAgentCoreSessionID(tc.length)
+			rc := RequestContext{DeploymentName: "dep", DeploymentBuildID: "build-1", SessionID: sessionID, SessionQueue: "session-q"}
+
+			err := newAgentCoreProvider().InvokeWorker(t.Context(), rc, ComputeProviderConfig{
+				configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
+			})
+			if !tc.wantErr {
+				require.NoError(t, err)
+				require.NotNil(t, *got)
+				assert.Equal(t, sessionID, aws.ToString((*got).RuntimeSessionId))
+				return
+			}
+
+			require.Error(t, err)
+			assert.Nil(t, *got, "invoke must not be attempted with an out-of-bounds session ID")
+			assert.Contains(t, err.Error(), "outside AgentCore RuntimeSessionId limits")
+
+			var appErr *temporal.ApplicationError
+			require.ErrorAs(t, err, &appErr)
+			assert.True(t, appErr.NonRetryable())
+			assert.Equal(t, errTypeInvalidAgentCoreSessionID, appErr.Type())
+
+			// The session ID comes from the worker (user code), so an out-of-bounds
+			// ID is a customer rejection, not a WCI-owned failure.
+			assert.NotErrorIs(t, err, errWCIOwned)
+			var pErr *ProviderError
+			require.ErrorAs(t, err, &pErr)
+			assert.Equal(t, FailureRejected, pErr.Class)
+		})
+	}
 }
 
 func TestAWSAgentCoreInvokeWorker_Endpoint_ForwardedAsQualifier(t *testing.T) {
