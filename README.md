@@ -34,6 +34,16 @@ The development-only subprocess provider accepts an optional positive Go duratio
 | Algorithm | Type string | Description |
 |---|---|---|
 | No-sync | `no-sync` | Scales up when backlog or arrival rate exceeds thresholds; cools down between invocations |
+| No-sync-session | `no-sync-session` | Scales up on every single no-sync matched task |
+| Rate Based | `rate-based` | Scales up and down with backlog to configured max/min with scaling/cooling controls |
+
+A scaling group with no `scaling` block uses its compute provider's default algorithm:
+
+| Provider | Default algorithm |
+|---|---|
+| `aws-agentcore` | `no-sync-session` |
+| `aws-lambda`, `subprocess` | `no-sync` |
+| `aws-ecs`, `gcp-cloud-run`, `k8s` | `rate-based` |
 
 ## Configuration
 
