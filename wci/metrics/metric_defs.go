@@ -19,7 +19,7 @@ var (
 		metrics.WithDescription("The number of task match events dropped because the request context was canceled."))
 	TaskAddNamespaceNotActiveCount = metrics.NewCounterDef(
 		"worker_controller_instance_task_add_namespace_not_active_count",
-		metrics.WithDescription("The number of task match events dropped because the namespace isn't active in this cluster."))
+		metrics.WithDescription("The number of task match events dropped because the namespace wasn't active in this cluster."))
 
 	BacklogCount = metrics.NewGaugeDef(
 		"worker_controller_instance_backlog_count",
