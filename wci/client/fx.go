@@ -3,9 +3,11 @@ package client
 import (
 	"go.uber.org/fx"
 
+	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/metrics"
+	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/persistence/visibility/manager"
 	"go.temporal.io/server/common/primitives"
 	"go.temporal.io/server/common/resource"
@@ -33,6 +35,8 @@ func ClientProvider(
 	dc *dynamicconfig.Collection,
 	testHooks testhooks.TestHooks,
 	metricsHandler metrics.Handler,
+	namespaceRegistry namespace.Registry,
+	clusterMetadata cluster.Metadata,
 ) fxOut {
 	client := &clientImpl{
 		logger:                       logger,
@@ -47,10 +51,12 @@ func ClientProvider(
 		metricsHandler:               metricsHandler,
 	}
 	taskHookFactory := &taskHookFactoryImpl{
-		logger:         logger,
-		client:         client,
-		dc:             dc,
-		metricsHandler: metricsHandler,
+		logger:          logger,
+		client:          client,
+		dc:              dc,
+		metricsHandler:  metricsHandler,
+		nsRegistry:      namespaceRegistry,
+		clusterMetadata: clusterMetadata,
 	}
 
 	return fxOut{Client: client, TaskHookFactory: taskHookFactory}
