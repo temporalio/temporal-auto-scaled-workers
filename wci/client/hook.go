@@ -10,6 +10,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
+	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/log/tag"
@@ -20,10 +21,12 @@ import (
 
 type (
 	taskHookFactoryImpl struct {
-		logger         log.Logger
-		client         Client
-		dc             *dynamicconfig.Collection
-		metricsHandler metrics.Handler
+		logger          log.Logger
+		client          Client
+		dc              *dynamicconfig.Collection
+		metricsHandler  metrics.Handler
+		nsRegistry      namespace.Registry
+		clusterMetadata cluster.Metadata
 	}
 
 	signalBatchDetails struct {
@@ -37,6 +40,9 @@ type (
 		client         Client
 		dc             *dynamicconfig.Collection
 		metricsHandler metrics.Handler
+
+		nsRegistry      namespace.Registry
+		clusterMetadata cluster.Metadata
 
 		namespace     *namespace.Namespace
 		taskQueueName string
@@ -67,6 +73,9 @@ func (thf *taskHookFactoryImpl) Create(details *hooks.TaskHookFactoryCreateDetai
 		dc:             thf.dc,
 		metricsHandler: thf.metricsHandler,
 
+		nsRegistry:      thf.nsRegistry,
+		clusterMetadata: thf.clusterMetadata,
+
 		namespace:     details.Namespace,
 		taskQueueName: details.Partition.TaskQueue().Name(),
 		taskQueueType: details.Partition.TaskQueue().TaskType(),
@@ -93,6 +102,13 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	// batch signals per WCI in minSignalInterval* time buckets
 	syncMatchBatchCount, noSyncMatchBatchCount, skip := th.batchMatchSignals(ctx, workflowID, event.IsSyncMatch)
 	if skip {
+		return
+	}
+
+	// Standby clusters also get task adds, but the instance workflow can only be signaled where the namespace is active.
+	// Matching's state can be stale during a failover; skipping here may drop a needed signal, but the next poll picks up the backlog.
+	if !th.namespaceActiveHere() {
+		wcimetrics.TaskAddNamespaceNotActiveCount.With(th.metricsHandler).Record(1)
 		return
 	}
 
@@ -128,9 +144,27 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 	}
 
 	if err := th.client.SignalTaskAddEvent(ctx, th.namespace, event.DeploymentVersion, request); err != nil {
+		var notActiveErr *serviceerror.NamespaceNotActive
+		if errors.As(err, &notActiveErr) {
+			// Matching's state can be stale during a failover; history is authoritative and rejects the signal, so treat it as a skip.
+			wcimetrics.TaskAddNamespaceNotActiveCount.With(th.metricsHandler).Record(1)
+			return
+		}
 		th.logger.Error("Failed to signal task add event", tag.Error(err), tag.WorkflowID(workflowID))
 		wcimetrics.TaskMatchErrorCount.With(th.metricsHandler).Record(1)
 	}
+}
+
+// namespaceActiveHere reports whether the namespace is active in this cluster.
+func (th *taskHookImpl) namespaceActiveHere() bool {
+	if th.nsRegistry == nil || th.clusterMetadata == nil {
+		return true
+	}
+	ns, err := th.nsRegistry.GetNamespaceByID(th.namespace.ID())
+	if err != nil {
+		return true
+	}
+	return ns.ActiveInCluster(th.clusterMetadata.GetCurrentClusterName())
 }
 
 func (th *taskHookImpl) batchMatchSignals(_ context.Context, workflowID string, isSyncMatch bool) (int, int, bool) {
