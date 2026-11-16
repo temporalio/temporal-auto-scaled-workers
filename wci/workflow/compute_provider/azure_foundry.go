@@ -23,7 +23,10 @@ import (
 	"go.temporal.io/server/common/dynamicconfig"
 )
 
-const azureFoundryScope = "https://ai.azure.com/.default"
+const (
+	azureFoundryScope      = "https://ai.azure.com/.default"
+	azureFoundryMaxRuntime = 30 * time.Second
+)
 
 var azureFoundryAgentName = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
@@ -42,10 +45,11 @@ func NewAzureFoundryComputeProvider(_ context.Context, _ *dynamicconfig.Collecti
 	if err != nil {
 		return nil, fmt.Errorf("cannot initialize Azure credentials: %w", err)
 	}
+
 	return &azureFoundryComputeProvider{
 		credential: credential,
 		client:     &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		maxRuntime: 5 * time.Second,
+		maxRuntime: azureFoundryMaxRuntime,
 	}, nil
 }
 
