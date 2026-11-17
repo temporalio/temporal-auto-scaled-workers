@@ -18,7 +18,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	go.temporal.io/api v1.64.3
 	go.temporal.io/sdk v1.49.0
-	go.temporal.io/server v1.29.0-135.0.0.20261117035024-cafa4fa08d4f
+	go.temporal.io/server v1.29.0-135.0.0.20261117045712-e8c403620aa6
 	go.uber.org/fx v1.24.0
 	go.uber.org/mock v0.6.0
 	golang.org/x/oauth2 v0.36.0
