@@ -30,6 +30,7 @@ func TestPendingWorkerCloudCapacityRetriesWithoutNewScalingAction(t *testing.T) 
 	}
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
+	env.OnGetVersion("worker-cloud-admission-feedback", sdkworkflow.DefaultVersion, 1).Return(sdkworkflow.DefaultVersion)
 	activities := NewActivities(nil, nil, nil)
 	testWorkflow := func(ctx sdkworkflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
 		return Workflow(ctx, func() WorkerControllerInstanceWorkflowVersion { return CancelTimersOnDeleteVersion }, func() int { return 100 }, func() time.Duration { return periodicValidationInterval }, args, activities)
@@ -58,6 +59,37 @@ func TestWorkerCloudActivityFailurePreservesRetryability(t *testing.T) {
 	require.ErrorAs(t, err, &app)
 	require.False(t, app.NonRetryable())
 	require.Equal(t, "WorkerCloudUnavailable", app.Type())
+}
+
+func TestLimitedAdmissionCompletesDeliveryWithoutChangingScalerDemand(t *testing.T) {
+	payload, err := sdk.PreferProtoDataConverter.ToPayload(map[string]any{"worker_runtime_id": "runtime-1"})
+	require.NoError(t, err)
+	compute := iface.ComputeProviderSpec{ProviderType: iface.ComputeProviderTypeWorkerCloud, NexusEndpoint: "wc-capacity", Config: payload}
+	demand := iface.ScalingAlgorithmStatus{"worker_count": int64(20)}
+	args := &iface.WorkerControllerInstanceWorkflowArgs{NamespaceName: "demo", NamespaceId: "ns-1", DeploymentName: "payments", BuildId: "b1", State: &iface.WorkerControllerInstanceLocalState{
+		Spec: &iface.WorkerControllerInstanceSpec{ScalingGroupSpecs: map[string]iface.ScalingGroupSpec{"workers": {Compute: compute}}}, CapacitySequence: 7,
+		ScalingStatus: map[string]iface.ScalingAlgorithmStatus{"workers": demand}, PendingWorkerSetUpdates: map[string]*iface.PendingWorkerSetUpdate{"workers": {Compute: compute, Count: 20, Sequence: 7}},
+	}}
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	activities := NewActivities(nil, nil, nil)
+	admission := &iface.CapacityAdmission{WorkerRuntimeID: "runtime-1", Sequence: 7, RequestedReplicas: 20, AdmittedReplicas: 4, State: "ADMISSION_STATE_LIMITED"}
+	env.OnActivity(activities.UpdateWorkerCloudCapacity, mock.Anything, mock.Anything).Return(admission, nil).Once()
+	env.RegisterDelayedCallback(func() {
+		result, err := env.QueryWorkflow(iface.QueryDumpWorkerControllerInstanceLocalState)
+		require.NoError(t, err)
+		var state iface.WorkerControllerInstanceLocalState
+		require.NoError(t, result.Get(&state))
+		require.Empty(t, state.PendingWorkerSetUpdates)
+		require.Equal(t, admission, state.CapacityAdmissions["workers"])
+		require.EqualValues(t, 20, state.ScalingStatus["workers"].GetInt64Field("worker_count", 0))
+		env.UpdateWorkflowNoRejection(iface.DeleteWorkerControllerInstance, "done", t, &iface.DeleteWorkerControllerInstanceRequest{})
+	}, time.Second)
+	env.ExecuteWorkflow(func(ctx sdkworkflow.Context) error {
+		return Workflow(ctx, func() WorkerControllerInstanceWorkflowVersion { return CancelTimersOnDeleteVersion }, func() int { return 100 }, func() time.Duration { return periodicValidationInterval }, args, activities)
+	})
+	require.NoError(t, env.GetWorkflowError())
+	env.AssertExpectations(t)
 }
 
 func TestWorkerCloudBootstrapRetriesTransientRegistration(t *testing.T) {

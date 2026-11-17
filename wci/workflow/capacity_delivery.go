@@ -79,12 +79,27 @@ func (d *WorkflowRunner) deliverPendingCapacity(ctx workflow.Context) {
 		rc.NexusEndpoint = pending.Compute.NexusEndpoint
 		rc.CapacitySequence = pending.Sequence
 		activityCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: UpdateWorkerSetSizeActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}})
-		err := workflow.ExecuteActivity(activityCtx, d.a.UpdateWorkerSetSize, UpdateWorkerSetSizeActivityRequest{RequestContext: rc, ComputeConfig: &pending.Compute, UpdatedSize: pending.Count}).Get(ctx, nil)
+		var admission *iface.CapacityAdmission
+		var err error
+		request := UpdateWorkerSetSizeActivityRequest{RequestContext: rc, ComputeConfig: &pending.Compute, UpdatedSize: pending.Count}
+		if workflow.GetVersion(ctx, "worker-cloud-admission-feedback", workflow.DefaultVersion, 1) == 1 {
+			err = workflow.ExecuteActivity(activityCtx, d.a.UpdateWorkerCloudCapacity, request).Get(ctx, &admission)
+		} else {
+			err = workflow.ExecuteActivity(activityCtx, d.a.UpdateWorkerSetSize, request).Get(ctx, nil)
+		}
 		latest := d.State.PendingWorkerSetUpdates[key]
 		if latest == nil || latest.Sequence != pending.Sequence {
 			continue
 		}
 		if err == nil {
+			if admission != nil {
+				if d.State.CapacityAdmissions == nil {
+					d.State.CapacityAdmissions = map[string]*iface.CapacityAdmission{}
+				}
+				d.State.CapacityAdmissions[key] = admission
+			} else {
+				delete(d.State.CapacityAdmissions, key)
+			}
 			delete(d.State.PendingWorkerSetUpdates, key)
 			continue
 		}

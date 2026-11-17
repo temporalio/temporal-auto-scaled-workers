@@ -171,8 +171,9 @@ func (d *WorkflowRunner) run(ctx workflow.Context) error {
 			return nil, errors.New(iface.ErrInstanceDeleted)
 		}
 		return &iface.QueryDescribeWorkerControllerInstanceResponse{
-			DeploymentName:    d.DeploymentName,
-			DeploymentBuildID: d.BuildId,
+			CapacityAdmissions: d.State.CapacityAdmissions,
+			DeploymentName:     d.DeploymentName,
+			DeploymentBuildID:  d.BuildId,
 
 			Spec: d.State.Spec,
 
@@ -481,6 +482,9 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 			}
 		}
 		d.State.ScalingStatus = regResp.UpdatedScalingStatus
+		if regResp.CapacityAdmissions != nil {
+			d.State.CapacityAdmissions = regResp.CapacityAdmissions
+		}
 
 		d.State.ValidationStatus = iface.NewValidationStatusSuccess(validationTime)
 		d.signalVersionWorkflow(ctx)

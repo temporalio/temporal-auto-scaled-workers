@@ -8,6 +8,8 @@ import (
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
@@ -27,10 +29,16 @@ func (c *capacityNexusClient) ExecuteOperation(ctx context.Context, op any, inpu
 
 type capacityNexusHandle struct {
 	sdkclient.NexusOperationHandle
-	err error
+	err    error
+	result *structpb.Struct
 }
 
-func (h *capacityNexusHandle) Get(context.Context, any) error { return h.err }
+func (h *capacityNexusHandle) Get(_ context.Context, out any) error {
+	if h.result != nil {
+		proto.Merge(out.(*structpb.Struct), h.result)
+	}
+	return h.err
+}
 
 func TestWorkerCloudAbsoluteCapacityIdentity(t *testing.T) {
 	rc := RequestContext{NamespaceName: "demo", NamespaceID: "namespace-id", DeploymentName: "payments", DeploymentBuildID: "b1", ScalingGroupID: "workers", NexusEndpoint: "wc-capacity", CapacitySequence: 7}
@@ -95,4 +103,27 @@ func TestWorkerCloudFailureClassification(t *testing.T) {
 			require.Equal(t, tc.class, failure.Class)
 		})
 	}
+}
+
+func TestWorkerCloudAdmissionFeedback(t *testing.T) {
+	rc := RequestContext{NamespaceName: "demo", NamespaceID: "namespace-id", DeploymentName: "payments", DeploymentBuildID: "b1", ScalingGroupID: "workers", NexusEndpoint: "wc-capacity", CapacitySequence: 7}
+	result, err := structpb.NewStruct(map[string]any{"capacityDecision": map[string]any{"workerRuntimeId": "runtime-1", "sequence": "7", "requestedReplicas": 20, "admittedReplicas": 4, "admissionState": "ADMISSION_STATE_LIMITED", "limitingReasons": []any{"CAPACITY_LIMIT_REASON_ACCOUNT_QUOTA"}}})
+	require.NoError(t, err)
+	c := mocks.NewClient(t)
+	c.On("Close").Return()
+	c.On("NewNexusClient", mock.Anything).Return(&capacityNexusClient{execute: func(context.Context, any, any, sdkclient.StartNexusOperationOptions) (sdkclient.NexusOperationHandle, error) {
+		return &capacityNexusHandle{result: result}, nil
+	}}, nil)
+	p := &workerCloudComputeProvider{dial: func(context.Context, sdkclient.Options) (sdkclient.Client, error) { return c, nil }}
+	admission, err := p.UpdateWorkerSetSizeWithAdmission(t.Context(), rc, ComputeProviderConfig{"worker_runtime_id": "runtime-1"}, 20)
+	require.NoError(t, err)
+	require.EqualValues(t, 20, admission.RequestedReplicas)
+	require.EqualValues(t, 4, admission.AdmittedReplicas)
+	require.Equal(t, "ADMISSION_STATE_LIMITED", admission.State)
+	require.Equal(t, []string{"CAPACITY_LIMIT_REASON_ACCOUNT_QUOTA"}, admission.LimitingReasons)
+}
+
+func TestWorkerCloudAdmissionRejectsMismatchedIdentity(t *testing.T) {
+	_, err := decodeWorkerCloudAdmission(map[string]any{"capacity_decision": map[string]any{"worker_runtime_id": "other", "sequence": float64(7), "requested_replicas": float64(20), "admitted_replicas": float64(4)}}, workerCloudBinding{WorkerRuntimeID: "runtime-1"}, 7, 20)
+	require.ErrorContains(t, err, "inconsistent capacity feedback")
 }

@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nexus-rpc/sdk-go/nexus"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
@@ -96,7 +98,72 @@ func (p *workerCloudComputeProvider) UpdateWorkerSetSize(ctx context.Context, rc
 	return p.execute(ctx, rc, "SetWorkerRuntimeSize", workerCloudResize{workerCloudBinding: binding, RequestID: id, RequestedReplicas: size, Sequence: rc.CapacitySequence}, id)
 }
 
+// CapacityAdmissionProvider is optional so other compute providers stay unchanged.
+type CapacityAdmissionProvider interface {
+	UpdateWorkerSetSizeWithAdmission(context.Context, RequestContext, ComputeProviderConfig, int32) (*iface.CapacityAdmission, error)
+}
+
+func (p *workerCloudComputeProvider) UpdateWorkerSetSizeWithAdmission(ctx context.Context, rc RequestContext, config ComputeProviderConfig, size int32) (*iface.CapacityAdmission, error) {
+	binding, err := workerCloudConfig(rc, config)
+	if err != nil {
+		return nil, err
+	}
+	if size < 0 || rc.CapacitySequence <= 0 {
+		return nil, NewProviderError(FailureRejected, errors.New("worker cloud requires a nonnegative count and a positive decision sequence"))
+	}
+	id := workerCloudRequestID(binding, rc.CapacitySequence)
+	var result structpb.Struct
+	err = p.executeResult(ctx, rc, "SetWorkerRuntimeSize", workerCloudResize{workerCloudBinding: binding, RequestID: id, RequestedReplicas: size, Sequence: rc.CapacitySequence}, id, &result)
+	if err != nil {
+		return nil, err
+	}
+	return decodeWorkerCloudAdmission(result.AsMap(), binding, rc.CapacitySequence, size)
+}
+
+func decodeWorkerCloudAdmission(result map[string]any, binding workerCloudBinding, sequence int64, size int32) (*iface.CapacityAdmission, error) {
+	field := func(m map[string]any, snake, camel string) any {
+		v, ok := m[snake]
+		if !ok {
+			return m[camel]
+		}
+		return v
+	}
+	d, ok := field(result, "capacity_decision", "capacityDecision").(map[string]any)
+	if !ok {
+		return nil, nil
+	} // Older WC servers return no structured admission feedback.
+	number := func(snake, camel string) (int64, error) {
+		return strconv.ParseInt(fmt.Sprint(field(d, snake, camel)), 10, 64)
+	}
+	requested, e1 := number("requested_replicas", "requestedReplicas")
+	admitted, e2 := number("admitted_replicas", "admittedReplicas")
+	seq, e3 := number("sequence", "sequence")
+	id, _ := field(d, "worker_runtime_id", "workerRuntimeId").(string)
+	if e1 != nil || e2 != nil || e3 != nil || requested != int64(size) || admitted < 0 || admitted > requested || seq != sequence || id != binding.WorkerRuntimeID {
+		return nil, NewProviderError(FailureUnavailable, errors.New("worker cloud returned inconsistent capacity feedback"))
+	}
+	state, _ := field(d, "admission_state", "admissionState").(string)
+	if state == "" {
+		if admitted < requested {
+			state = "ADMISSION_STATE_LIMITED"
+		} else {
+			state = "ADMISSION_STATE_ADMITTED"
+		}
+	}
+	out := &iface.CapacityAdmission{WorkerRuntimeID: id, Sequence: seq, RequestedReplicas: int32(requested), AdmittedReplicas: int32(admitted), State: state}
+	if reasons, ok := field(d, "limiting_reasons", "limitingReasons").([]any); ok {
+		for _, reason := range reasons {
+			out.LimitingReasons = append(out.LimitingReasons, fmt.Sprint(reason))
+		}
+	}
+	return out, nil
+}
+
 func (p *workerCloudComputeProvider) execute(ctx context.Context, rc RequestContext, operation string, request any, id string) error {
+	return p.executeResult(ctx, rc, operation, request, id, nil)
+}
+
+func (p *workerCloudComputeProvider) executeResult(ctx context.Context, rc RequestContext, operation string, request any, id string, result any) error {
 	if p.callTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, p.callTimeout)
@@ -122,7 +189,7 @@ func (p *workerCloudComputeProvider) execute(ctx context.Context, rc RequestCont
 		err = nil
 	}
 	if err == nil {
-		err = h.Get(ctx, nil)
+		err = h.Get(ctx, result)
 	}
 	return workerCloudFailure(err)
 }

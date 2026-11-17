@@ -85,6 +85,8 @@ type (
 	}
 
 	WorkerControllerInstanceLocalState struct {
+		// CapacityAdmissions are acceptance snapshots, separate from scaler demand.
+		CapacityAdmissions      map[string]*CapacityAdmission      `json:"capacity_admissions,omitempty"`
 		CapacitySequence        int64                              `json:"capacity_sequence,omitempty"`
 		PendingWorkerSetUpdates map[string]*PendingWorkerSetUpdate `json:"pending_worker_set_updates,omitempty"`
 		NextCapacityRetryTime   *timestamppb.Timestamp             `json:"next_capacity_retry_time,omitempty"`
@@ -105,9 +107,10 @@ type (
 	}
 
 	QueryDescribeWorkerControllerInstanceResponse struct {
-		DeploymentName    string                 `json:"deployment_name,omitempty"`
-		DeploymentBuildID string                 `json:"deployment_build_id,omitempty"`
-		CreateTime        *timestamppb.Timestamp `json:"create_time,omitempty"`
+		CapacityAdmissions map[string]*CapacityAdmission `json:"capacity_admissions,omitempty"`
+		DeploymentName     string                        `json:"deployment_name,omitempty"`
+		DeploymentBuildID  string                        `json:"deployment_build_id,omitempty"`
+		CreateTime         *timestamppb.Timestamp        `json:"create_time,omitempty"`
 
 		Spec *WorkerControllerInstanceSpec `json:"spec,omitempty"`
 

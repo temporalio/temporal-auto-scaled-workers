@@ -126,6 +126,7 @@ type (
 	}
 
 	InvokeWorkersToRegisterTaskQueuesResponse struct {
+		CapacityAdmissions map[string]*iface.CapacityAdmission `json:"capacity_admissions,omitempty"`
 		// UpdatedScalingStatus is the complete next-state scaling status for every group in
 		// the spec: resized groups carry their reconciled count, skipped (already-registered)
 		// groups carry their prior status forward. The workflow assigns it wholesale.
@@ -283,6 +284,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 	}
 
 	updatedScalingStatus := map[string]iface.ScalingAlgorithmStatus{}
+	admissions := map[string]*iface.CapacityAdmission{}
 
 	for k, v := range req.ScalingGroupSpecs {
 		// Errors here are attributable to this specific scaling group's provider.
@@ -342,7 +344,13 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 					recordError(wcimetrics.ErrorTypeInvalidRequest)
 					return nil, temporal.NewApplicationError(fmt.Sprintf("%s: registration action %q missing count", k, action.Action), "InternalError")
 				}
-				if err := provider.UpdateWorkerSetSize(ctx, a.providerContext(req.RequestContext, v.Compute, k), config, *action.Count); err != nil {
+				var updateErr error
+				if feedback, ok := provider.(computeprovider.CapacityAdmissionProvider); ok {
+					admissions[k], updateErr = feedback.UpdateWorkerSetSizeWithAdmission(ctx, a.providerContext(req.RequestContext, v.Compute, k), config, *action.Count)
+				} else {
+					updateErr = provider.UpdateWorkerSetSize(ctx, a.providerContext(req.RequestContext, v.Compute, k), config, *action.Count)
+				}
+				if err := updateErr; err != nil {
 					recordError(wcimetrics.ErrorTypeComputeProviderFailed)
 					if v.Compute.ProviderType == iface.ComputeProviderTypeWorkerCloud {
 						return nil, workerCloudActivityFailure(err)
@@ -361,7 +369,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 	}
 
 	recordSuccess()
-	return &InvokeWorkersToRegisterTaskQueuesResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
+	return &InvokeWorkersToRegisterTaskQueuesResponse{UpdatedScalingStatus: updatedScalingStatus, CapacityAdmissions: admissions}, nil
 }
 
 func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivityRequest) error {
@@ -403,8 +411,17 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 }
 
 func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerSetSizeActivityRequest) error {
+	_, err := a.updateWorkerSetSize(ctx, req, false)
+	return err
+}
+
+func (a *Activities) UpdateWorkerCloudCapacity(ctx context.Context, req *UpdateWorkerSetSizeActivityRequest) (*iface.CapacityAdmission, error) {
+	return a.updateWorkerSetSize(ctx, req, true)
+}
+
+func (a *Activities) updateWorkerSetSize(ctx context.Context, req *UpdateWorkerSetSizeActivityRequest, feedback bool) (*iface.CapacityAdmission, error) {
 	if req == nil || req.ComputeConfig == nil {
-		return errors.Errorf("Invalid activity request")
+		return nil, errors.Errorf("Invalid activity request")
 	}
 
 	logger := activity.GetLogger(ctx)
@@ -414,11 +431,11 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.namespace.Name().String(), a.dc)
 	if err != nil {
 		recordError(wcimetrics.ErrorTypeComputeProviderFailed)
-		return err
+		return nil, err
 	}
 	if provider == nil {
 		recordError(wcimetrics.ErrorTypeComputeProviderNotEnabled)
-		return errors.Errorf("Could not instantiate compute provider with type '%s'", req.ComputeConfig.ProviderType)
+		return nil, errors.Errorf("Could not instantiate compute provider with type '%s'", req.ComputeConfig.ProviderType)
 	}
 
 	logger.Debug("Instantiated compute provider", "compute_provider_type", req.ComputeConfig.ProviderType)
@@ -426,21 +443,27 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 	config := map[string]any{}
 	if err := sdk.PreferProtoDataConverter.FromPayload(req.ComputeConfig.Config, &config); err != nil {
 		recordError(wcimetrics.ErrorTypeInvalidRequest)
-		return temporal.NewApplicationErrorWithCause(err.Error(), "InvalidArgument", err)
+		return nil, temporal.NewApplicationErrorWithCause(err.Error(), "InvalidArgument", err)
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, updateWorkerSetSizeTimeout)
 	defer cancel()
-	if err := provider.UpdateWorkerSetSize(timeoutCtx, a.providerContext(req.RequestContext, *req.ComputeConfig, req.ScalingGroupID), config, req.UpdatedSize); err != nil {
+	var admission *iface.CapacityAdmission
+	if p, ok := provider.(computeprovider.CapacityAdmissionProvider); feedback && ok {
+		admission, err = p.UpdateWorkerSetSizeWithAdmission(timeoutCtx, a.providerContext(req.RequestContext, *req.ComputeConfig, req.ScalingGroupID), config, req.UpdatedSize)
+	} else {
+		err = provider.UpdateWorkerSetSize(timeoutCtx, a.providerContext(req.RequestContext, *req.ComputeConfig, req.ScalingGroupID), config, req.UpdatedSize)
+	}
+	if err != nil {
 		recordError(computeProviderErrorType(err))
 		if req.ComputeConfig.ProviderType == iface.ComputeProviderTypeWorkerCloud {
-			return workerCloudActivityFailure(err)
+			return nil, workerCloudActivityFailure(err)
 		}
-		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
+		return nil, temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
 
 	recordSuccess()
-	return nil
+	return admission, nil
 }
 
 func (a *Activities) HandleDeferredScalingDecision(ctx context.Context, req HandleDeferredScalingDecisionActivityRequest) (*HandleDeferredScalingDecisionActivityResponse, error) {
@@ -597,7 +620,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 		}, nil
 	}
 
-	metricsSnapshot, err := a.pullScalingMetricsSnapshot(ctx, req.NamespaceName, req.DeploymentName, req.DeploymentBuildID)
+	metricsSnapshot, registered, err := a.pullScalingMetricsSnapshotAndQueues(ctx, req.NamespaceName, req.DeploymentName, req.DeploymentBuildID)
 	if err != nil {
 		recordError(wcimetrics.ErrorTypeDescribeWorkerDeploymentVersionFailed)
 		return nil, temporal.NewApplicationErrorWithCause(err.Error(), "PullScalingMetricsSnapshotFailed", err)
@@ -623,6 +646,13 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	for key, entry := range req.Spec.ScalingGroupSpecs {
 		scalingStatus := req.ScalingStatus[key]
 		scalingGroupEffectiveTaskTypes := req.Spec.EffectiveTaskTypesForGroup(key)
+		// Quota may delay the first worker. Empty metrics must not cancel its
+		// bootstrap request before it can register the version's task types.
+		if entry.Compute.ProviderType == iface.ComputeProviderTypeWorkerCloud && (len(registered) == 0 || len(scalingGroupEffectiveTaskTypes) > 0 && !taskTypesAllRegistered(scalingGroupEffectiveTaskTypes, registered)) {
+			updatedScalingStatus[key] = scalingStatus
+			nextPoll = min(nextPoll, workerCloudPollInterval(req.Spec))
+			continue
+		}
 
 		scalingMetricsSnapshot := filterScalingMetricsSnapshotByTaskTypes(metricsSnapshot, scalingGroupEffectiveTaskTypes)
 		if scalingMetricsSnapshot == nil {

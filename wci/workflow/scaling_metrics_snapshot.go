@@ -14,6 +14,11 @@ import (
 )
 
 func (a *Activities) pullScalingMetricsSnapshot(ctx context.Context, namespaceName string, deploymentName string, deploymentBuildID string) (*scalingalgorithm.ScalingMetricsSnapshot, error) {
+	snapshot, _, err := a.pullScalingMetricsSnapshotAndQueues(ctx, namespaceName, deploymentName, deploymentBuildID)
+	return snapshot, err
+}
+
+func (a *Activities) pullScalingMetricsSnapshotAndQueues(ctx context.Context, namespaceName string, deploymentName string, deploymentBuildID string) (*scalingalgorithm.ScalingMetricsSnapshot, map[enumspb.TaskQueueType]struct{}, error) {
 	logger := activity.GetLogger(ctx)
 
 	deploymentVersionDetails, err := a.workflowserviceClient.DescribeWorkerDeploymentVersion(ctx, &workflowservice.DescribeWorkerDeploymentVersionRequest{
@@ -25,10 +30,10 @@ func (a *Activities) pullScalingMetricsSnapshot(ctx context.Context, namespaceNa
 		ReportTaskQueueStats: true,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if deploymentVersionDetails == nil {
-		return nil, fmt.Errorf("did not receive details in the describe response")
+		return nil, nil, fmt.Errorf("did not receive details in the describe response")
 	}
 
 	metricsSnapshot := scalingalgorithm.ScalingMetricsSnapshot{
@@ -39,8 +44,13 @@ func (a *Activities) pullScalingMetricsSnapshot(ctx context.Context, namespaceNa
 	taskQueueCount := 0
 	const taskQueueSampleMax = 3
 	taskQueueSample := []string{}
+	registered := map[enumspb.TaskQueueType]struct{}{}
 	for _, versionedTaskQueue := range deploymentVersionDetails.VersionTaskQueues {
-		if versionedTaskQueue == nil || versionedTaskQueue.Stats == nil {
+		if versionedTaskQueue == nil {
+			continue
+		}
+		registered[versionedTaskQueue.Type] = struct{}{}
+		if versionedTaskQueue.Stats == nil {
 			continue
 		}
 
@@ -82,7 +92,7 @@ func (a *Activities) pullScalingMetricsSnapshot(ctx context.Context, namespaceNa
 		"task_queue_sample", taskQueueSample,
 	)
 
-	return &metricsSnapshot, nil
+	return &metricsSnapshot, registered, nil
 }
 
 func filterScalingMetricsSnapshotByTaskTypes(metricsSnapshot *scalingalgorithm.ScalingMetricsSnapshot, taskTypes []enumspb.TaskQueueType) *scalingalgorithm.ScalingMetricsSnapshot {
