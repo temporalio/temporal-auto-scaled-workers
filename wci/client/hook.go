@@ -44,9 +44,11 @@ type (
 		nsRegistry      namespace.Registry
 		clusterMetadata cluster.Metadata
 
-		namespace     *namespace.Namespace
-		taskQueueName string
-		taskQueueType enumspb.TaskQueueType
+		namespace       *namespace.Namespace
+		taskQueueName   string
+		taskQueueType   enumspb.TaskQueueType
+		isSticky        bool
+		stickyQueueName string
 
 		lastSignalMu      sync.Mutex
 		lastSignalDetails map[string]*signalBatchDetails
@@ -59,12 +61,27 @@ var (
 )
 
 func (thf *taskHookFactoryImpl) Create(details *hooks.TaskHookFactoryCreateDetails) hooks.TaskHook {
-	if details == nil || details.Namespace == nil || details.Partition.Kind() == enumspb.TASK_QUEUE_KIND_STICKY {
+	if details == nil || details.Namespace == nil || details.Partition == nil {
 		return nil
 	}
 
 	if !WorkerControllerEnabled.Get(thf.dc)(details.Namespace.Name().String()) {
 		return nil
+	}
+
+	isSticky := details.Partition.Kind() == enumspb.TASK_QUEUE_KIND_STICKY
+	var stickyQueueName string
+	if isSticky {
+		// Session WCIs are opt-in per namespace; with the flag off sticky partitions get no hook, as before.
+		if !WorkerControllerSessionEnabled.Get(thf.dc)(details.Namespace.Name().String()) {
+			return nil
+		}
+		// hooks.TaskQueuePartition doesn't expose the sticky name; *tqid.StickyPartition does.
+		sp, ok := details.Partition.(interface{ StickyName() string })
+		if !ok || sp.StickyName() == "" {
+			return nil
+		}
+		stickyQueueName = sp.StickyName()
 	}
 
 	return &taskHookImpl{
@@ -79,6 +96,9 @@ func (thf *taskHookFactoryImpl) Create(details *hooks.TaskHookFactoryCreateDetai
 		namespace:     details.Namespace,
 		taskQueueName: details.Partition.TaskQueue().Name(),
 		taskQueueType: details.Partition.TaskQueue().TaskType(),
+
+		isSticky:        isSticky,
+		stickyQueueName: stickyQueueName,
 
 		lastSignalDetails: map[string]*signalBatchDetails{},
 	}
@@ -95,6 +115,14 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 		return
 	}
 	if !WorkerControllerEnabled.Get(th.dc)(th.namespace.Name().String()) {
+		return
+	}
+	if th.isSticky {
+		// Re-checked on every task so turning the flag off takes effect without reloading partitions.
+		if !WorkerControllerSessionEnabled.Get(th.dc)(th.namespace.Name().String()) {
+			return
+		}
+		th.processSessionTaskAdd(ctx, event)
 		return
 	}
 	workflowID := GenerateWorkerControllerInstanceWorkflowID(event.DeploymentVersion)
@@ -114,21 +142,7 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 
 	exists, err := th.client.WorkerControllerInstanceExists(ctx, th.namespace, event.DeploymentVersion)
 	if err != nil {
-		var resourceExhaustedErr *serviceerror.ResourceExhausted
-		if errors.As(err, &resourceExhaustedErr) && resourceExhaustedErr.Cause == enumspb.RESOURCE_EXHAUSTED_CAUSE_BUSY_WORKFLOW {
-			// 'Workflow is busy' error - emit a metric and move on
-			wcimetrics.WorkflowBusyCount.With(th.metricsHandler).Record(1)
-			return
-		}
-
-		if errors.Is(err, context.Canceled) {
-			// Caller went away (e.g. the AddTask request was canceled) - emit a metric and move on
-			wcimetrics.TaskAddContextCanceledCount.With(th.metricsHandler).Record(1)
-			return
-		}
-
-		th.logger.Error("Failed to check for existence of worker controller instance workflow", tag.Error(err), tag.WorkflowID(workflowID))
-		wcimetrics.TaskMatchErrorCount.With(th.metricsHandler).Record(1)
+		th.recordSignalError(th.metricsHandler, err, "Failed to check for existence of worker controller instance workflow", workflowID)
 		return
 	}
 	if !exists {
@@ -153,6 +167,65 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 		th.logger.Error("Failed to signal task add event", tag.Error(err), tag.WorkflowID(workflowID))
 		wcimetrics.TaskMatchErrorCount.With(th.metricsHandler).Record(1)
 	}
+}
+
+func (th *taskHookImpl) processSessionTaskAdd(ctx context.Context, event *hooks.TaskAddHookDetails) {
+	sessionID := event.SingleSessionOptions.GetStableIdentity()
+	if sessionID == "" {
+		return
+	}
+	metricsHandler := th.metricsHandler.WithTags(metrics.StringTag(wcimetrics.SessionTagName, wcimetrics.SessionTagValue(true)))
+	version := event.DeploymentVersion
+	workflowID := GenerateSessionWorkerControllerInstanceWorkflowID(version.GetDeploymentName(), version.GetBuildId(), sessionID)
+
+	syncMatchBatchCount, noSyncMatchBatchCount, skip := th.batchMatchSignals(ctx, workflowID, event.IsSyncMatch)
+	if skip {
+		return
+	}
+
+	// Same standby-cluster skip as the version path: the session WCI can only be started where the namespace is active.
+	if !th.namespaceActiveHere() {
+		wcimetrics.TaskAddNamespaceNotActiveCount.With(metricsHandler).Record(1)
+		return
+	}
+
+	session := &iface.WorkerControllerInstanceSessionArgs{
+		SessionID:    sessionID,
+		SessionQueue: th.stickyQueueName,
+	}
+	request := &iface.SignalTaskAddRequest{
+		TaskQueueName:               th.stickyQueueName,
+		TaskQueueType:               th.taskQueueType,
+		IsSyncMatch:                 event.IsSyncMatch,
+		NoSyncMatchSignalsSinceLast: noSyncMatchBatchCount,
+		SyncMatchSignalsSinceLast:   syncMatchBatchCount,
+	}
+
+	if err := th.client.SignalWithStartSessionWorkerControllerInstance(ctx, th.namespace, version, session, request); err != nil {
+		var notActiveErr *serviceerror.NamespaceNotActive
+		if errors.As(err, &notActiveErr) {
+			wcimetrics.TaskAddNamespaceNotActiveCount.With(metricsHandler).Record(1)
+			return
+		}
+		th.recordSignalError(metricsHandler, err, "Failed to signal-with-start session worker controller instance workflow", workflowID)
+	}
+}
+
+// recordSignalError classifies a hook RPC error into the busy / canceled / error metrics.
+func (th *taskHookImpl) recordSignalError(metricsHandler metrics.Handler, err error, msg string, workflowID string) {
+	var resourceExhaustedErr *serviceerror.ResourceExhausted
+	if errors.As(err, &resourceExhaustedErr) && resourceExhaustedErr.Cause == enumspb.RESOURCE_EXHAUSTED_CAUSE_BUSY_WORKFLOW {
+		// 'Workflow is busy' error - emit a metric and move on
+		wcimetrics.WorkflowBusyCount.With(metricsHandler).Record(1)
+		return
+	}
+	if errors.Is(err, context.Canceled) {
+		// Caller went away (e.g. the AddTask request was canceled) - emit a metric and move on
+		wcimetrics.TaskAddContextCanceledCount.With(metricsHandler).Record(1)
+		return
+	}
+	th.logger.Error(msg, tag.Error(err), tag.WorkflowID(workflowID))
+	wcimetrics.TaskMatchErrorCount.With(metricsHandler).Record(1)
 }
 
 // namespaceActiveHere reports whether the namespace is active in this cluster.

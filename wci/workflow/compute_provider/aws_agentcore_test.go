@@ -127,17 +127,13 @@ func TestAWSAgentCoreInvokeWorker_Success(t *testing.T) {
 	assert.Equal(t, testAgentCoreAccountID, aws.ToString(gotAccountID))
 	assert.Equal(t, testAgentCoreEndpointName, aws.ToString(gotQualifier))
 
-	var payload struct {
-		DeploymentName string `json:"deploymentName"`
-		BuildID        string `json:"buildId"`
-	}
+	var payload map[string]any
 	require.NoError(t, json.Unmarshal(gotPayload, &payload))
-	assert.Equal(t, "dep", payload.DeploymentName)
-	assert.Equal(t, "build-1", payload.BuildID)
+	assert.Empty(t, payload)
 }
 
-// assertNoDeploymentVersionKeys checks a session payload doesn't carry the
-// worker deployment version.
+// assertNoDeploymentVersionKeys checks the payload no longer carries the
+// worker deployment version, which was removed from the AgentCore invoke payload.
 func assertNoDeploymentVersionKeys(t *testing.T, payload []byte) {
 	t.Helper()
 	var m map[string]any
@@ -163,7 +159,7 @@ func testAgentCoreSessionID(n int) string {
 	return strings.Repeat("s", n)
 }
 
-func TestAWSAgentCoreInvokeWorker_NonSession_DeploymentVersionPayload(t *testing.T) {
+func TestAWSAgentCoreInvokeWorker_NonSession_EmptyPayload(t *testing.T) {
 	got := captureAgentCoreInvoke(t)
 	rc := RequestContext{NamespaceName: "ns", DeploymentName: "dep", DeploymentBuildID: "build-1"}
 
@@ -171,10 +167,11 @@ func TestAWSAgentCoreInvokeWorker_NonSession_DeploymentVersionPayload(t *testing
 		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
 	}))
 	require.NotNil(t, *got)
-	// Golden: non-session invokes keep the worker deployment version payload
+	// Golden: non-session invokes send an empty object (a payload is required)
 	// and leave RuntimeSessionId for the SDK to generate.
-	assert.JSONEq(t, `{"deploymentName":"dep","buildId":"build-1"}`, string((*got).Payload))
+	assert.Equal(t, `{}`, string((*got).Payload))
 	assert.Equal(t, "application/json", aws.ToString((*got).ContentType))
+	assertNoDeploymentVersionKeys(t, (*got).Payload)
 	assert.Nil(t, (*got).RuntimeSessionId)
 }
 

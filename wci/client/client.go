@@ -92,6 +92,15 @@ type (
 			version *deploymentpb.WorkerDeploymentVersion,
 			request *iface.SignalTaskAddRequest,
 		) error
+
+		// Signal-with-start session WCI instance using task add for the signal
+		SignalWithStartSessionWorkerControllerInstance(
+			ctx context.Context,
+			namespaceEntry *namespace.Namespace,
+			version *deploymentpb.WorkerDeploymentVersion,
+			session *iface.WorkerControllerInstanceSessionArgs,
+			request *iface.SignalTaskAddRequest,
+		) error
 	}
 
 	WorkerControllerInstanceSummary struct {
@@ -207,6 +216,11 @@ func (d *clientImpl) ListWorkerControllerInstances(
 
 	workerControllerInstanceSummaries := make([]*WorkerControllerInstanceSummary, 0, len(persistenceResp.Executions))
 	for _, ex := range persistenceResp.Executions {
+		// Session WCIs use their own namespace division and are not matched by the query;
+		// skip them anyway in case one shows up.
+		if IsSessionWorkerControllerInstanceWorkflowID(ex.GetExecution().GetWorkflowId()) {
+			continue
+		}
 		var workerControllerInstanceInfo *iface.WorkerControllerInstanceMemo
 		if ex.GetMemo() != nil {
 			workerControllerInstanceInfo, err = iface.DecodeWorkerControllerInstanceMemo(ex.GetMemo())
@@ -462,6 +476,57 @@ func (d *clientImpl) SignalTaskAddEvent(
 	}
 
 	return nil
+}
+
+func (d *clientImpl) SignalWithStartSessionWorkerControllerInstance(
+	ctx context.Context,
+	namespaceEntry *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+	session *iface.WorkerControllerInstanceSessionArgs,
+	request *iface.SignalTaskAddRequest,
+) (retErr error) {
+	//revive:disable-next-line:defer
+	defer d.convertAndRecordError("SignalWithStartSessionWorkerControllerInstance", version, &retErr)()
+
+	if err := d.checkWorkerControllerEnabled(ctx, namespaceEntry); err != nil {
+		return err
+	}
+	if err := session.Validate(); err != nil {
+		return serviceerror.NewInvalidArgument(err.Error())
+	}
+	if version == nil {
+		return serviceerror.NewInvalidArgument("deployment version is required")
+	}
+
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentNameFieldName, version.DeploymentName, d.maxIDLengthLimit()); err != nil {
+		return err
+	}
+	if err := validateWorkerControllerInstanceWFParams(worker_versioning.WorkerDeploymentBuildIDFieldName, version.BuildId, d.maxIDLengthLimit()); err != nil {
+		return err
+	}
+	workflowID := GenerateSessionWorkerControllerInstanceWorkflowID(version.DeploymentName, version.BuildId, session.SessionID)
+	if len(workflowID) > d.maxIDLengthLimit() {
+		return serviceerror.NewInvalidArgumentf("session worker controller instance workflow ID exceeds length limit of %d", d.maxIDLengthLimit())
+	}
+
+	return signalWithStartWorkflow(
+		ctx,
+		d.historyClient,
+		namespaceEntry,
+		d.controllerTaskQueueName,
+		iface.WorkerControllerInstanceWorkflowType,
+		workflowID,
+		&iface.WorkerControllerInstanceWorkflowArgs{
+			NamespaceName:  namespaceEntry.Name().String(),
+			DeploymentName: version.DeploymentName,
+			BuildId:        version.BuildId,
+			Session:        session,
+		},
+		iface.WorkerControllerSessionInstanceNamespaceDivision,
+		iface.SignalTaskAdd,
+		request,
+		uuid.NewString(),
+	)
 }
 
 func (d *clientImpl) convertAndRecordError(operation string, version *deploymentpb.WorkerDeploymentVersion, retErr *error, args ...any) func() {

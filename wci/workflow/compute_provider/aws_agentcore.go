@@ -196,18 +196,13 @@ func (p *awsAgentCoreComputeProvider) invokeWorker(ctx context.Context, rc Reque
 	return nil
 }
 
-// agentCoreInvokePayload builds the JSON invoke payload. Non-session invokes carry
-// the worker deployment version; session invokes carry only the session ID and queue.
+// agentCoreInvokePayload builds the JSON invoke payload. Non-session invokes send
+// an empty object (InvokeAgentRuntime requires a payload); session invokes carry
+// only the session ID and queue.
 func agentCoreInvokePayload(rc RequestContext) ([]byte, error) {
 	var v any
 	if rc.SessionID == "" {
-		v = struct {
-			DeploymentName string `json:"deploymentName"`
-			BuildID        string `json:"buildId"`
-		}{
-			DeploymentName: rc.DeploymentName,
-			BuildID:        rc.DeploymentBuildID,
-		}
+		v = struct{}{}
 	} else {
 		// The session ID comes from the worker, which runs user code, so it may be
 		// invalid through no fault of the WCI. It is non-retryable because the same
