@@ -146,7 +146,7 @@ func PerNamespaceWorkerManagerProvider(
 	staticConfig staticConfigDeps,
 ) *worker.PerNamespaceWorkerManager {
 	components := []workercommon.PerNSWorkerComponent{
-		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory, staticConfig.StaticConfig),
+		workercomponent.NewWCIPerNSWorkerComponent(dynamicConfig, sdkClientFactory, staticConfig.StaticConfig, namespaceRegistry, clusterMetadata),
 	}
 
 	return worker.NewPerNamespaceWorkerManager(

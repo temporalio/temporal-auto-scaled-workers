@@ -47,6 +47,8 @@ type (
 		namespace             *namespace.Namespace
 		workflowserviceClient workflowservice.WorkflowServiceClient
 		staticConfig          *client.StaticConfig
+
+		gauges gaugeTracker
 	}
 
 	// RequestContext aliases the compute-provider request context so activity
@@ -137,14 +139,13 @@ type (
 )
 
 // metricsHandler returns the activity-side MetricsHandler pre-tagged with the
-// namespace/deployment identity and the supplied activity type. It is a free
-// function because RequestContext is an alias of a compute_provider type, so
-// methods can't be declared on it from this package.
-func metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetrics.ActivityType, provider iface.ComputeProviderType) sdkclient.MetricsHandler {
+// namespace/deployment identity and the supplied activity type. Gauges set through
+// it are tracked so ClearGaugeMetrics can zero them when the worker stops here.
+func (a *Activities) metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetrics.ActivityType, provider iface.ComputeProviderType) sdkclient.MetricsHandler {
 	// compute_provider is the scaling group's provider for activities that operate on
 	// a single group, or the "none" sentinel (noComputeProvider) for all-groups
 	// activities. It is always set to keep the tag key-set stable.
-	return activity.GetMetricsHandler(ctx).WithTags(map[string]string{
+	return a.gauges.wrap(activity.GetMetricsHandler(ctx)).WithTags(map[string]string{
 		wcimetrics.NamespaceTag:               rc.NamespaceName,
 		wcimetrics.WorkerDeploymentNameTag:    rc.DeploymentName,
 		wcimetrics.WorkerDeploymentBuildIDTag: rc.DeploymentBuildID,
@@ -195,7 +196,7 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeValidateSpec, noComputeProvider)
+	metricsHandler := a.metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeValidateSpec, noComputeProvider)
 	_, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, validateSpecTimeout)
@@ -272,7 +273,7 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorkersToRegisterTaskQueues, noComputeProvider)
+	metricsHandler := a.metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorkersToRegisterTaskQueues, noComputeProvider)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	// A task queue type is registered once a worker has polled it under this version;
@@ -392,7 +393,7 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorker, req.ComputeConfig.ProviderType)
+	metricsHandler := a.metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeInvokeWorker, req.ComputeConfig.ProviderType)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.namespace.Name().String(), a.dc)
@@ -430,7 +431,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeUpdateWorkerSetSize, req.ComputeConfig.ProviderType)
+	metricsHandler := a.metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeUpdateWorkerSetSize, req.ComputeConfig.ProviderType)
 	recordError, _, recordSuccess := newActivityRecorders(metricsHandler)
 
 	provider, err := computeprovider.GetComputeProvider(ctx, req.ComputeConfig.ProviderType, a.namespace.Name().String(), a.dc)
@@ -464,7 +465,7 @@ func (a *Activities) UpdateWorkerSetSize(ctx context.Context, req *UpdateWorkerS
 
 func (a *Activities) HandleDeferredScalingDecision(ctx context.Context, req HandleDeferredScalingDecisionActivityRequest) (*HandleDeferredScalingDecisionActivityResponse, error) {
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleDeferredScalingDecision, req.ScalingGroupSpec.Compute.ProviderType)
+	metricsHandler := a.metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleDeferredScalingDecision, req.ScalingGroupSpec.Compute.ProviderType)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
 	scalingStatus := maps.Clone(req.ScalingStatus)
@@ -535,7 +536,7 @@ func (a *Activities) HandleTaskAddSignal(ctx context.Context, req HandleTaskAddS
 		updatedScalingStatus = map[string]iface.ScalingAlgorithmStatus{}
 	}
 
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleTaskAddSignal, noComputeProvider)
+	metricsHandler := a.metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypeHandleTaskAddSignal, noComputeProvider)
 	// Base recorder (empty compute_provider) for skips emitted outside a matched group.
 	_, recordSkipped, _ := newActivityRecorders(metricsHandler)
 
@@ -604,7 +605,7 @@ func (a *Activities) PullStats(ctx context.Context, req *PullStatsActivityReques
 	}
 
 	logger := activity.GetLogger(ctx)
-	metricsHandler := metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypePullStats, noComputeProvider)
+	metricsHandler := a.metricsHandler(ctx, req.RequestContext, wcimetrics.ActivityTypePullStats, noComputeProvider)
 	recordError, recordSkipped, recordSuccess := newActivityRecorders(metricsHandler)
 
 	if !a.workerControllerEnabled() {

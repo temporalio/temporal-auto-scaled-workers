@@ -4,7 +4,9 @@ import (
 	"go.uber.org/fx"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/dynamicconfig"
+	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/sdk"
 	workercommon "go.temporal.io/server/service/worker/common"
 )
@@ -14,6 +16,9 @@ type (
 		fx.In
 		ClientFactory sdk.ClientFactory
 		StaticConfig  *client.StaticConfig `optional:"true"`
+		// Optional so hosts without them still build; the component then never clears gauges on worker stop.
+		NamespaceRegistry namespace.Registry `optional:"true"`
+		ClusterMetadata   cluster.Metadata   `optional:"true"`
 	}
 
 	fxResult struct {
@@ -31,6 +36,6 @@ func NewResult(
 	params componentDeps,
 ) fxResult {
 	return fxResult{
-		Component: NewWCIPerNSWorkerComponent(dc, params.ClientFactory, params.StaticConfig),
+		Component: NewWCIPerNSWorkerComponent(dc, params.ClientFactory, params.StaticConfig, params.NamespaceRegistry, params.ClusterMetadata),
 	}
 }
