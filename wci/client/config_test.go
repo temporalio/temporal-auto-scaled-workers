@@ -115,3 +115,20 @@ func TestSessionIdleTimeout_Override(t *testing.T) {
 	require.Equal(t, 30*time.Second, SessionIdleTimeoutGetter(coll, "ns-fast")())
 	require.Equal(t, 10*time.Minute, SessionIdleTimeoutGetter(coll, "ns-other")())
 }
+
+// workercontroller.session.enabled is a namespace bool that defaults to off, so
+// session WCIs are only started where it is explicitly turned on.
+func TestSessionEnabledSetting_KeyDefaultAndOverride(t *testing.T) {
+	require.Equal(t, "workercontroller.session.enabled", WorkerControllerSessionEnabled.Key().String())
+
+	dc := dynamicconfig.NewCollection(dynamicconfig.StaticClient{}, log.NewNoopLogger())
+	require.False(t, WorkerControllerSessionEnabled.Get(dc)("ns-a"))
+
+	dc = dynamicconfig.NewCollection(dynamicconfig.StaticClient{
+		WorkerControllerSessionEnabled.Key(): []dynamicconfig.ConstrainedValue{
+			{Constraints: dynamicconfig.Constraints{Namespace: "ns-a"}, Value: true},
+		},
+	}, log.NewNoopLogger())
+	require.True(t, WorkerControllerSessionEnabled.Get(dc)("ns-a"))
+	require.False(t, WorkerControllerSessionEnabled.Get(dc)("ns-b"))
+}

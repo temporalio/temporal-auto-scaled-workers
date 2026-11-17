@@ -39,14 +39,14 @@ func TestNoSyncSessionRegistration(t *testing.T) {
 }
 
 func TestInvokeProviderDefaultScalingAlgorithms(t *testing.T) {
-	// no-sync-session is opt-in: every invoke provider keeps no-sync as its default. assert.IsType is exact, so
+	// AgentCore defaults to no-sync-session; the other invoke providers keep no-sync. assert.IsType is exact, so
 	// the embedded scalingAlgorithmNoSync inside scalingAlgorithmNoSyncSession doesn't satisfy the no-sync case.
 	ctx := t.Context()
 	for providerType, want := range map[iface.ComputeProviderType]struct {
 		algoType iface.ScalingAlgorithmType
 		algo     ScalingAlgorithm
 	}{
-		iface.ComputeProviderTypeAWSAgentCore: {iface.ScalingAlgorithmNoSync, &scalingAlgorithmNoSync{}},
+		iface.ComputeProviderTypeAWSAgentCore: {iface.ScalingAlgorithmNoSyncSession, &scalingAlgorithmNoSyncSession{}},
 		iface.ComputeProviderTypeAWSLambda:    {iface.ScalingAlgorithmNoSync, &scalingAlgorithmNoSync{}},
 		iface.ComputeProviderTypeSubprocess:   {iface.ScalingAlgorithmNoSync, &scalingAlgorithmNoSync{}},
 	} {
@@ -57,7 +57,9 @@ func TestInvokeProviderDefaultScalingAlgorithms(t *testing.T) {
 		assert.Equal(t, want.algoType, defaultAlgorithmByComputeProvider[providerType], "provider %s", providerType)
 	}
 	for providerType, algorithmType := range defaultAlgorithmByComputeProvider {
-		assert.NotEqual(t, iface.ScalingAlgorithmNoSyncSession, algorithmType, "provider %s", providerType)
+		if providerType != iface.ComputeProviderTypeAWSAgentCore {
+			assert.NotEqual(t, iface.ScalingAlgorithmNoSyncSession, algorithmType, "provider %s", providerType)
+		}
 	}
 }
 
