@@ -111,7 +111,7 @@ type (
 )
 
 func init() {
-	RegisterScalingAlgorithm(iface.ScalingAlgorithmNoSync, NewScalingAlgorithmNoSync, iface.ComputeProviderTypeAWSLambda, iface.ComputeProviderTypeAWSAgentCore, iface.ComputeProviderTypeSubprocess)
+	RegisterScalingAlgorithm(iface.ScalingAlgorithmNoSync, NewScalingAlgorithmNoSync, iface.ComputeProviderTypeAWSLambda, iface.ComputeProviderTypeAWSSNS, iface.ComputeProviderTypeAWSAgentCore, iface.ComputeProviderTypeSubprocess)
 }
 
 func NewScalingAlgorithmNoSync(_ context.Context) (ScalingAlgorithm, error) {
