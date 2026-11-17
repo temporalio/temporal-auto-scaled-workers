@@ -58,8 +58,9 @@ const (
 	ComputeProviderTypeTestInvoke    ComputeProviderType = "test-invoke"
 	ComputeProviderTypeTestWorkerSet ComputeProviderType = "test-worker-set"
 
-	ScalingAlgorithmNoSync    ScalingAlgorithmType = "no-sync"
-	ScalingAlgorithmRateBased ScalingAlgorithmType = "rate-based"
+	ScalingAlgorithmNoSync        ScalingAlgorithmType = "no-sync"
+	ScalingAlgorithmNoSyncSession ScalingAlgorithmType = "no-sync-session"
+	ScalingAlgorithmRateBased     ScalingAlgorithmType = "rate-based"
 )
 
 var validComputeProviderTypes = map[string]ComputeProviderType{
@@ -74,8 +75,9 @@ var validComputeProviderTypes = map[string]ComputeProviderType{
 }
 
 var validScalingAlgorithmTypes = map[string]ScalingAlgorithmType{
-	string(ScalingAlgorithmNoSync):    ScalingAlgorithmNoSync,
-	string(ScalingAlgorithmRateBased): ScalingAlgorithmRateBased,
+	string(ScalingAlgorithmNoSync):        ScalingAlgorithmNoSync,
+	string(ScalingAlgorithmNoSyncSession): ScalingAlgorithmNoSyncSession,
+	string(ScalingAlgorithmRateBased):     ScalingAlgorithmRateBased,
 }
 
 // ValidComputeProviderType returns true if s is a valid enum value, and false otherwise.

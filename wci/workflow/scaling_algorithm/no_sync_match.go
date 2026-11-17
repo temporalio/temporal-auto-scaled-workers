@@ -136,14 +136,20 @@ func (a *scalingAlgorithmNoSync) InactiveGroupActions(context.Context, iface.Sca
 	return &MetricsPollResponse{}, nil
 }
 
-func (a *scalingAlgorithmNoSync) ValidateConfig(ctx context.Context, config iface.ScalingAlgorithmConfig) error {
+func (a *scalingAlgorithmNoSync) ValidateConfig(_ context.Context, config iface.ScalingAlgorithmConfig) error {
+	return validateNoSyncConfig(iface.ScalingAlgorithmNoSync, config)
+}
+
+// validateNoSyncConfig validates the config keys shared by no-sync and no-sync-session; algorithmType only
+// names the algorithm in the unknown-key error.
+func validateNoSyncConfig(algorithmType iface.ScalingAlgorithmType, config iface.ScalingAlgorithmConfig) error {
 	if config == nil {
 		return nil
 	}
 
 	for k := range config {
 		if _, ok := noSyncValidConfigKeys[k]; !ok {
-			return fmt.Errorf("unknown config key %q for no-sync scaling algorithm", k)
+			return fmt.Errorf("unknown config key %q for %s scaling algorithm", k, algorithmType)
 		}
 	}
 
