@@ -156,8 +156,7 @@ func queryWorkflowWithRetry(
 		if errors.As(err, &notFound) {
 			return nil, serviceerror.NewNotFoundf(ErrWorkerControllerInstanceNotFound, version.DeploymentName, version.BuildId)
 		}
-		var queryFailed *serviceerror.QueryFailed
-		if errors.As(err, &queryFailed) && queryFailed.Error() == iface.ErrInstanceDeleted {
+		if IsInstanceDeletedQueryError(err) {
 			return nil, serviceerror.NewNotFoundf(ErrWorkerControllerInstanceNotFound, version.DeploymentName, version.BuildId)
 		}
 		return nil, err

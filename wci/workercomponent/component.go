@@ -54,7 +54,9 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 			sec := client.WorkerControllerPeriodicValidationIntervalSeconds.Get(s.dynamicConfig)()
 			return time.Duration(sec) * time.Second
 		}
-		return instancewf.Workflow(ctx, workflowVersionGetter, workerControllerEnabledGetter, maxVersionsGetter, validationIntervalGetter, args, activities)
+		sessionIdleTimeoutGetter := client.SessionIdleTimeoutGetter(s.dynamicConfig, ns.Name().String())
+		return instancewf.Workflow(ctx, workflowVersionGetter, workerControllerEnabledGetter, maxVersionsGetter, validationIntervalGetter, args, activities,
+			instancewf.WithSessionIdleTimeout(sessionIdleTimeoutGetter))
 	}
 	registry.RegisterWorkflowWithOptions(versionWorkflow, workflow.RegisterOptions{Name: iface.WorkerControllerInstanceWorkflowType})
 	validateWorkflow := func(ctx workflow.Context, args *iface.ValidateWorkerControllerInstanceSpecWorkflowArgs) error {
