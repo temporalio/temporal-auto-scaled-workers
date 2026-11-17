@@ -150,6 +150,7 @@ func metricsHandler(ctx context.Context, rc RequestContext, activityType wcimetr
 		wcimetrics.WorkerDeploymentBuildIDTag: rc.DeploymentBuildID,
 		wcimetrics.ActivityTypeTag:            string(activityType),
 		wcimetrics.ComputeProviderTag:         computeProviderTagValue(provider),
+		wcimetrics.SessionTagName:             wcimetrics.SessionTagValue(rc.SessionID != ""),
 	})
 }
 
@@ -417,6 +418,14 @@ func (a *Activities) InvokeWorker(ctx context.Context, req *InvokeWorkerActivity
 	defer cancel()
 	if err := provider.InvokeWorker(timeoutCtx, req.RequestContext, config); err != nil {
 		recordError(computeProviderErrorType(err))
+		// A provider marks failures that will keep failing (e.g. an invalid session ID)
+		// with its own non-retryable error; surface those as non-retryable so the
+		// activity is not retried. The cause keeps the provider's error type.
+		var nrErr *computeprovider.NonRetryableError
+		if stderrors.As(err, &nrErr) {
+			return temporal.NewNonRetryableApplicationError(err.Error(), "InvokeWorkerFailed",
+				temporal.NewNonRetryableApplicationError(nrErr.Message, nrErr.Type, nrErr.Cause))
+		}
 		return temporal.NewApplicationErrorWithCause(err.Error(), "InvokeWorkerFailed", err)
 	}
 

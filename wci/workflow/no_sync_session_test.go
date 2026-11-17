@@ -47,7 +47,7 @@ func TestValidateSpecRejectsNoSyncSessionOnWorkerSetProvider(t *testing.T) {
 	assert.Contains(t, err.Error(), "group: Scaling Algorithm 'no-sync-session' is not compatible with compute provider 'test-worker-set'")
 }
 
-// A version WCI whose invoke group uses no-sync-session runs the real HandleTaskAddSignal and issues one
+// A version WCI whose invoke-strategy group uses no-sync-session runs the real HandleTaskAddSignal and issues one
 // InvokeWorker activity per batched no-sync task.
 func TestVersionWorkflow_NoSyncSessionInvokesPerBatchedTask(t *testing.T) {
 	args := &iface.WorkerControllerInstanceWorkflowArgs{

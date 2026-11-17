@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -152,12 +151,7 @@ func queryWorkflowWithRetry(
 		return err
 	}, retryPolicy, isRetryableQueryError)
 	if err != nil {
-		var notFound *serviceerror.NotFound
-		if errors.As(err, &notFound) {
-			return nil, serviceerror.NewNotFoundf(ErrWorkerControllerInstanceNotFound, version.DeploymentName, version.BuildId)
-		}
-		var queryFailed *serviceerror.QueryFailed
-		if errors.As(err, &queryFailed) && queryFailed.Error() == iface.ErrInstanceDeleted {
+		if instanceNotFoundQueryReason(err) != "" {
 			return nil, serviceerror.NewNotFoundf(ErrWorkerControllerInstanceNotFound, version.DeploymentName, version.BuildId)
 		}
 		return nil, err
@@ -342,8 +336,7 @@ func workflowIsRunning(
 		},
 	})
 	if err != nil {
-		var notFound *serviceerror.NotFound
-		if errors.As(err, &notFound) {
+		if isWorkflowNotFoundError(err) {
 			return false, nil
 		}
 		return false, err

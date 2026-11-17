@@ -36,7 +36,7 @@ var (
 	)
 	WorkerControllerInstanceWorkflowVersion = dynamicconfig.NewNamespaceIntSetting(
 		"workercontroller.instanceWorkflowVersion",
-		4,
+		5,
 		`WorkerControllerInstanceWorkflowVersion controls what version of the logic should the manager workflows use.`,
 	)
 	WorkerControllerValidateWorkflowVersion = dynamicconfig.NewNamespaceIntSetting(
@@ -59,7 +59,19 @@ var (
 		[]string(nil),
 		`WorkerControllerEnabledComputeProviders defines the list of compute providers enabled for use. Namespace-scoped: a namespace-level value overrides the cell-wide (global) value, and namespaces without an entry inherit the cell value.`,
 	)
+	WorkerControllerSessionIdleTimeout = dynamicconfig.NewNamespaceDurationSetting(
+		"workercontroller.session.idle_timeout",
+		24*time.Hour,
+		`WorkerControllerSessionIdleTimeout controls how long a session WCI waits without a no-sync task-add signal before it completes.`,
+	)
 )
+
+func SessionIdleTimeoutGetter(dc *dynamicconfig.Collection, namespaceName string) func() time.Duration {
+	get := WorkerControllerSessionIdleTimeout.Get(dc)
+	return func() time.Duration {
+		return get(namespaceName)
+	}
+}
 
 // Global settings.
 var (
