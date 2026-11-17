@@ -23,6 +23,14 @@ func isFailedPreconditionOrNotFound(err error) bool {
 	return errors.As(err, &failedPreconditionError) || errors.As(err, &notFound)
 }
 
+// IsInstanceDeletedQueryError reports whether err is the QueryFailed error a WCI's
+// describe-wci query returns once the instance has been deleted but its workflow has not
+// closed yet. Callers should treat it like a missing instance.
+func IsInstanceDeletedQueryError(err error) bool {
+	var queryFailed *serviceerror.QueryFailed
+	return errors.As(err, &queryFailed) && queryFailed.Error() == iface.ErrInstanceDeleted
+}
+
 func isRetryableQueryError(err error) bool {
 	var internalErr *serviceerror.Internal
 	return api.IsRetryableError(err) && !errors.As(err, &internalErr)
