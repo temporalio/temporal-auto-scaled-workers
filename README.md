@@ -36,6 +36,8 @@ Dev/test-only providers are excluded by default; build with `-tags computeprovid
 | Algorithm | Type string | Description |
 |---|---|---|
 | No-sync | `no-sync` | Scales up when backlog or arrival rate exceeds thresholds; cools down between invocations |
+| No-sync-session | `no-sync-session` | Scales up on every single no-sync matched task |
+| Rate Based | `rate-based` | Scales up and down with backlog to configured max/min with scaling/cooling controls |
 
 ## Configuration
 
