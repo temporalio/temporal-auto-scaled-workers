@@ -170,7 +170,7 @@ func (th *taskHookImpl) ProcessTaskAdd(ctx context.Context, event *hooks.TaskAdd
 }
 
 func (th *taskHookImpl) processSessionTaskAdd(ctx context.Context, event *hooks.TaskAddHookDetails) {
-	sessionID := event.SingleSessionOptions.GetStableIdentity()
+	sessionID := event.SingleSessionOptions.WorkerStableIdentity
 	if sessionID == "" {
 		return
 	}

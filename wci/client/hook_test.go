@@ -12,7 +12,6 @@ import (
 	deploymentpb "go.temporal.io/api/deployment/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
-	sessionpb "go.temporal.io/api/session/v1"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
@@ -283,7 +282,7 @@ func sessionTaskAdd(sessionID string, isSyncMatch bool) *hooks.TaskAddHookDetail
 	return &hooks.TaskAddHookDetails{
 		DeploymentVersion:    testVersion(),
 		IsSyncMatch:          isSyncMatch,
-		SingleSessionOptions: &sessionpb.SingleSessionOptions{StableIdentity: sessionID},
+		SingleSessionOptions: hooks.SingleSessionOptions{WorkerStableIdentity: sessionID},
 	}
 }
 
@@ -407,7 +406,7 @@ func TestProcessTaskAdd_StickyIgnored(t *testing.T) {
 		{name: "no_session_options", event: &hooks.TaskAddHookDetails{DeploymentVersion: testVersion()}},
 		{name: "empty_stable_identity", event: sessionTaskAdd("", false)},
 		{name: "unversioned", event: &hooks.TaskAddHookDetails{
-			SingleSessionOptions: &sessionpb.SingleSessionOptions{StableIdentity: "session-1"},
+			SingleSessionOptions: hooks.SingleSessionOptions{WorkerStableIdentity: "session-1"},
 		}},
 	}
 	for _, tc := range tests {

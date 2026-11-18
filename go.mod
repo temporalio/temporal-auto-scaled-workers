@@ -16,9 +16,9 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.12.1
-	go.temporal.io/api v1.64.4-0.20261112183241-f37002e74dcb
+	go.temporal.io/api v1.64.4-0.20261117164335-8fd48a50f214
 	go.temporal.io/sdk v1.49.0
-	go.temporal.io/server v1.29.0-135.0.0.20261112183956-e189685e324b
+	go.temporal.io/server v1.29.0-135.0.0.20261118181754-ac01681dc1f0
 	go.uber.org/fx v1.24.0
 	go.uber.org/mock v0.6.0
 	golang.org/x/oauth2 v0.36.0
@@ -176,7 +176,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
-	go.temporal.io/testx v0.0.0-20261029001555-ddcb0739798d // indirect
+	go.temporal.io/testx v0.0.0-20261112171501-c4cea589f218 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/dig v1.19.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
