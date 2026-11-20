@@ -22,6 +22,18 @@ type (
 	}
 )
 
+// Defaults for the Modal settings, also used when a setting is 0 or less.
+const (
+	// ModalCredentialReloadLimitDefault is the default for WorkerControllerModalCredentialReloadLimit.
+	ModalCredentialReloadLimitDefault = 2
+	// ModalCredentialReloadCooldownDefault is the default for WorkerControllerModalCredentialReloadCooldownSeconds.
+	ModalCredentialReloadCooldownDefault = 15 * time.Minute
+	// ModalCredentialMaxAgeDefault is the default for WorkerControllerModalCredentialMaxAgeSeconds.
+	ModalCredentialMaxAgeDefault = time.Hour
+	// ModalClientIdleTimeoutDefault is the default for WorkerControllerModalClientIdleTimeoutSeconds.
+	ModalClientIdleTimeoutDefault = 30 * time.Minute
+)
+
 // Namespace-scoped settings.
 var (
 	WorkerControllerEnabled = dynamicconfig.NewNamespaceBoolSetting(
@@ -91,6 +103,26 @@ var (
 		"workercontroller.compute_providers.aws.require_role_and_external_id",
 		true,
 		`WorkerControllerAWSRequireRoleAndExternalID controls whether AWS compute providers require a role ARN and external ID. Defaults to true. Set to false to allow configurations without these fields and accepting the associated security risks.`,
+	)
+	WorkerControllerModalCredentialReloadLimit = dynamicconfig.NewGlobalIntSetting(
+		"workercontroller.compute_providers.modal.credential_reload_limit",
+		ModalCredentialReloadLimitDefault,
+		`WorkerControllerModalCredentialReloadLimit is how many times WCI re-reads a grant Modal rejected before pausing for the cooldown. Values of 0 or less use the default.`,
+	)
+	WorkerControllerModalCredentialReloadCooldownSeconds = dynamicconfig.NewGlobalIntSetting(
+		"workercontroller.compute_providers.modal.credential_reload_cooldown_s",
+		int(ModalCredentialReloadCooldownDefault/time.Second),
+		`WorkerControllerModalCredentialReloadCooldownSeconds is how long WCI stops re-reading a grant after reaching the reload limit. Values of 0 or less use the default.`,
+	)
+	WorkerControllerModalCredentialMaxAgeSeconds = dynamicconfig.NewGlobalIntSetting(
+		"workercontroller.compute_providers.modal.credential_max_age_s",
+		int(ModalCredentialMaxAgeDefault/time.Second),
+		`WorkerControllerModalCredentialMaxAgeSeconds is how long WCI uses cached credentials before checking for a newer grant. Values of 0 or less use the default.`,
+	)
+	WorkerControllerModalClientIdleTimeoutSeconds = dynamicconfig.NewGlobalIntSetting(
+		"workercontroller.compute_providers.modal.client_idle_timeout_s",
+		int(ModalClientIdleTimeoutDefault/time.Second),
+		`WorkerControllerModalClientIdleTimeoutSeconds is how long WCI keeps an unused Modal connection open. Values of 0 or less use the default.`,
 	)
 	WorkerControllerPeriodicValidationIntervalSeconds = dynamicconfig.NewGlobalIntSetting(
 		"workercontroller.periodic_validation_interval_s",

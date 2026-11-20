@@ -17,6 +17,8 @@ import (
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	// Registers itself with computeprovider, which cannot import it without a cycle.
+	_ "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider/modal"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	scalingalgorithm "go.temporal.io/auto-scaled-workers/wci/workflow/scaling_algorithm"
 	"go.temporal.io/sdk/activity"

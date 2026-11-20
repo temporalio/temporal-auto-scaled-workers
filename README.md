@@ -21,6 +21,7 @@ Multiple **scaling groups** can be defined per WCI, each mapping a set of task q
 | AWS AgentCore | `aws-agentcore` | Invoke (one-off) |
 | AWS ECS | `aws-ecs` | Worker set (managed scaling) |
 | GCP Cloud Run | `gcp-cloud-run` | Worker set |
+| Modal Functions | `modal-function` | Invoke (one-off) |
 | Kubernetes | `k8s` | Worker set (dev/test only) |
 | Subprocess | `subprocess` | Invoke (dev/test only) |
 
@@ -50,6 +51,10 @@ Dev/test-only providers are excluded by default; build with `-tags computeprovid
 | `WorkerControllerAWSIntermediaryRoles` | `[]` | IAM role chain for AWS STS |
 | `WorkerControllerGCPIntermediaryServiceAccounts` | `[]` | Service account chain for GCP |
 | `WorkerControllerAWSRequireRoleAndExternalID` | `true` | Enforce role + external ID on AWS configs |
+| `WorkerControllerModalCredentialReloadLimit` | `2` | Re-reads of a grant Modal rejected before a cooldown |
+| `WorkerControllerModalCredentialReloadCooldownSeconds` | `900` | Cooldown after the reload limit |
+| `WorkerControllerModalCredentialMaxAgeSeconds` | `3600` | Age at which cached credentials are checked for a newer grant |
+| `WorkerControllerModalClientIdleTimeoutSeconds` | `1800` | How long an unused Modal connection stays open |
 
 ## Spec Format
 
@@ -118,6 +123,23 @@ For each task type, the serving group is the first match in this order:
 4. The catch-all group without `region_ids`
 
 Within each region, and among groups without `region_ids` (including the catch-all group without any region set), a task type may appear in at most one group and at most one group may be a catch-all. A catch-all must serve at least one task type where it applies, so a spec whose other groups list workflow, activity and nexus everywhere the catch-all applies is rejected. Every region that some group lists must serve the same task types, so a failover can't leave a task type without compute. The `scaling` block is optional; omitting it leaves the group with the default scaling configuration for the given compute provider.
+
+### `modal-function` compute provider config
+
+| Key | Required | Description |
+|---|---|---|
+| `app_name` | yes | Deployed Modal App name |
+| `function_name` | yes | Function in the App that runs a worker |
+| `environment` | yes | Modal environment the App is deployed in |
+| `workspace_id` | no | Modal workspace to use when the host supplies per-workspace credentials |
+| `version` | no | Pins a deployed App version; omitted uses the latest deployment |
+
+Modal Functions are invoke-based, so they pair with the `no-sync` algorithm.
+
+#### Credentials
+
+The Modal SDK finds its own credentials: `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, or `~/.modal.toml`. Functions run in the workspace those credentials belong to.
+A host can instead supply Modal OAuth credentials (client ID, signing key and refresh token) per namespace and workspace by replacing the `modal.SecretSource` in the fx graph with `fx.Decorate`; only then is `workspace_id` used.
 
 ### `no-sync` algorithm config
 
