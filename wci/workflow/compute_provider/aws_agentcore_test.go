@@ -301,7 +301,7 @@ func TestAWSAgentCoreInvokeWorker_ClassifiesConfigFailure(t *testing.T) {
 }
 
 func TestAWSAgentCoreInvokeWorker_ClassifiesClientBuildFailure(t *testing.T) {
-	stubAgentCoreDataClientError(t, fmt.Errorf("%w: failed to load AWS config", errWCIOwned))
+	stubAgentCoreDataClientError(t, fmt.Errorf("%w: failed to load AWS config", ErrWCIOwned))
 
 	err := newAgentCoreProvider().InvokeWorker(t.Context(), RequestContext{}, ComputeProviderConfig{
 		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
@@ -311,7 +311,7 @@ func TestAWSAgentCoreInvokeWorker_ClassifiesClientBuildFailure(t *testing.T) {
 	var pErr *ProviderError
 	require.ErrorAs(t, err, &pErr)
 	assert.Equal(t, FailureInternal, pErr.Class)
-	assert.ErrorIs(t, err, errWCIOwned)
+	assert.ErrorIs(t, err, ErrWCIOwned)
 }
 
 func TestAWSAgentCoreInvokeWorker_MissingEndpointARN_ReturnsError(t *testing.T) {

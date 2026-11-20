@@ -2,16 +2,21 @@
 package wci
 
 import (
+	"context"
+	"io"
+
 	"go.uber.org/fx"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workercomponent"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider/modal"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/membership"
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
@@ -57,14 +62,44 @@ var Module = fx.Options(
 	fx.Provide(func() computeprovider.GCPImpersonationChainProvider {
 		return computeprovider.NoopGCPImpersonationChainProvider{}
 	}),
+	// Modal secret storage config; unset keeps the Modal SDK default.
+	fx.Provide(modal.StoreConfigFromEnv),
 	// Install the (possibly fx.Decorate-replaced) chain provider into the
 	// compute_provider package singleton, where the GCP Cloud Run provider
 	// reads it. fx resolves the decorated value before this Invoke fires.
 	fx.Invoke(func(p computeprovider.GCPImpersonationChainProvider) {
 		computeprovider.SetGCPImpersonationChainProvider(p)
 	}),
+	fx.Invoke(installModalSecretSource),
 	fx.Invoke(ServiceLifetimeHooks),
 )
+
+// installModalSecretSource switches Modal to per-account grants when configured. Errors are logged,
+// not returned, so one provider's bad config cannot take down worker-controller.
+func installModalSecretSource(lc fx.Lifecycle, cfg modal.StoreConfig, logger log.Logger) {
+	if cfg.CloudProvider == "" {
+		logger.Info("Modal compute provider using the credentials the SDK finds for itself; set a cloud provider to resolve credentials per account")
+		return
+	}
+
+	source, err := modal.NewObjectStoreSecretSource(context.Background(), cfg)
+	if err != nil {
+		// Not left as the SDK default: that would serve every account from one key.
+		logger.Error("Modal compute provider disabled: cannot build its secret source", tag.Error(err))
+		modal.SetSecretSource(modal.FailingSecretSource{Reason: err})
+		return
+	}
+
+	modal.SetSecretSource(source)
+	if closer, ok := source.(io.Closer); ok {
+		lc.Append(fx.StopHook(closer.Close))
+	}
+	logger.Info("Modal compute provider resolving credentials per account from the data plane config store",
+		tag.NewStringTag("cloud-provider", cfg.CloudProvider),
+		tag.NewStringTag("region", cfg.Region),
+		tag.NewStringTag("bucket", cfg.Bucket),
+	)
+}
 
 func ServiceResolverProvider(
 	membershipMonitor membership.Monitor,

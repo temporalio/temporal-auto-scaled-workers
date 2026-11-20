@@ -29,7 +29,7 @@ func (e *mockFaultError) ErrorFault() smithy.ErrorFault { return e.fault }
 func (e *mockFaultError) Error() string                 { return e.code }
 
 func TestClassifyAWSFailure(t *testing.T) {
-	wciOwned := func(err error) error { return fmt.Errorf("%w: %w", errWCIOwned, err) }
+	wciOwned := func(err error) error { return fmt.Errorf("%w: %w", ErrWCIOwned, err) }
 
 	cases := []struct {
 		name string
@@ -81,13 +81,13 @@ func TestClassifyAWSFailure(t *testing.T) {
 }
 
 // The intermediary chain and the customer role both fail through
-// assumeRoleWithRequest with identical wrapping; only errWCIOwned separates them.
+// assumeRoleWithRequest with identical wrapping; only ErrWCIOwned separates them.
 func TestClassifyAWSFailure_SeparatesIntermediaryFromCustomerRole(t *testing.T) {
 	accessDenied := &mockFaultError{code: "AccessDenied", fault: smithy.FaultClient}
 	customer := fmt.Errorf("failed to assume role %s: %w", "arn:aws:iam::1:role/Customer", accessDenied)
 
 	assert.Equal(t, FailureAccessDenied, classifyAWSFailure(customer))
-	assert.Equal(t, FailureInternal, classifyAWSFailure(fmt.Errorf("%w: %w", errWCIOwned, customer)))
+	assert.Equal(t, FailureInternal, classifyAWSFailure(fmt.Errorf("%w: %w", ErrWCIOwned, customer)))
 }
 
 // A malformed intermediary role ARN comes from worker-controller's own dynamic
@@ -97,7 +97,7 @@ func TestBuildBaseAWSConfig_MarksIntermediaryFailuresWCIOwned(t *testing.T) {
 		{{RoleARN: "not-an-arn", RoleSessionName: "session"}},
 	})
 	require.Error(t, err)
-	require.ErrorIs(t, err, errWCIOwned)
+	require.ErrorIs(t, err, ErrWCIOwned)
 	assert.Equal(t, FailureInternal, classifyAWSFailure(err))
 }
 
@@ -106,7 +106,7 @@ func TestBuildBaseAWSConfig_MarksEmptySessionNameWCIOwned(t *testing.T) {
 		{{RoleARN: testRoleARN, RoleSessionName: ""}},
 	})
 	require.Error(t, err)
-	require.ErrorIs(t, err, errWCIOwned)
+	require.ErrorIs(t, err, ErrWCIOwned)
 	assert.Equal(t, FailureInternal, classifyAWSFailure(err))
 }
 
