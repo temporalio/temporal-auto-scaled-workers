@@ -49,12 +49,14 @@ type (
 )
 
 const (
-	ComputeProviderTypeAWSLambda     ComputeProviderType = "aws-lambda"
-	ComputeProviderTypeAWSAgentCore  ComputeProviderType = "aws-agentcore"
-	ComputeProviderTypeAWSECS        ComputeProviderType = "aws-ecs"
-	ComputeProviderTypeSubprocess    ComputeProviderType = "subprocess"
-	ComputeProviderTypeK8s           ComputeProviderType = "k8s"
-	ComputeProviderTypeGCPCloudRun   ComputeProviderType = "gcp-cloud-run"
+	ComputeProviderTypeAWSLambda    ComputeProviderType = "aws-lambda"
+	ComputeProviderTypeAWSAgentCore ComputeProviderType = "aws-agentcore"
+	ComputeProviderTypeAWSECS       ComputeProviderType = "aws-ecs"
+	ComputeProviderTypeSubprocess   ComputeProviderType = "subprocess"
+	ComputeProviderTypeK8s          ComputeProviderType = "k8s"
+	ComputeProviderTypeGCPCloudRun  ComputeProviderType = "gcp-cloud-run"
+	// ComputeProviderTypeModalFunction runs workers as Modal Function calls.
+	ComputeProviderTypeModalFunction ComputeProviderType = "modal-function"
 	ComputeProviderTypeTestInvoke    ComputeProviderType = "test-invoke"
 	ComputeProviderTypeTestWorkerSet ComputeProviderType = "test-worker-set"
 
@@ -69,6 +71,7 @@ var validComputeProviderTypes = map[string]ComputeProviderType{
 	string(ComputeProviderTypeSubprocess):    ComputeProviderTypeSubprocess,
 	string(ComputeProviderTypeK8s):           ComputeProviderTypeK8s,
 	string(ComputeProviderTypeGCPCloudRun):   ComputeProviderTypeGCPCloudRun,
+	string(ComputeProviderTypeModalFunction): ComputeProviderTypeModalFunction,
 	string(ComputeProviderTypeTestInvoke):    ComputeProviderTypeTestInvoke,
 	string(ComputeProviderTypeTestWorkerSet): ComputeProviderTypeTestWorkerSet,
 }

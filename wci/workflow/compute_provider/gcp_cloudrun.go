@@ -134,7 +134,7 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 			GlobalSACandidates: candidates,
 		})
 		if err != nil {
-			return nil, "", fmt.Errorf("%w: failed to resolve impersonation chain: %w", errWCIOwned, err)
+			return nil, "", fmt.Errorf("%w: failed to resolve impersonation chain: %w", ErrWCIOwned, err)
 		}
 
 		scopes := []string{"https://www.googleapis.com/auth/cloud-platform"}
@@ -155,7 +155,7 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 				Scopes:          scopes,
 			})
 			if err != nil {
-				return nil, "", fmt.Errorf("%w: failed to impersonate global service account %q: %w", errWCIOwned, chainDelegates[0], err)
+				return nil, "", fmt.Errorf("%w: failed to impersonate global service account %q: %w", ErrWCIOwned, chainDelegates[0], err)
 			}
 			baseOpts = []option.ClientOption{option.WithTokenSource(baseTS)}
 			chainDelegates = chainDelegates[1:]
@@ -174,7 +174,7 @@ func (p *gcpCloudRunComputeProvider) buildClientAndParams(ctx context.Context, r
 
 	client, err := run.NewWorkerPoolsClient(ctx, opts...)
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: failed to create Cloud Run client: %w", errWCIOwned, err)
+		return nil, "", fmt.Errorf("%w: failed to create Cloud Run client: %w", ErrWCIOwned, err)
 	}
 	return client, name, nil
 }

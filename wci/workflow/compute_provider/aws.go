@@ -29,7 +29,7 @@ var (
 
 // classifyAWSFailure maps an AWS SDK error onto a FailureClass along two axes:
 // what kind of failure it was, read from the smithy error model, and whose config
-// caused it, read from errWCIOwned.
+// caused it, read from ErrWCIOwned.
 func classifyAWSFailure(err error) FailureClass {
 	if err == nil {
 		return FailureUnclassified
@@ -43,7 +43,7 @@ func classifyAWSFailure(err error) FailureClass {
 
 	// Ownership separates client-fault from WCI-fault errors. A throttled or
 	// server-side failure is the provider's regardless of whose config we used.
-	wciOwned := errors.Is(err, errWCIOwned)
+	wciOwned := errors.Is(err, ErrWCIOwned)
 	ownerFault := FailureRejected
 	if wciOwned {
 		ownerFault = FailureInternal
@@ -94,11 +94,11 @@ func classifyAWSRejection(code string) FailureClass {
 
 // buildBaseAWSConfig loads default AWS config and applies any intermediary roles.
 // Every input here comes from worker-controller's own configuration, so all of its
-// failures are marked errWCIOwned.
+// failures are marked ErrWCIOwned.
 func buildBaseAWSConfig(ctx context.Context, region string, intermediaryRoles [][]client.AWSIAMRoleRequest) (aws.Config, error) {
 	awsConfig, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
-		return aws.Config{}, fmt.Errorf("%w: failed to load AWS config: %w", errWCIOwned, err)
+		return aws.Config{}, fmt.Errorf("%w: failed to load AWS config: %w", ErrWCIOwned, err)
 	}
 
 	// the AWS compute providers support role chaining to enable abstracting the role the temporal server has
@@ -113,15 +113,15 @@ func buildBaseAWSConfig(ctx context.Context, region string, intermediaryRoles []
 		// requests across roles/accounts and reduces the impact of any of these accounts failing (until it is removed from the config).
 		req := step[rand.Intn(len(step))]
 		if err = validateRoleARN(req.RoleARN); err != nil {
-			return aws.Config{}, fmt.Errorf("%w: invalid intermediary role: %w", errWCIOwned, err)
+			return aws.Config{}, fmt.Errorf("%w: invalid intermediary role: %w", ErrWCIOwned, err)
 		}
 		if req.RoleSessionName == "" {
-			return aws.Config{}, fmt.Errorf("%w: empty role session name for intermediary role", errWCIOwned)
+			return aws.Config{}, fmt.Errorf("%w: empty role session name for intermediary role", ErrWCIOwned)
 		}
 
 		awsConfig, err = assumeRoleWithRequest(ctx, awsConfig, &req)
 		if err != nil {
-			return aws.Config{}, fmt.Errorf("%w: error assuming intermediary role: %w", errWCIOwned, err)
+			return aws.Config{}, fmt.Errorf("%w: error assuming intermediary role: %w", ErrWCIOwned, err)
 		}
 	}
 	return awsConfig, nil

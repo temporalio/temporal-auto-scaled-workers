@@ -14,7 +14,7 @@ import (
 
 // classifyGCPFailure maps a Cloud Run (gRPC) error onto a FailureClass along two
 // axes: what kind of failure it was, read from the gRPC status code, and whose
-// config caused it, read from errWCIOwned. Errors carrying no gRPC status (a
+// config caused it, read from ErrWCIOwned. Errors carrying no gRPC status (a
 // transport failure, or a local error before the call) fall back to the ownership
 // axis.
 func classifyGCPFailure(err error) FailureClass {
@@ -30,55 +30,17 @@ func classifyGCPFailure(err error) FailureClass {
 
 	// Ownership separates client-fault from WCI-fault errors. A throttled or
 	// server-side failure is the provider's regardless of whose config we used.
-	wciOwned := errors.Is(err, errWCIOwned)
+	wciOwned := errors.Is(err, ErrWCIOwned)
 	ownerFault := FailureRejected
 	if wciOwned {
 		ownerFault = FailureInternal
 	}
 
 	if st, ok := status.FromError(err); ok {
-		// Server-side and transport faults are the provider's regardless of
-		// ownership, so they are checked before the fault split.
-		switch st.Code() {
-		case codes.Unavailable, codes.DeadlineExceeded, codes.Internal, codes.Unknown:
-			return FailureUnavailable
-		case codes.Aborted:
-			// Cloud Run rejects a masked update against the version an earlier,
-			// still-reconciling update of ours holds.
-			return FailureConflict
-		case codes.ResourceExhausted:
-			return FailureThrottled
-		case codes.Unauthenticated:
-			// gRPC reports a token the API rejected and a token we never managed to
-			// mint under the same code; only the former is our credential problem.
-			if code, ok := credentialFetchStatus(st); ok {
-				switch {
-				case code >= http.StatusInternalServerError:
-					return FailureUnavailable
-				case code == http.StatusTooManyRequests:
-					return FailureThrottled
-				}
-			}
-			return FailureInternal
-		case codes.Canceled, codes.OK:
-			return FailureUnclassified
-		default:
-			// Client faults: narrowed by ownership below.
+		if class, ok := classifyCredentialFetch(st); ok {
+			return class
 		}
-		// Remaining codes are client faults. Our own missing resources and denied
-		// permissions page the same on-call the same way, so there is nothing to
-		// gain from narrowing them.
-		if wciOwned {
-			return FailureInternal
-		}
-		switch st.Code() {
-		case codes.NotFound:
-			return FailureNotFound
-		case codes.PermissionDenied:
-			return FailureAccessDenied
-		default:
-			return FailureRejected
-		}
+		return ClassifyGRPCStatus(st.Code(), wciOwned)
 	}
 
 	// No modelled gRPC status: the request either failed in transport or never
@@ -88,6 +50,25 @@ func classifyGCPFailure(err error) FailureClass {
 		return FailureUnavailable
 	}
 	return ownerFault
+}
+
+// classifyCredentialFetch separates an Unauthenticated status caused by the token endpoint failing,
+// which gRPC reports under the same code as a rejected token, from a token the API rejected.
+func classifyCredentialFetch(st *status.Status) (FailureClass, bool) {
+	if st.Code() != codes.Unauthenticated {
+		return FailureUnclassified, false
+	}
+	code, ok := credentialFetchStatus(st)
+	switch {
+	case !ok:
+		return FailureUnclassified, false
+	case code >= http.StatusInternalServerError:
+		return FailureUnavailable, true
+	case code == http.StatusTooManyRequests:
+		return FailureThrottled, true
+	default:
+		return FailureUnclassified, false
+	}
 }
 
 // credsFetchMarker identifies a gRPC status produced while fetching per-RPC

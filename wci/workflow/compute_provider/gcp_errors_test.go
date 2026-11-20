@@ -13,7 +13,7 @@ import (
 )
 
 func TestClassifyGCPFailure(t *testing.T) {
-	wciOwned := func(err error) error { return fmt.Errorf("%w: %w", errWCIOwned, err) }
+	wciOwned := func(err error) error { return fmt.Errorf("%w: %w", ErrWCIOwned, err) }
 
 	cases := []struct {
 		name string
