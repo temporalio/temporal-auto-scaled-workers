@@ -16,6 +16,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	updatepb "go.temporal.io/api/update/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	wcimetrics "go.temporal.io/auto-scaled-workers/wci/metrics"
 	"go.temporal.io/auto-scaled-workers/wci/workflow/iface"
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/common"
@@ -570,7 +571,11 @@ func (d *clientImpl) checkInstanceCount(ctx context.Context, namespaceEntry *nam
 			return err
 		}
 		limit := d.maxWorkerControllerInstances(namespaceEntry.Name().String())
+		nsTag := metrics.NamespaceTag(namespaceEntry.Name().String())
+		wcimetrics.Instances.With(d.metricsHandler).Record(float64(count), nsTag)
+		wcimetrics.MaxInstances.With(d.metricsHandler).Record(float64(limit), nsTag)
 		if count >= int64(limit) {
+			wcimetrics.InstanceLimitExceeded.With(d.metricsHandler).Record(1, nsTag)
 			return &serviceerror.ResourceExhausted{
 				Message: fmt.Sprintf("reached maximum worker controller instances in namespace (%d)", limit),
 				Scope:   enumspb.RESOURCE_EXHAUSTED_SCOPE_NAMESPACE,
