@@ -7,6 +7,17 @@ var (
 		"worker_controller_instance_created",
 		metrics.WithDescription("The number of worker controller instance workflows started."))
 
+	// Emitted by the client's instance-limit check, not the WCI workflow.
+	Instances = metrics.NewGaugeDef(
+		"worker_controller_instances",
+		metrics.WithDescription("The number of running worker controller instances in the namespace, as of the last instance-limit check."))
+	MaxInstances = metrics.NewGaugeDef(
+		"worker_controller_max_instances",
+		metrics.WithDescription("The maximum number of worker controller instances allowed in the namespace, as of the last instance-limit check."))
+	InstanceLimitExceeded = metrics.NewCounterDef(
+		"worker_controller_instance_limit_exceeded",
+		metrics.WithDescription("The number of worker controller instance creations rejected because the namespace reached its instance limit."))
+
 	// Emitted by the matching service task hook, not the WCI workflow.
 	TaskMatchErrorCount = metrics.NewCounterDef(
 		"worker_controller_instance_task_match_error_count",
