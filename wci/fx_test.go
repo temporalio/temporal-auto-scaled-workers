@@ -1,6 +1,7 @@
 package wci
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,6 +10,7 @@ import (
 	"go.uber.org/fx/fxtest"
 
 	"go.temporal.io/auto-scaled-workers/wci/client"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider/modal"
 	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -62,4 +64,40 @@ func TestStaticConfigDepsResolvesOptionalStaticConfig(t *testing.T) {
 
 	assert.Equal(t, &client.StaticConfig{RegionID: "aws-us-east-1"}, supplied.StaticConfig)
 	assert.Nil(t, absent.StaticConfig)
+}
+
+type namespaceSecretSource struct{}
+
+func (namespaceSecretSource) Credentials(context.Context, string, string) (*modal.Credentials, error) {
+	return nil, modal.ErrCredentialsNotFound
+}
+
+func TestModuleInstallsTheModalSecretSource(t *testing.T) {
+	type testCase struct {
+		name     string
+		opts     []fx.Option
+		expected modal.SecretSource
+	}
+
+	tests := []testCase{
+		{name: "sdk_default_without_a_host_source", expected: modal.SDKDefaultSecretSource{}},
+		{
+			name: "host_source_replaces_the_default",
+			opts: []fx.Option{fx.Decorate(func(modal.SecretSource) modal.SecretSource {
+				return namespaceSecretSource{}
+			})},
+			expected: namespaceSecretSource{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Cleanup(func() { modal.SetSecretSource(modal.SDKDefaultSecretSource{}) })
+
+			var installed modal.SecretSource
+			fxtest.New(t, append(tt.opts, modalSecretSourceModule, fx.Populate(&installed))...).RequireStart().RequireStop()
+
+			assert.Equal(t, tt.expected, installed)
+		})
+	}
 }

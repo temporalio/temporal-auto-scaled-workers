@@ -7,6 +7,7 @@ import (
 	"go.temporal.io/auto-scaled-workers/wci/client"
 	"go.temporal.io/auto-scaled-workers/wci/workercomponent"
 	computeprovider "go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider"
+	"go.temporal.io/auto-scaled-workers/wci/workflow/compute_provider/modal"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/config"
@@ -63,7 +64,15 @@ var Module = fx.Options(
 	fx.Invoke(func(p computeprovider.GCPImpersonationChainProvider) {
 		computeprovider.SetGCPImpersonationChainProvider(p)
 	}),
+	modalSecretSourceModule,
 	fx.Invoke(ServiceLifetimeHooks),
+)
+
+// modalSecretSourceModule installs the Modal SDK default, which a host replaces with fx.Decorate to
+// supply credentials per namespace and workspace.
+var modalSecretSourceModule = fx.Options(
+	fx.Provide(func() modal.SecretSource { return modal.SDKDefaultSecretSource{} }),
+	fx.Invoke(modal.SetSecretSource),
 )
 
 func ServiceResolverProvider(
