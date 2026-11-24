@@ -24,6 +24,11 @@ func classifyFailure(err error) computeprovider.FailureClass {
 		return computeprovider.FailureUnclassified
 	}
 
+	// The namespace has not connected this workspace: the customer's to fix, not a credential fault of ours.
+	if errors.Is(err, ErrCredentialsNotFound) {
+		return computeprovider.FailureNotFound
+	}
+
 	wciOwned := errors.Is(err, errWCIOwned)
 	ownerFault := computeprovider.FailureRejected
 	if wciOwned {
