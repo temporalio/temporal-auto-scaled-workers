@@ -363,11 +363,12 @@ func TestModalInvokeWorker_DoesNotReloadOnNonAuthFailure(t *testing.T) {
 
 func TestModalInvokeWorker_ClassifiesFailures(t *testing.T) {
 	type testCase struct {
-		name          string
-		lookupErr     error
-		signingKeyErr error
-		expected      computeprovider.FailureClass
-		msg           string
+		name            string
+		lookupErr       error
+		signingKeyErr   error
+		refreshTokenErr error
+		expected        computeprovider.FailureClass
+		msg             string
 	}
 
 	tests := []testCase{
@@ -383,12 +384,24 @@ func TestModalInvokeWorker_ClassifiesFailures(t *testing.T) {
 			expected:      computeprovider.FailureInternal,
 			msg:           "WCI owns the signing key, so failing to read it is ours",
 		},
+		{
+			name:            "workspace_not_connected",
+			refreshTokenErr: fmt.Errorf("%w: no grant", ErrCredentialsNotFound),
+			expected:        computeprovider.FailureNotFound,
+			msg:             "a workspace the namespace never connected is the customer's to fix",
+		},
+		{
+			name:            "grant_unreadable",
+			refreshTokenErr: errors.New("bucket unreachable"),
+			expected:        computeprovider.FailureInternal,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			src := newFakeSecretSource()
 			src.signingKeyErr = tt.signingKeyErr
+			src.refreshTokenErr = tt.refreshTokenErr
 			stubModalSecretSource(t, src)
 			stubModalClient(t, &fakeModalClient{
 				lookupErr: func(Credentials) error { return tt.lookupErr },
