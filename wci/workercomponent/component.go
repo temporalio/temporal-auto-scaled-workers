@@ -9,6 +9,7 @@ import (
 	sdkclient "go.temporal.io/sdk/client"
 	sdkworker "go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/sdk"
@@ -20,11 +21,13 @@ type (
 		dynamicConfig    *dynamicconfig.Collection
 		sdkClientFactory sdk.ClientFactory
 		staticConfig     *client.StaticConfig
+		clusterMetadata  cluster.Metadata
+		nsRegistry       namespace.Registry
 	}
 )
 
-func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory, staticConfig *client.StaticConfig) workercommon.PerNSWorkerComponent {
-	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory, staticConfig: staticConfig}
+func NewWCIPerNSWorkerComponent(dc *dynamicconfig.Collection, sdkClientFactory sdk.ClientFactory, staticConfig *client.StaticConfig, clusterMetadata cluster.Metadata, nsRegistry namespace.Registry) workercommon.PerNSWorkerComponent {
+	return &workerComponent{dynamicConfig: dc, sdkClientFactory: sdkClientFactory, staticConfig: staticConfig, clusterMetadata: clusterMetadata, nsRegistry: nsRegistry}
 }
 
 func (s *workerComponent) DedicatedWorkerOptions(ns *namespace.Namespace) *workercommon.PerNSDedicatedWorkerOptions {
@@ -39,7 +42,7 @@ func (s *workerComponent) Register(registry sdkworker.Registry, ns *namespace.Na
 		DataConverter: sdk.PreferProtoDataConverter,
 	})
 
-	activities := instancewf.NewActivities(ns, s.dynamicConfig, sdkClient.WorkflowService(), s.staticConfig)
+	activities := instancewf.NewActivities(ns, s.dynamicConfig, sdkClient.WorkflowService(), s.staticConfig, s.clusterMetadata, s.nsRegistry)
 	versionWorkflow := func(ctx workflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
 		workflowVersionGetter := func() instancewf.WorkerControllerInstanceWorkflowVersion {
 			return instancewf.WorkerControllerInstanceWorkflowVersion(client.WorkerControllerInstanceWorkflowVersion.Get(s.dynamicConfig)(ns.Name().String()))

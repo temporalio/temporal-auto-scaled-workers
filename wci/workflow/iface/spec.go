@@ -254,6 +254,16 @@ func (c *WorkerControllerInstanceSpec) Validate() error {
 	return nil
 }
 
+// ServesRegion reports whether some scaling group applies in the given region.
+func (c *WorkerControllerInstanceSpec) ServesRegion(regionId string) bool {
+	for _, v := range c.ScalingGroupSpecs {
+		if len(v.RegionIds) == 0 || slices.Contains(v.RegionIds, regionId) {
+			return true
+		}
+	}
+	return false
+}
+
 // listedRegionIds returns every region ID that some scaling group lists, sorted.
 func (c *WorkerControllerInstanceSpec) listedRegionIds() []string {
 	var regionIds []string
