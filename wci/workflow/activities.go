@@ -22,12 +22,17 @@ import (
 	"go.temporal.io/sdk/activity"
 	sdkclient "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/sdk"
 )
 
 const (
+	// Cluster metadata tag naming a cell's region, in the form a compute config's region_ids
+	// use, e.g. "aws-us-east-1".
+	clusterRegionIDTag = "region-id"
+
 	validateSpecTimeout           = 15 * time.Second
 	startNewWorkerInstanceTimeout = 60 * time.Second
 	updateWorkerSetSizeTimeout    = 60 * time.Second
@@ -47,6 +52,8 @@ type (
 		namespace             *namespace.Namespace
 		workflowserviceClient workflowservice.WorkflowServiceClient
 		staticConfig          *client.StaticConfig
+		clusterMetadata       cluster.Metadata
+		nsRegistry            namespace.Registry
 	}
 
 	// RequestContext aliases the compute-provider request context so activity
@@ -61,6 +68,10 @@ type (
 		Spec *iface.WorkerControllerInstanceSpec `json:"spec"`
 		// ScalingGroupsToSkipProviderValidation lists the scaling groups to skip provider validation for.
 		ScalingGroupsToSkipProviderValidation []string `json:"scaling_groups_to_skip_provider_validation,omitempty"`
+	}
+
+	ValidateSpecActivityResponse struct {
+		Warnings []string `json:"warnings,omitempty"`
 	}
 
 	InvokeWorkerActivityRequest struct {
@@ -174,13 +185,30 @@ func NewActivities(
 	dc *dynamicconfig.Collection,
 	workflowserviceClient workflowservice.WorkflowServiceClient,
 	staticConfig *client.StaticConfig,
+	clusterMetadata cluster.Metadata,
+	nsRegistry namespace.Registry,
 ) *Activities {
 	return &Activities{
 		dc:                    dc,
 		namespace:             namespace,
 		workflowserviceClient: workflowserviceClient,
 		staticConfig:          staticConfig,
+		clusterMetadata:       clusterMetadata,
+		nsRegistry:            nsRegistry,
 	}
+}
+
+// currentNamespace re-reads the namespace: the one captured when this worker started does not
+// follow replica changes, which only restart the worker if the enabled component set changes.
+func (a *Activities) currentNamespace() *namespace.Namespace {
+	if a.namespace == nil || a.nsRegistry == nil {
+		return a.namespace
+	}
+	ns, err := a.nsRegistry.GetNamespaceByID(a.namespace.ID())
+	if err != nil {
+		return a.namespace
+	}
+	return ns
 }
 
 // workerControllerEnabled checks whether the Worker Controller Instance (WCI) feature is enabled for the current
@@ -189,9 +217,9 @@ func (a *Activities) workerControllerEnabled() bool {
 	return client.WorkerControllerEnabled.Get(a.dc)(a.namespace.Name().String())
 }
 
-func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest) error {
+func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest) (*ValidateSpecActivityResponse, error) {
 	if req == nil || req.Spec == nil {
-		return temporal.NewApplicationError("Invalid activity request", "InvalidArgument")
+		return nil, temporal.NewApplicationError("Invalid activity request", "InvalidArgument")
 	}
 
 	logger := activity.GetLogger(ctx)
@@ -208,28 +236,28 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 		// Without a regionId set for the worker controller instance, region_ids could never match and the group would be silently ignored.
 		if len(entry.RegionIds) > 0 && a.regionID() == "" {
 			recordError(wcimetrics.ErrorTypeInvalidRequest)
-			return temporal.NewApplicationError(fmt.Sprintf("%s: region_ids is not supported because this server has no region configured", key), "InvalidArgument")
+			return nil, temporal.NewApplicationError(fmt.Sprintf("%s: region_ids is not supported because this server has no region configured", key), "InvalidArgument")
 		}
 
 		provider, err := computeprovider.GetComputeProvider(timeoutCtx, entry.Compute.ProviderType, a.namespace.Name().String(), a.dc)
 		if err != nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderFailed)
-			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
+			return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
 		if provider == nil {
 			recordError(wcimetrics.ErrorTypeComputeProviderNotEnabled)
-			return temporal.NewApplicationError(fmt.Sprintf("%s: Could not instantiate compute provider with type '%s'", key, entry.Compute.ProviderType), "InvalidArgument")
+			return nil, temporal.NewApplicationError(fmt.Sprintf("%s: Could not instantiate compute provider with type '%s'", key, entry.Compute.ProviderType), "InvalidArgument")
 		}
 		logger.Debug("Validating compute provider", "scaling_group_name", key, "compute_provider_type", entry.Compute.ProviderType)
 		config := map[string]any{}
 		if err := sdk.PreferProtoDataConverter.FromPayload(entry.Compute.Config, &config); err != nil {
 			recordError(wcimetrics.ErrorTypeInvalidRequest)
-			return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
+			return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 		}
 		if !slices.Contains(req.ScalingGroupsToSkipProviderValidation, key) {
 			if err := provider.ValidateConfig(timeoutCtx, req.RequestContext, config); err != nil {
 				recordError(wcimetrics.ErrorTypeInvalidRequest)
-				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
+				return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 			}
 		}
 
@@ -237,33 +265,116 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 			scalingAlgo, err := scalingalgorithm.GetScalingAlgorithm(timeoutCtx, entry.Scaling.ScalingAlgorithm, a.dc)
 			if err != nil {
 				recordError(wcimetrics.ErrorTypeAlgorithmFailed)
-				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
+				return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 			}
 			if scalingAlgo == nil {
 				recordError(wcimetrics.ErrorTypeAlgorithmUnavailable)
-				return temporal.NewApplicationError(fmt.Sprintf("%s: Could not instantiate scaling algorithm with type '%s'", key, entry.Scaling.ScalingAlgorithm), "InvalidArgument")
+				return nil, temporal.NewApplicationError(fmt.Sprintf("%s: Could not instantiate scaling algorithm with type '%s'", key, entry.Scaling.ScalingAlgorithm), "InvalidArgument")
 			}
 			logger.Debug("Validating scaling algorithm", "scaling_algorithm_type", entry.Scaling.ScalingAlgorithm)
 			config := map[string]any{}
 			if err := sdk.PreferProtoDataConverter.FromPayload(entry.Scaling.Config, &config); err != nil {
 				recordError(wcimetrics.ErrorTypeInvalidRequest)
-				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
+				return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err.Error()), "InvalidArgument", err)
 			}
 			if err := scalingAlgo.ValidateConfig(timeoutCtx, config); err != nil {
 				recordError(wcimetrics.ErrorTypeInvalidRequest)
-				return temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err), "InvalidArgument", err)
+				return nil, temporal.NewApplicationErrorWithCause(fmt.Sprintf("%s: %s", key, err), "InvalidArgument", err)
 			}
 
 			compatibleLaunchStrategies := scalingAlgo.CompatibleLaunchStrategies()
 			if !slices.Contains(compatibleLaunchStrategies, provider.LaunchStrategy()) {
 				recordError(wcimetrics.ErrorTypeInvalidRequest)
-				return temporal.NewApplicationError(fmt.Sprintf("%s: Scaling Algorithm '%s' is not compatible with compute provider '%s'", key, entry.Scaling.ScalingAlgorithm, entry.Compute.ProviderType), "InvalidArgument")
+				return nil, temporal.NewApplicationError(fmt.Sprintf("%s: Scaling Algorithm '%s' is not compatible with compute provider '%s'", key, entry.Scaling.ScalingAlgorithm, entry.Compute.ProviderType), "InvalidArgument")
 			}
 		}
 	}
 
 	recordSuccess()
-	return nil
+	return &ValidateSpecActivityResponse{Warnings: a.computeConfigWarnings(req.Spec)}, nil
+}
+
+// computeConfigWarnings reports concerns that do not make a spec invalid: a region left uncovered,
+// a group scoped where the namespace never runs, and an unscoped group that could become the group
+// that serves a future replica unintentionally.
+func (a *Activities) computeConfigWarnings(spec *iface.WorkerControllerInstanceSpec) []string {
+	ns := a.currentNamespace()
+	if ns == nil || spec == nil {
+		return nil
+	}
+	clusters := ns.ClusterNames(namespace.EmptyBusinessID)
+	if len(clusters) == 0 {
+		return nil
+	}
+
+	var warnings []string
+	groupKeys := slices.Sorted(maps.Keys(spec.ScalingGroupSpecs))
+
+	// An unscoped group is the expected shape on a single cluster; it only becomes a surprise
+	// fallback once the namespace has replicas, if it was never meant to be configured as a catch-all.
+	if len(clusters) > 1 {
+		for _, key := range groupKeys {
+			if len(spec.ScalingGroupSpecs[key].RegionIds) > 0 {
+				continue
+			}
+			warnings = append(warnings, fmt.Sprintf(
+				"%s: no region_ids set, so this scaling group is the fallback for any region no other group covers, including replicas added later, where compute provider '%s' may not be able to run",
+				key, spec.ScalingGroupSpecs[key].Compute.ProviderType))
+		}
+	}
+
+	// Both checks below need every cell's region; a partial map would report regions as
+	// uncovered and groups as unreachable when they are neither.
+	regions := a.namespaceRegionIDs(clusters)
+	if len(regions) == 0 {
+		return warnings
+	}
+
+	for _, region := range slices.Sorted(slices.Values(regions)) {
+		if spec.ServesRegion(region) {
+			continue
+		}
+		if len(regions) == 1 {
+			warnings = append(warnings, fmt.Sprintf(
+				"region %s: the namespace runs there but no scaling group serves it, so this version has no workers", region))
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"region %s: the namespace replicates there but no scaling group serves it; a failover leaves this version without workers", region))
+	}
+
+	for _, key := range groupKeys {
+		regionIds := spec.ScalingGroupSpecs[key].RegionIds
+		if len(regionIds) == 0 || slices.ContainsFunc(regionIds, func(r string) bool { return slices.Contains(regions, r) }) {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"%s: region_ids %v match no region the namespace runs in, so this scaling group is never selected", key, regionIds))
+	}
+
+	return warnings
+}
+
+// namespaceRegionIDs maps the namespace's cells to the regions they run in. Returns nil unless
+// every cell names its region, since a partial map cannot distinguish uncovered from unknown.
+func (a *Activities) namespaceRegionIDs(clusters []string) []string {
+	if a.clusterMetadata == nil {
+		return nil
+	}
+	allInfo := a.clusterMetadata.GetAllClusterInfo()
+
+	// Two cells in one region must not warn about it twice.
+	regions := make([]string, 0, len(clusters))
+	for _, c := range clusters {
+		region := allInfo[c].Tags[clusterRegionIDTag]
+		if region == "" {
+			return nil
+		}
+		if !slices.Contains(regions, region) {
+			regions = append(regions, region)
+		}
+	}
+	return regions
 }
 
 func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req *InvokeWorkersToRegisterTaskQueuesRequest) (*InvokeWorkersToRegisterTaskQueuesResponse, error) {
@@ -378,8 +489,16 @@ func (a *Activities) InvokeWorkersToRegisterTaskQueues(ctx context.Context, req 
 	return &InvokeWorkersToRegisterTaskQueuesResponse{UpdatedScalingStatus: updatedScalingStatus}, nil
 }
 
-// regionID returns the regionId set for this worker controller instance, or "" if none is set.
+// regionID returns the region this cell serves, or "" if none is set. The cell's own region-id
+// cluster tag is the source of record, so every cell's region is published the same way; the
+// REGION_ID static config is only a fallback for cells that do not carry the tag yet.
 func (a *Activities) regionID() string {
+	if a.clusterMetadata != nil {
+		own := a.clusterMetadata.GetAllClusterInfo()[a.clusterMetadata.GetCurrentClusterName()]
+		if id := own.Tags[clusterRegionIDTag]; id != "" {
+			return id
+		}
+	}
 	if a.staticConfig == nil {
 		return ""
 	}

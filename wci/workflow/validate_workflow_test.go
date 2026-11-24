@@ -21,7 +21,7 @@ func runValidateSpecWorkflow(
 ) (err error, validateSpecCalled bool) {
 	t.Helper()
 
-	activities := NewActivities(nil, nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil, nil, nil)
 	testWorkflow := func(ctx sdkworkflow.Context, args *iface.ValidateWorkerControllerInstanceSpecWorkflowArgs) error {
 		return ValidateSpecWorkflow(ctx,
 			func() WorkerControllerValidateWorkflowVersion { return version },
@@ -35,7 +35,7 @@ func runValidateSpecWorkflow(
 
 	var validateSpecRequests []*ValidateSpecRequest
 	env.OnActivity(activities.ValidateSpec, mock.Anything, mock.Anything).
-		Return(nil).
+		Return(&ValidateSpecActivityResponse{}, nil).
 		Run(func(args mock.Arguments) {
 			validateSpecCalled = true
 			validateSpecRequests = append(validateSpecRequests, args.Get(1).(*ValidateSpecRequest))

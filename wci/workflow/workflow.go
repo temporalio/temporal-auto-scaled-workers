@@ -416,6 +416,7 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 		return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 	}
 
+	var activityResp ValidateSpecActivityResponse
 	if updatedSpec != nil {
 		if err := updatedSpec.Validate(); err != nil {
 			d.updateMetric(wcimetrics.UpdateTypeValidateSpec).recordFailure(wcimetrics.ErrorTypeInvalidSpec)
@@ -431,7 +432,7 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 				Spec:                                  updatedSpec,
 				ScalingGroupsToSkipProviderValidation: scalingGroupsWithoutComputeProviderChanges,
 			},
-		).Get(ctx, nil); err != nil {
+		).Get(ctx, &activityResp); err != nil {
 			d.updateMetric(wcimetrics.UpdateTypeValidateSpec).recordActivityError(err)
 
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
@@ -447,7 +448,7 @@ func (d *WorkflowRunner) handleValidateSpec(ctx workflow.Context, args *iface.Va
 	}
 
 	if len(args.RemoveScalingGroups) == 0 && len(args.UpsertScalingGroups) == 0 {
-		d.State.ValidationStatus = iface.NewValidationStatusSuccess(workflow.Now(ctx))
+		d.State.ValidationStatus = iface.NewValidationStatusSuccess(workflow.Now(ctx), activityResp.Warnings)
 		d.signalVersionWorkflow(ctx)
 	}
 
@@ -495,6 +496,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 		return nil, serviceerror.NewInvalidArgumentf("%s", err.Error())
 	}
 
+	var activityResp ValidateSpecActivityResponse
 	if updatedSpec != nil {
 		// if there are no scaling groups after the update, it is seen as implicit delete
 		// that way no orphaned workflows stick around and waste cycles
@@ -523,7 +525,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 				Spec:                                  updatedSpec,
 				ScalingGroupsToSkipProviderValidation: scalingGroupsWithoutComputeProviderChanges,
 			},
-		).Get(ctx, nil); err != nil {
+		).Get(ctx, &activityResp); err != nil {
 			d.updateMetric(wcimetrics.UpdateTypeUpdateInstance).recordActivityError(err)
 
 			if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
@@ -560,7 +562,7 @@ func (d *WorkflowRunner) handleUpdateInstance(ctx workflow.Context, args *iface.
 
 		d.State.ScalingStatus = regResp.UpdatedScalingStatus
 
-		d.State.ValidationStatus = iface.NewValidationStatusSuccess(validationTime)
+		d.State.ValidationStatus = iface.NewValidationStatusSuccess(validationTime, activityResp.Warnings)
 		d.signalVersionWorkflow(ctx)
 		d.State.ConflictToken = args.ConflictToken
 		d.State.Spec = updatedSpec
@@ -664,6 +666,7 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 
 	now := workflow.Now(ctx)
 
+	var activityResp ValidateSpecActivityResponse
 	if err := workflow.ExecuteActivity(
 		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: ValidateSpecActivityTimeout,
@@ -674,7 +677,7 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 			RequestContext: d.requestContext(),
 			Spec:           d.State.Spec,
 		},
-	).Get(ctx, nil); err != nil {
+	).Get(ctx, &activityResp); err != nil {
 		d.operationMetric(wcimetrics.OperationTypeValidateSpec).recordActivityError(err)
 
 		if appErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
@@ -689,7 +692,7 @@ func (d *WorkflowRunner) periodicValidateSpec(ctx workflow.Context) {
 	} else {
 		d.operationMetric(wcimetrics.OperationTypeValidateSpec).recordSuccess()
 
-		d.State.ValidationStatus = iface.NewValidationStatusSuccess(now)
+		d.State.ValidationStatus = iface.NewValidationStatusSuccess(now, activityResp.Warnings)
 		d.signalVersionWorkflow(ctx)
 	}
 

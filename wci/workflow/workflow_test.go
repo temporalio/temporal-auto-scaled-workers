@@ -114,7 +114,7 @@ func TestDeleteInstanceCancelsPendingTimer(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			activities := NewActivities(nil, nil, nil, nil)
+			activities := NewActivities(nil, nil, nil, nil, nil, nil)
 			args := &iface.WorkerControllerInstanceWorkflowArgs{
 				NamespaceName:  "test-namespace",
 				DeploymentName: "test-deployment",
@@ -216,7 +216,7 @@ func newEnabledTestEnv(t *testing.T, workflowVersion WorkerControllerInstanceWor
 		},
 	}
 
-	activities := NewActivities(nil, nil, nil, nil)
+	activities := NewActivities(nil, nil, nil, nil, nil, nil)
 	h.testWorkflow = func(ctx sdkworkflow.Context, args *iface.WorkerControllerInstanceWorkflowArgs) error {
 		return Workflow(ctx,
 			func() WorkerControllerInstanceWorkflowVersion { return workflowVersion },
@@ -238,7 +238,7 @@ func newEnabledTestEnv(t *testing.T, workflowVersion WorkerControllerInstanceWor
 		Return(&PullStatsActivityResponse{NextPollSeconds: uint32(maxPollInterval.Seconds())}, nil).
 		Run(func(mock.Arguments) { h.pullStatsCalled = true })
 	h.env.OnActivity(activities.ValidateSpec, mock.Anything, mock.Anything).
-		Return(nil).
+		Return(&ValidateSpecActivityResponse{}, nil).
 		Run(func(args mock.Arguments) {
 			h.validateSpecCalled = true
 			h.validateSpecRequests = append(h.validateSpecRequests, args.Get(1).(*ValidateSpecRequest))

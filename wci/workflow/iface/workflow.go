@@ -146,6 +146,8 @@ type (
 		Status ValidationResult `json:"status"`
 		// ErrMessage is a description of any encountered validation errors. It should be empty if validation succeeded.
 		ErrMessage string `json:"err_message,omitempty"`
+		// Warnings are the concerns found by the last validation. Empty if validation failed.
+		Warnings []string `json:"warnings,omitempty"`
 	}
 
 	SignalTaskAddRequest struct {
@@ -164,10 +166,11 @@ type (
 	}
 )
 
-func NewValidationStatusSuccess(t time.Time) *ValidationStatus {
+func NewValidationStatusSuccess(t time.Time, warnings []string) *ValidationStatus {
 	return &ValidationStatus{
 		LastValidationTime: t,
 		Status:             ValidationResultSuccess,
+		Warnings:           warnings,
 	}
 }
 
