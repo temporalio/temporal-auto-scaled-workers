@@ -290,6 +290,18 @@ func (a *Activities) ValidateSpec(ctx context.Context, req *ValidateSpecRequest)
 		}
 	}
 
+	// TEMPORARY staleness probe: compares the namespace captured when this worker started
+	// against a fresh read from the registry. Remove once the question is settled.
+	if a.namespace != nil {
+		fresh := a.currentNamespace()
+		logger.Info("wci namespace staleness probe",
+			"captured_clusters", a.namespace.ClusterNames(namespace.EmptyBusinessID),
+			"captured_notification_version", a.namespace.NotificationVersion(),
+			"fresh_clusters", fresh.ClusterNames(namespace.EmptyBusinessID),
+			"fresh_notification_version", fresh.NotificationVersion(),
+			"same_pointer", fresh == a.namespace)
+	}
+
 	recordSuccess()
 	return &ValidateSpecActivityResponse{Warnings: a.computeConfigWarnings(req.Spec)}, nil
 }
