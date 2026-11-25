@@ -160,13 +160,12 @@ func (d *clientImpl) DescribeWorkerControllerInstance(
 		return nil, nil, err
 	}
 
-	var queryResponse iface.QueryDescribeWorkerControllerInstanceResponse
-	err = sdk.PreferProtoDataConverter.FromPayloads(res.GetResponse().GetQueryResult(), &queryResponse)
+	queryResponse, err := decodeDescribeWorkerControllerInstanceResult(res.GetResponse().GetQueryResult())
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return &queryResponse, queryResponse.ConflictToken, nil
+	return queryResponse, queryResponse.ConflictToken, nil
 }
 
 func (d *clientImpl) WorkerControllerInstanceExists(

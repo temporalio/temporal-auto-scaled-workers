@@ -2,10 +2,10 @@ package computeprovider
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http/httptrace"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,14 +124,105 @@ func TestAWSAgentCoreInvokeWorker_Success(t *testing.T) {
 	assert.Equal(t, testAgentCoreRuntimeID, gotARN)
 	assert.Equal(t, testAgentCoreAccountID, aws.ToString(gotAccountID))
 	assert.Equal(t, testAgentCoreEndpointName, aws.ToString(gotQualifier))
+	assert.Equal(t, "{}", string(gotPayload))
+}
 
-	var payload struct {
-		DeploymentName string `json:"deploymentName"`
-		BuildID        string `json:"buildId"`
+// captureAgentCoreInvoke stubs the data client and returns a pointer that receives
+// the InvokeAgentRuntimeInput of the next invoke (nil if the invoke never happens).
+func captureAgentCoreInvoke(t *testing.T) **bedrockagentcore.InvokeAgentRuntimeInput {
+	var got *bedrockagentcore.InvokeAgentRuntimeInput
+	stubAgentCoreDataClient(t, &mockAgentCoreDataClient{
+		invokeFn: func(_ context.Context, params *bedrockagentcore.InvokeAgentRuntimeInput, _ ...func(*bedrockagentcore.Options)) (*bedrockagentcore.InvokeAgentRuntimeOutput, error) {
+			got = params
+			return &bedrockagentcore.InvokeAgentRuntimeOutput{StatusCode: aws.Int32(200)}, nil
+		},
+	})
+	return &got
+}
+
+func testAgentCoreSessionID(n int) string {
+	return strings.Repeat("s", n)
+}
+
+func TestAWSAgentCoreInvokeWorker_NonSession_EmptyPayload(t *testing.T) {
+	got := captureAgentCoreInvoke(t)
+	rc := RequestContext{NamespaceName: "ns", DeploymentName: "dep", DeploymentBuildID: "build-1"}
+
+	require.NoError(t, newAgentCoreProvider().InvokeWorker(t.Context(), rc, ComputeProviderConfig{
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
+	}))
+	require.NotNil(t, *got)
+	// Golden: every payload is `{}`; non-session invokes leave RuntimeSessionId
+	// for the SDK to generate.
+	assert.Equal(t, "{}", string((*got).Payload))
+	assert.Equal(t, "application/json", aws.ToString((*got).ContentType))
+	assert.Nil(t, (*got).RuntimeSessionId)
+}
+
+func TestAWSAgentCoreInvokeWorker_Session_EmptyPayloadAndRuntimeSessionID(t *testing.T) {
+	sessionID := "0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0"
+	got := captureAgentCoreInvoke(t)
+	rc := RequestContext{
+		NamespaceName:     "ns",
+		DeploymentName:    "dep",
+		DeploymentBuildID: "build-1",
+		SessionID:         sessionID,
 	}
-	require.NoError(t, json.Unmarshal(gotPayload, &payload))
-	assert.Equal(t, "dep", payload.DeploymentName)
-	assert.Equal(t, "build-1", payload.BuildID)
+
+	require.NoError(t, newAgentCoreProvider().InvokeWorker(t.Context(), rc, ComputeProviderConfig{
+		configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
+	}))
+	require.NotNil(t, *got)
+	// Golden: session invokes send `{}` too; the session ID rides in RuntimeSessionId.
+	assert.Equal(t, "{}", string((*got).Payload))
+	// The session ID is used as-is: no hashing or padding.
+	assert.Equal(t, sessionID, aws.ToString((*got).RuntimeSessionId))
+}
+
+func TestAWSAgentCoreInvokeWorker_SessionIDLengthBounds(t *testing.T) {
+	cases := []struct {
+		length  int
+		wantErr bool
+	}{
+		{1, true},
+		{32, true},
+		{33, false},
+		{256, false},
+		{257, true},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("len=%d", tc.length), func(t *testing.T) {
+			got := captureAgentCoreInvoke(t)
+			sessionID := testAgentCoreSessionID(tc.length)
+			rc := RequestContext{DeploymentName: "dep", DeploymentBuildID: "build-1", SessionID: sessionID}
+
+			err := newAgentCoreProvider().InvokeWorker(t.Context(), rc, ComputeProviderConfig{
+				configAWSAgentCoreEndpointARN: testAgentCoreEndpointARN,
+			})
+			if !tc.wantErr {
+				require.NoError(t, err)
+				require.NotNil(t, *got)
+				assert.Equal(t, sessionID, aws.ToString((*got).RuntimeSessionId))
+				return
+			}
+
+			require.Error(t, err)
+			assert.Nil(t, *got, "invoke must not be attempted with an out-of-bounds session ID")
+			assert.Contains(t, err.Error(), "outside AgentCore RuntimeSessionId limits")
+
+			// A provider-level non-retryable error, not a Temporal SDK error.
+			var nrErr *NonRetryableError
+			require.ErrorAs(t, err, &nrErr)
+			assert.Equal(t, errTypeInvalidAgentCoreSessionID, nrErr.Type)
+
+			// The session ID comes from the worker (user code), so an out-of-bounds
+			// ID is a customer rejection, not a WCI-owned failure.
+			assert.NotErrorIs(t, err, errWCIOwned)
+			var pErr *ProviderError
+			require.ErrorAs(t, err, &pErr)
+			assert.Equal(t, FailureRejected, pErr.Class)
+		})
+	}
 }
 
 func TestAWSAgentCoreInvokeWorker_Endpoint_ForwardedAsQualifier(t *testing.T) {

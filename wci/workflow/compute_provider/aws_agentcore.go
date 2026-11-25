@@ -2,7 +2,6 @@ package computeprovider
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http/httptrace"
@@ -32,6 +31,15 @@ const (
 	configAWSAgentCoreRole           = "role"
 	configAWSAgentCoreRoleExternalID = "role_external_id"
 )
+
+// AgentCore's documented length limits for InvokeAgentRuntime's RuntimeSessionId.
+// The SDK does not validate them client-side.
+const (
+	agentCoreRuntimeSessionIDMinLen = 33
+	agentCoreRuntimeSessionIDMaxLen = 256
+)
+
+const errTypeInvalidAgentCoreSessionID = "InvalidAgentCoreSessionID"
 
 type AgentCoreParams struct {
 	Role       string
@@ -126,16 +134,9 @@ func (p *awsAgentCoreComputeProvider) invokeWorker(ctx context.Context, rc Reque
 		return err
 	}
 
-	// Provide worker deployment version details in the payload
-	payload, err := json.Marshal(struct {
-		DeploymentName string `json:"deploymentName"`
-		BuildID        string `json:"buildId"`
-	}{
-		DeploymentName: rc.DeploymentName,
-		BuildID:        rc.DeploymentBuildID,
-	})
+	payload, err := agentCoreInvokePayload(rc)
 	if err != nil {
-		return fmt.Errorf("failed to marshal AgentCore invoke payload: %w", err)
+		return err
 	}
 
 	// Account ID is required with runtime ID and endpoint name is passed as qualifier to invoke specific version
@@ -145,6 +146,11 @@ func (p *awsAgentCoreComputeProvider) invokeWorker(ctx context.Context, rc Reque
 		ContentType:     aws.String("application/json"),
 		Payload:         payload,
 		Qualifier:       aws.String(params.EndpointName),
+	}
+	// Session WCIs pin the invoke to the AgentCore session the worker belongs to.
+	// Non-session invokes leave it unset so the SDK generates one, as before.
+	if rc.SessionID != "" {
+		input.RuntimeSessionId = aws.String(rc.SessionID)
 	}
 
 	// Setup agentCore ctx with timeout to prevent extended blocking
@@ -186,6 +192,27 @@ func (p *awsAgentCoreComputeProvider) invokeWorker(ctx context.Context, rc Reque
 	}
 
 	return nil
+}
+
+// agentCoreInvokePayload builds the JSON invoke payload, which is always `{}`:
+// AgentCore requires a payload, but the worker needs nothing from it. Session
+// invokes carry the session ID in RuntimeSessionId instead.
+func agentCoreInvokePayload(rc RequestContext) ([]byte, error) {
+	// The session ID goes in RuntimeSessionId, so it is only validated here.
+	// It comes from the worker, which runs user code, so it may be invalid
+	// through no fault of the WCI. It is non-retryable because the same ID will
+	// keep failing, and deliberately not marked errWCIOwned, so it classifies as
+	// a customer rejection rather than FailureInternal.
+	if rc.SessionID != "" {
+		if n := len(rc.SessionID); n < agentCoreRuntimeSessionIDMinLen || n > agentCoreRuntimeSessionIDMaxLen {
+			return nil, NewNonRetryableError(
+				errTypeInvalidAgentCoreSessionID,
+				fmt.Sprintf("session ID length %d is outside AgentCore RuntimeSessionId limits [%d, %d]",
+					n, agentCoreRuntimeSessionIDMinLen, agentCoreRuntimeSessionIDMaxLen),
+				nil)
+		}
+	}
+	return []byte("{}"), nil
 }
 
 func (p *awsAgentCoreComputeProvider) UpdateWorkerSetSize(_ context.Context, _ RequestContext, _ ComputeProviderConfig, _ int32) error {

@@ -62,3 +62,24 @@ func NewProviderError(class FailureClass, err error) error {
 	}
 	return &ProviderError{Class: class, cause: err}
 }
+
+// NonRetryableError marks a provider failure that will fail the same way on every
+// retry, e.g. an invalid input that came from the customer. Any provider may return
+// it (directly or wrapped); the caller decides how to surface it as non-retryable.
+// It is provider-agnostic and does not depend on the Temporal SDK.
+type NonRetryableError struct {
+	// Type is a short identifier for the failure, e.g. "InvalidAgentCoreSessionID".
+	Type    string
+	Message string
+	Cause   error
+}
+
+func (e *NonRetryableError) Error() string { return e.Message }
+
+func (e *NonRetryableError) Unwrap() error { return e.Cause }
+
+// NewNonRetryableError returns a *NonRetryableError with the given type, message
+// and optional cause.
+func NewNonRetryableError(errType, message string, cause error) error {
+	return &NonRetryableError{Type: errType, Message: message, Cause: cause}
+}
