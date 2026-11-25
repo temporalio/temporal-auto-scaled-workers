@@ -64,6 +64,11 @@ var (
 		24*time.Hour,
 		`WorkerControllerSessionIdleTimeout controls how long a session WCI waits without a no-sync task-add signal before it completes.`,
 	)
+	WorkerControllerSessionEnabled = dynamicconfig.NewNamespaceBoolSetting(
+		"workercontroller.session.enabled",
+		false,
+		`WorkerControllerSessionEnabled lets the matching task hook start session WCIs. When enabled, sticky partitions get a hook and sticky tasks with single-session options signal-with-start their session WCI. Checked on every task add; workercontroller.enabled must also be on.`,
+	)
 )
 
 func SessionIdleTimeoutGetter(dc *dynamicconfig.Collection, namespaceName string) func() time.Duration {

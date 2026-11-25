@@ -20,6 +20,7 @@ import (
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/metrics/metricstest"
 	"go.temporal.io/server/common/namespace"
+	"go.temporal.io/server/common/tqid"
 	"go.temporal.io/server/service/matching/hooks"
 )
 
@@ -230,6 +231,284 @@ func TestProcessTaskAdd_SignalErrorClassification(t *testing.T) {
 	}
 }
 
+const testStickyQueue = "test-sticky-queue"
+
+type sessionSignalCall struct {
+	version *deploymentpb.WorkerDeploymentVersion
+	session *iface.WorkerControllerInstanceSessionArgs
+	request *iface.SignalTaskAddRequest
+}
+
+// fakeSessionHookClient records signal-with-start calls on top of fakeHookClient.
+type fakeSessionHookClient struct {
+	fakeHookClient
+
+	sessionCalls []sessionSignalCall
+	sessionErr   error
+}
+
+func (f *fakeSessionHookClient) SignalWithStartSessionWorkerControllerInstance(
+	_ context.Context,
+	_ *namespace.Namespace,
+	version *deploymentpb.WorkerDeploymentVersion,
+	session *iface.WorkerControllerInstanceSessionArgs,
+	request *iface.SignalTaskAddRequest,
+) error {
+	f.sessionCalls = append(f.sessionCalls, sessionSignalCall{version: version, session: session, request: request})
+	return f.sessionErr
+}
+
+func newTestStickyHook(t *testing.T, client Client) (*taskHookImpl, *metricstest.CaptureHandler) {
+	t.Helper()
+	hook, handler := newTestHook(t, client)
+	hook.dc = testHookDC(true, true)
+	hook.isSticky = true
+	hook.stickyQueueName = testStickyQueue
+	return hook, handler
+}
+
+func testHookDC(enabled, sessionEnabled bool) *dynamicconfig.Collection {
+	return dynamicconfig.NewCollection(dynamicconfig.StaticClient{
+		WorkerControllerEnabled.Key():        enabled,
+		WorkerControllerSessionEnabled.Key(): sessionEnabled,
+	}, log.NewNoopLogger())
+}
+
+func testVersion() *deploymentpb.WorkerDeploymentVersion {
+	return &deploymentpb.WorkerDeploymentVersion{DeploymentName: "test-deployment", BuildId: "build-1"}
+}
+
+func sessionTaskAdd(sessionID string, isSyncMatch bool) *hooks.TaskAddHookDetails {
+	return &hooks.TaskAddHookDetails{
+		DeploymentVersion:    testVersion(),
+		IsSyncMatch:          isSyncMatch,
+		SingleSessionOptions: hooks.SingleSessionOptions{WorkerStableIdentity: sessionID},
+	}
+}
+
+func newTestFactory(enabled, sessionEnabled bool) *taskHookFactoryImpl {
+	return &taskHookFactoryImpl{
+		logger:         log.NewNoopLogger(),
+		client:         &fakeSessionHookClient{},
+		dc:             testHookDC(enabled, sessionEnabled),
+		metricsHandler: metricstest.NewCaptureHandler(),
+	}
+}
+
+func TestCreate_StickyPartition(t *testing.T) {
+	family, err := tqid.NewTaskQueueFamily("ns-id", "test-tq")
+	require.NoError(t, err)
+	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
+
+	hook := newTestFactory(true, true).Create(&hooks.TaskHookFactoryCreateDetails{
+		Namespace: ns,
+		Partition: family.TaskQueue(enumspb.TASK_QUEUE_TYPE_WORKFLOW).StickyPartition(testStickyQueue),
+	})
+	require.NotNil(t, hook)
+	impl := hook.(*taskHookImpl)
+	require.True(t, impl.isSticky)
+	require.Equal(t, testStickyQueue, impl.stickyQueueName)
+	require.Equal(t, "test-tq", impl.taskQueueName)
+	require.Equal(t, enumspb.TASK_QUEUE_TYPE_WORKFLOW, impl.taskQueueType)
+
+	normal := newTestFactory(true, true).Create(&hooks.TaskHookFactoryCreateDetails{
+		Namespace: ns,
+		Partition: family.TaskQueue(enumspb.TASK_QUEUE_TYPE_WORKFLOW).RootPartition(),
+	})
+	require.NotNil(t, normal)
+	require.False(t, normal.(*taskHookImpl).isSticky)
+
+	require.Nil(t, newTestFactory(false, true).Create(&hooks.TaskHookFactoryCreateDetails{
+		Namespace: ns,
+		Partition: family.TaskQueue(enumspb.TASK_QUEUE_TYPE_WORKFLOW).StickyPartition(testStickyQueue),
+	}), "disabled namespace gets no hook, even with sessions enabled")
+}
+
+// With workercontroller.session.enabled off, sticky partitions get no hook, as before session WCIs.
+func TestCreate_StickyPartitionSessionDisabled(t *testing.T) {
+	family, err := tqid.NewTaskQueueFamily("ns-id", "test-tq")
+	require.NoError(t, err)
+	ns := namespace.NewLocalNamespaceForTest(&persistencespb.NamespaceInfo{Name: "test-namespace"}, nil, "active")
+	factory := newTestFactory(true, false)
+
+	require.Nil(t, factory.Create(&hooks.TaskHookFactoryCreateDetails{
+		Namespace: ns,
+		Partition: family.TaskQueue(enumspb.TASK_QUEUE_TYPE_WORKFLOW).StickyPartition(testStickyQueue),
+	}))
+	normal := factory.Create(&hooks.TaskHookFactoryCreateDetails{
+		Namespace: ns,
+		Partition: family.TaskQueue(enumspb.TASK_QUEUE_TYPE_WORKFLOW).RootPartition(),
+	})
+	require.NotNil(t, normal)
+	require.False(t, normal.(*taskHookImpl).isSticky)
+}
+
+func TestProcessTaskAdd_StickySessionSignalsWithStart(t *testing.T) {
+	client := &fakeSessionHookClient{}
+	hook, handler := newTestStickyHook(t, client)
+	capture := handler.StartCapture()
+	defer handler.StopCapture(capture)
+
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", false))
+
+	require.Len(t, client.sessionCalls, 1)
+	call := client.sessionCalls[0]
+	require.Equal(t, "test-deployment", call.version.GetDeploymentName())
+	require.Equal(t, "build-1", call.version.GetBuildId())
+	require.Equal(t, &iface.WorkerControllerInstanceSessionArgs{SessionID: "session-1", SessionQueue: testStickyQueue}, call.session)
+	require.Equal(t, &iface.SignalTaskAddRequest{
+		TaskQueueName:               testStickyQueue,
+		TaskQueueType:               enumspb.TASK_QUEUE_TYPE_WORKFLOW,
+		NoSyncMatchSignalsSinceLast: 1,
+	}, call.request)
+	require.Zero(t, client.existsCalls, "session path skips the existence check")
+	require.Zero(t, client.signalCalls)
+	require.Zero(t, countMetric(capture.Snapshot(), wcimetrics.TaskMatchErrorCount.Name()))
+}
+
+func TestProcessTaskAdd_StickySessionSyncOnlyBatchIsSent(t *testing.T) {
+	client := &fakeSessionHookClient{}
+	hook, _ := newTestStickyHook(t, client)
+
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", true))
+
+	require.Len(t, client.sessionCalls, 1)
+	require.True(t, client.sessionCalls[0].request.IsSyncMatch)
+	require.Equal(t, 1, client.sessionCalls[0].request.SyncMatchSignalsSinceLast)
+	require.Zero(t, client.sessionCalls[0].request.NoSyncMatchSignalsSinceLast)
+}
+
+// Every no-sync session task is sent right away with a count of 1, even inside the no-sync batching interval.
+func TestProcessTaskAdd_StickySessionNoSyncNotBatched(t *testing.T) {
+	client := &fakeSessionHookClient{}
+	hook, _ := newTestStickyHook(t, client)
+
+	const n = 5
+	for range n {
+		hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", false))
+	}
+
+	require.Len(t, client.sessionCalls, n)
+	sum := 0
+	for _, call := range client.sessionCalls {
+		require.Equal(t, 1, call.request.NoSyncMatchSignalsSinceLast)
+		require.Zero(t, call.request.SyncMatchSignalsSinceLast)
+		require.False(t, call.request.IsSyncMatch)
+		sum += call.request.NoSyncMatchSignalsSinceLast
+	}
+	require.Equal(t, n, sum)
+	id := GenerateSessionWorkerControllerInstanceWorkflowID("test-deployment", "build-1", "session-1")
+	require.Zero(t, hook.lastSignalDetails[id].noSyncMatchCount, "no no-sync count is held")
+}
+
+// Sync-only session tasks are still batched over the sync-match interval.
+func TestProcessTaskAdd_StickySessionSyncOnlyBatched(t *testing.T) {
+	client := &fakeSessionHookClient{}
+	hook, _ := newTestStickyHook(t, client)
+
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", true))
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", true))
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", true))
+
+	require.Len(t, client.sessionCalls, 1)
+	require.Equal(t, 1, client.sessionCalls[0].request.SyncMatchSignalsSinceLast)
+	id := GenerateSessionWorkerControllerInstanceWorkflowID("test-deployment", "build-1", "session-1")
+	require.Equal(t, 2, hook.lastSignalDetails[id].syncMatchCount, "later sync-only adds are held")
+}
+
+// Held sync-match counts ride on the next no-sync signal and are not sent again.
+func TestProcessTaskAdd_StickySessionNoSyncCarriesHeldSyncCount(t *testing.T) {
+	client := &fakeSessionHookClient{}
+	hook, _ := newTestStickyHook(t, client)
+
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", true))  // sent
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", true))  // held
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", true))  // held
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", false)) // sent with the held sync count
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", false)) // sent, nothing held
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", true))  // held: the no-sync send restarted the sync interval
+
+	require.Len(t, client.sessionCalls, 3)
+	require.Equal(t, 1, client.sessionCalls[0].request.SyncMatchSignalsSinceLast)
+	require.Equal(t, &iface.SignalTaskAddRequest{
+		TaskQueueName:               testStickyQueue,
+		TaskQueueType:               enumspb.TASK_QUEUE_TYPE_WORKFLOW,
+		NoSyncMatchSignalsSinceLast: 1,
+		SyncMatchSignalsSinceLast:   2,
+	}, client.sessionCalls[1].request)
+	require.Equal(t, 1, client.sessionCalls[2].request.NoSyncMatchSignalsSinceLast)
+	require.Zero(t, client.sessionCalls[2].request.SyncMatchSignalsSinceLast, "held sync count is sent once")
+
+	totalSync := 0
+	for _, call := range client.sessionCalls {
+		totalSync += call.request.SyncMatchSignalsSinceLast
+	}
+	require.Equal(t, 3, totalSync)
+	id := GenerateSessionWorkerControllerInstanceWorkflowID("test-deployment", "build-1", "session-1")
+	require.Equal(t, 1, hook.lastSignalDetails[id].syncMatchCount)
+}
+
+// Sessions on the same sticky partition have independent batches.
+func TestProcessTaskAdd_StickySessionsIndependent(t *testing.T) {
+	client := &fakeSessionHookClient{}
+	hook, _ := newTestStickyHook(t, client)
+
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", true))  // sent
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", true))  // held for session-1
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-2", false)) // sent, doesn't take session-1's count
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-2", false))
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", false)) // sent with session-1's held count
+
+	require.Len(t, client.sessionCalls, 4)
+	require.Equal(t, "session-1", client.sessionCalls[0].session.SessionID)
+	for _, call := range client.sessionCalls[1:3] {
+		require.Equal(t, "session-2", call.session.SessionID)
+		require.Equal(t, 1, call.request.NoSyncMatchSignalsSinceLast)
+		require.Zero(t, call.request.SyncMatchSignalsSinceLast)
+	}
+	require.Equal(t, "session-1", client.sessionCalls[3].session.SessionID)
+	require.Equal(t, 1, client.sessionCalls[3].request.NoSyncMatchSignalsSinceLast)
+	require.Equal(t, 1, client.sessionCalls[3].request.SyncMatchSignalsSinceLast)
+}
+
+// The version path still batches no-sync tasks: a second add inside the no-sync interval is held.
+func TestProcessTaskAdd_VersionPathNoSyncStillBatched(t *testing.T) {
+	client := &fakeHookClient{exists: true}
+	hook, _ := newTestHook(t, client)
+
+	hook.ProcessTaskAdd(t.Context(), &hooks.TaskAddHookDetails{DeploymentVersion: testVersion()})
+	hook.ProcessTaskAdd(t.Context(), &hooks.TaskAddHookDetails{DeploymentVersion: testVersion()})
+
+	require.Equal(t, 1, client.signalCalls)
+	require.Equal(t, 1, hook.lastSignalDetails[GenerateWorkerControllerInstanceWorkflowID(testVersion())].noSyncMatchCount)
+}
+
+func TestProcessTaskAdd_StickyIgnored(t *testing.T) {
+	tests := []struct {
+		name  string
+		event *hooks.TaskAddHookDetails
+	}{
+		{name: "no_session_options", event: &hooks.TaskAddHookDetails{DeploymentVersion: testVersion()}},
+		{name: "empty_stable_identity", event: sessionTaskAdd("", false)},
+		{name: "unversioned", event: &hooks.TaskAddHookDetails{
+			SingleSessionOptions: hooks.SingleSessionOptions{WorkerStableIdentity: "session-1"},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeSessionHookClient{}
+			hook, _ := newTestStickyHook(t, client)
+
+			hook.ProcessTaskAdd(t.Context(), tc.event)
+
+			require.Empty(t, client.sessionCalls)
+			require.Zero(t, client.existsCalls)
+			require.Zero(t, client.signalCalls)
+			require.Empty(t, hook.lastSignalDetails)
+		})
+	}
+}
+
 func TestProcessTaskAdd_NamespaceActiveCheck(t *testing.T) {
 	const thisCluster, otherCluster = "cluster-a", "cluster-b"
 	globalNamespace := func(activeCluster string) *namespace.Namespace {
@@ -283,6 +562,113 @@ func TestProcessTaskAdd_NamespaceActiveCheck(t *testing.T) {
 			require.Equal(t, tc.wantNotActive, countMetric(snapshot, wcimetrics.TaskAddNamespaceNotActiveCount.Name()),
 				"namespace-not-active count")
 			require.Zero(t, countMetric(snapshot, wcimetrics.TaskMatchErrorCount.Name()))
+		})
+	}
+}
+
+func TestProcessTaskAdd_NonStickyIgnoresSessionOptions(t *testing.T) {
+	client := &fakeSessionHookClient{fakeHookClient: fakeHookClient{exists: true}}
+	hook, _ := newTestHook(t, client)
+
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", false))
+
+	require.Equal(t, 1, client.existsCalls)
+	require.Equal(t, 1, client.signalCalls)
+	require.Empty(t, client.sessionCalls)
+}
+
+func TestProcessTaskAdd_StickySessionErrors(t *testing.T) {
+	busy := &serviceerror.ResourceExhausted{
+		Cause:   enumspb.RESOURCE_EXHAUSTED_CAUSE_BUSY_WORKFLOW,
+		Scope:   enumspb.RESOURCE_EXHAUSTED_SCOPE_NAMESPACE,
+		Message: "Workflow is busy.",
+	}
+	tests := []struct {
+		name          string
+		err           error
+		wantBusy      int
+		wantCanceled  int
+		wantError     int
+		wantNotActive int
+	}{
+		{name: "busy_workflow", err: serviceerror.FromStatus(serviceerror.ToStatus(busy)), wantBusy: 1},
+		{name: "context_canceled", err: context.Canceled, wantCanceled: 1},
+		{name: "unrelated_error", err: serviceerror.NewUnavailable("history unavailable"), wantError: 1},
+		{name: "namespace_not_active", err: serviceerror.NewNamespaceNotActive("test-namespace", "cluster-b", "cluster-a"), wantNotActive: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeSessionHookClient{sessionErr: tc.err}
+			hook, handler := newTestStickyHook(t, client)
+			capture := handler.StartCapture()
+			defer handler.StopCapture(capture)
+
+			hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", false))
+
+			snapshot := capture.Snapshot()
+			require.Equal(t, tc.wantBusy, countMetric(snapshot, wcimetrics.WorkflowBusyCount.Name()))
+			require.Equal(t, tc.wantCanceled, countMetric(snapshot, wcimetrics.TaskAddContextCanceledCount.Name()))
+			require.Equal(t, tc.wantError, countMetric(snapshot, wcimetrics.TaskMatchErrorCount.Name()))
+			require.Equal(t, tc.wantNotActive, countMetric(snapshot, wcimetrics.TaskAddNamespaceNotActiveCount.Name()))
+			for _, recs := range snapshot {
+				for _, r := range recs {
+					require.Equal(t, wcimetrics.SessionTagValueTrue, r.Tags[wcimetrics.SessionTagName])
+				}
+			}
+		})
+	}
+}
+
+func TestProcessTaskAdd_StickySessionDisabledNamespace(t *testing.T) {
+	client := &fakeSessionHookClient{}
+	hook, _ := newTestStickyHook(t, client)
+	// workercontroller.enabled=false wins over workercontroller.session.enabled.
+	hook.dc = testHookDC(false, true)
+
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", false))
+
+	require.Empty(t, client.sessionCalls)
+	require.Zero(t, client.existsCalls)
+	require.Zero(t, client.signalCalls)
+}
+
+// Turning workercontroller.session.enabled off takes effect on an already created sticky hook.
+func TestProcessTaskAdd_StickySessionFlagOff(t *testing.T) {
+	client := &fakeSessionHookClient{}
+	hook, _ := newTestStickyHook(t, client)
+	hook.dc = testHookDC(true, false)
+
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", false))
+	hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", true))
+
+	require.Empty(t, client.sessionCalls)
+	require.Zero(t, client.existsCalls)
+	require.Zero(t, client.signalCalls)
+	require.Empty(t, hook.lastSignalDetails)
+}
+
+// The version path is the same with the session flag on or off, and its metrics carry no session tag.
+func TestProcessTaskAdd_VersionPathIndependentOfSessionFlag(t *testing.T) {
+	for _, sessionEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("session_enabled=%v", sessionEnabled), func(t *testing.T) {
+			client := &fakeSessionHookClient{fakeHookClient: fakeHookClient{exists: true, signaledError: serviceerror.NewUnavailable("history unavailable")}}
+			hook, handler := newTestHook(t, client)
+			hook.dc = testHookDC(true, sessionEnabled)
+			capture := handler.StartCapture()
+			defer handler.StopCapture(capture)
+
+			hook.ProcessTaskAdd(t.Context(), sessionTaskAdd("session-1", false))
+
+			require.Empty(t, client.sessionCalls)
+			require.Equal(t, 1, client.existsCalls)
+			require.Equal(t, 1, client.signalCalls)
+			snapshot := capture.Snapshot()
+			require.Equal(t, 1, countMetric(snapshot, wcimetrics.TaskMatchErrorCount.Name()))
+			for _, recs := range snapshot {
+				for _, r := range recs {
+					require.NotContains(t, r.Tags, wcimetrics.SessionTagName)
+				}
+			}
 		})
 	}
 }
