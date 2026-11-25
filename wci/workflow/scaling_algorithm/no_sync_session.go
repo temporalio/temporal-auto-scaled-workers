@@ -18,7 +18,8 @@ import (
 // max_worker_lifetime_ms refresh, dispatch-rate-epsilon suppression and the next-poll interval, so a group recovers
 // through polls once broken compute is fixed. Both algorithms share the same state keys.
 //
-// It is not the default for any provider; scaling groups opt in by setting it as their scaler.
+// It is the default algorithm for aws-agentcore scaling groups that set no scaler. Other invoke providers
+// (aws-lambda, subprocess) keep no-sync as their default.
 //
 // It accepts the same config keys as no-sync. scale_up_cooloff_ms (and scale_up_dispatch_rate_epsilon suppression) only
 // affect poll-driven scale-ups; task-add invokes are never cooled off or throttled.
@@ -29,7 +30,9 @@ type scalingAlgorithmNoSyncSession struct {
 var _ ScalingAlgorithm = (*scalingAlgorithmNoSyncSession)(nil)
 
 func init() {
-	RegisterScalingAlgorithm(iface.ScalingAlgorithmNoSyncSession, NewScalingAlgorithmNoSyncSession)
+	// The default for AgentCore. no-sync no longer lists AgentCore, so this holds regardless of init order
+	// (defaults are first-registered-wins per provider).
+	RegisterScalingAlgorithm(iface.ScalingAlgorithmNoSyncSession, NewScalingAlgorithmNoSyncSession, iface.ComputeProviderTypeAWSAgentCore)
 }
 
 func NewScalingAlgorithmNoSyncSession(_ context.Context) (ScalingAlgorithm, error) {

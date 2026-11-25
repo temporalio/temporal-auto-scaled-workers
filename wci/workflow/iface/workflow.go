@@ -21,7 +21,8 @@ const (
 	WorkerControllerInstanceValidateWorkflowType = "temporal-sys-worker-controller-instance-validate-workflow"
 
 	// Namespace division
-	WorkerControllerInstanceNamespaceDivision = "TemporalWorkerControllerInstance"
+	WorkerControllerInstanceNamespaceDivision        = "TemporalWorkerControllerInstance"
+	WorkerControllerSessionInstanceNamespaceDivision = "TemporalWorkerControllerSessionInstance"
 
 	// Queries
 	QueryDescribeWorkerControllerInstance       = "describe-wci"
